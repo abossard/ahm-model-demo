@@ -69,3 +69,5 @@ coverage.xml
 
 artifacts/health-report-ui
 *.docx
+DESIGN.md
+PRODUCT.md
