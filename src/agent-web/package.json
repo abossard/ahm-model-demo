@@ -15,7 +15,7 @@
     "@copilotkit/react-ui": "1.62.3",
     "@copilotkit/runtime": "1.62.3",
     "hono": "4.12.10",
-    "next": "16.2.10",
+    "next": "16.2.11",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "zod": "3.25.76"
