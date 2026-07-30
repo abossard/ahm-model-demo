@@ -1,0 +1,40 @@
+{
+  "name": "ahm-health-copilot",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "COPILOTKIT_TELEMETRY_DISABLED=true next build",
+    "dev": "next dev",
+    "start": "next start",
+    "test": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ag-ui/client": "0.0.57",
+    "@copilotkit/react-core": "1.62.3",
+    "@copilotkit/react-ui": "1.62.3",
+    "@copilotkit/runtime": "1.62.3",
+    "hono": "4.12.10",
+    "next": "16.2.10",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
+    "@playwright/test": "1.61.1",
+    "@types/node": "20.19.25",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@ag-ui/client": "0.0.57",
+    "@ag-ui/core": "0.0.57",
+    "@ag-ui/encoder": "0.0.57",
+    "@ag-ui/proto": "0.0.57"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

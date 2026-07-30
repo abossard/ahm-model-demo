@@ -1,0 +1,41 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+name: ahm-model-demo
+metadata:
+  template: ahm-model-demo@1.0.0
+
+infra:
+  provider: bicep
+  path: infra
+  module: main
+
+services:
+  web:
+    project: ./src/health-app
+    language: py
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      remoteBuild: true
+  agent-web:
+    project: ./src/agent-web
+    language: ts
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      remoteBuild: true
+  agent-app:
+    project: ./src/agent-app
+    language: py
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      remoteBuild: true
+
+hooks:
+  preprovision:
+    shell: sh
+    run: bash ./scripts/hooks/preprovision.sh
+  postprovision:
+    shell: sh
+    run: bash ./scripts/hooks/postprovision.sh

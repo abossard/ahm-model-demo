@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "${AZURE_ENV_NAME}"
+    },
+    "location": {
+      "value": "${AZURE_LOCATION}"
+    },
+    "principalId": {
+      "value": "${AZURE_PRINCIPAL_ID}"
+    },
+    "adminUpn": {
+      "value": "${ADMIN_UPN}"
+    },
+    "adminIpAddress": {
+      "value": "${ADMIN_IP_ADDRESS}"
+    },
+    "healthModelLocation": {
+      "value": "${HEALTH_MODEL_LOCATION:-northeurope}"
+    },
+    "openAiLocation": {
+      "value": "${AZURE_OPENAI_LOCATION:-swedencentral}"
+    },
+    "webImage": {
+      "value": "${SERVICE_WEB_IMAGE_NAME}"
+    },
+    "agentWebImage": {
+      "value": "${SERVICE_AGENT_WEB_IMAGE_NAME}"
+    },
+    "agentAppImage": {
+      "value": "${SERVICE_AGENT_APP_IMAGE_NAME}"
+    }
+  }
+}

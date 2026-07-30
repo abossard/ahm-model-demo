@@ -1,17 +1,28 @@
 import importlib
 import json
+import logging
 import os
+import re
 import sys
+import time
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+
+import httpx
+from fastapi.testclient import TestClient
+
+
+def mimetype(response):
+    return response.headers["content-type"].split(";")[0].strip()
 
 
 SUBSCRIPTION_ID = "b2af20ad-98fa-4aa7-94c3-059663641d9f"
 SUBSCRIPTION_NAME = "ME-MngEnvMCAP462928-anbossar-1"
-RESOURCE_GROUP = "rg-ahm-movie-demo"
-MODEL_NAME = "hm-ahm-movie-demo"
+RESOURCE_GROUP = "rg-ahm-demo"
+MODEL_NAME = "hm-ahm-demo"
 MODEL_LOCATION = "northeurope"
 SIGNAL_NAME = "web-ui-health-report"
 
@@ -84,6 +95,151 @@ def relationship(name, parent, child, display_name):
             display_name=display_name,
         ),
     )
+
+
+class SourceLayoutContractTests(unittest.TestCase):
+    def test_authored_sources_have_one_final_layout(self):
+        root = Path(__file__).parents[1]
+        expected = {
+            "azure.yaml",
+            "infra/main.bicep",
+            "infra/main.parameters.json",
+            "scripts/hooks/preprovision.sh",
+            "scripts/hooks/postprovision.sh",
+            "src/health-app/app.py",
+            "src/health-app/templates/index.html",
+            "src/health-app/static/app.css",
+            "src/health-app/static/app.js",
+            "src/agent-web/package.json",
+            "src/agent-web/src/app/page.tsx",
+            "src/agent-app/src/main.py",
+            "src/agent-app/tests/test_health_api.py",
+        }
+
+        self.assertEqual(
+            sorted(path for path in expected if not (root / path).is_file()),
+            [],
+        )
+        self.assertFalse((root / "app").exists())
+        self.assertFalse((root / "copilot").exists())
+        self.assertEqual(
+            sorted(path.name for path in (root / "infra").glob("*.bicep")),
+            ["main.bicep"],
+        )
+        self.assertEqual(
+            sorted(
+                str(path.relative_to(root))
+                for path in (root / "scripts").rglob("*")
+                if path.is_file()
+            ),
+            [
+                "scripts/demo-failure.sh",
+                "scripts/hooks/postprovision.sh",
+                "scripts/hooks/preprovision.sh",
+            ],
+        )
+        self.assertEqual(
+            {path.name for path in (root / "tests").glob("test_*.py")},
+            {"test_app.py", "test_streaming_proxy.py"},
+        )
+
+
+SCENE_SHOT_COUNTS = {
+    "scene-1-noise.md": 4,
+    "scene-2-health-models.md": 7,
+    "scene-3-azure-monitor.md": 5,
+    "scene-4-context-ai-ops.md": 5,
+    "scene-5-closing.md": 1,
+}
+
+SCENE_3_SIGNAL_SOURCES = (
+    "Application Insights",
+    "Log Analytics",
+    "Azure Metrics Explorer",
+    "Azure Monitor workspace",
+    "Resource Health",
+    "Service Health",
+    "Azure Resource Manager",
+    "Activity Log",
+)
+
+
+class StoryboardSceneGuideTests(unittest.TestCase):
+    def test_scene_guides_cover_every_storyboard_shot_and_signal_source(self):
+        scenes = Path(__file__).parents[1] / "docs" / "scenes"
+
+        self.assertEqual(
+            sorted(path.name for path in scenes.glob("*.md")),
+            sorted(["README.md", *SCENE_SHOT_COUNTS]),
+        )
+
+        missing_shots = {}
+        unresolved_paths = {}
+        for name, shots in SCENE_SHOT_COUNTS.items():
+            body = (scenes / name).read_text(encoding="utf-8")
+            headings = re.findall(r"^## Shot (\d+)\b", body, flags=re.MULTILINE)
+            if headings != [str(index) for index in range(1, shots + 1)]:
+                missing_shots[name] = headings
+            for referenced in re.findall(
+                r"(?:scripts|infra|src|docs)/[^\s`)*]+", body
+            ):
+                referenced = referenced.rstrip(".,:;")
+                if not (Path(__file__).parents[1] / referenced).exists():
+                    unresolved_paths.setdefault(name, []).append(referenced)
+
+        unresolved_icons = {}
+        for name in ["README.md", *SCENE_SHOT_COUNTS]:
+            body = (scenes / name).read_text(encoding="utf-8")
+            for icon in re.findall(r"\./icons/([\w.-]+\.svg)", body):
+                if not (scenes / "icons" / icon).is_file():
+                    unresolved_icons.setdefault(name, []).append(icon)
+
+        self.assertEqual(missing_shots, {})
+        self.assertEqual(unresolved_paths, {})
+        self.assertEqual(unresolved_icons, {})
+        self.assertTrue((scenes / "icons" / "README.md").is_file())
+
+    def test_scene_guides_carry_no_environment_identifiers(self):
+        # The guides are handed to an external video crew, so they must describe the demo
+        # without naming the account it runs in.
+        forbidden = re.compile(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+            r"|ME-MngEnv\w*"
+            r"|anbossar"
+            r"|@microsoft\.com"
+            r"|/subscriptions/"
+            r"|AZURE_MUTATION_COORDINATION_ACK",
+            re.IGNORECASE,
+        )
+        scenes = Path(__file__).parents[1] / "docs" / "scenes"
+
+        leaked = {
+            path.name: sorted(set(forbidden.findall(path.read_text(encoding="utf-8"))))
+            for path in sorted(scenes.rglob("*.md"))
+            if forbidden.search(path.read_text(encoding="utf-8"))
+        }
+
+        self.assertEqual(leaked, {})
+
+        scene_three = (scenes / "scene-3-azure-monitor.md").read_text(encoding="utf-8")
+        self.assertEqual(
+            [source for source in SCENE_3_SIGNAL_SOURCES if source not in scene_three],
+            [],
+        )
+
+    def test_availability_test_name_agrees_across_infrastructure(self):
+        modules = Path(__file__).parents[1] / "infra" / "modules"
+        pattern = r"param availabilityTestName string = '([^']+)'"
+
+        names = {
+            path.name: re.search(pattern, path.read_text(encoding="utf-8")).group(1)
+            for path in (
+                modules / "availability-tests.bicep",
+                modules / "health-model-entities.bicep",
+            )
+        }
+
+        self.assertEqual(len(set(names.values())), 1, names)
 
 
 class RecordingHealthModels:
@@ -237,10 +393,22 @@ class HealthReportUiTests(unittest.TestCase):
         for patcher in cls.patchers:
             patcher.start()
 
-        app_path = os.path.join(os.path.dirname(__file__), "..", "app")
+        app_path = os.path.join(
+            os.path.dirname(__file__), "..", "src", "web", "app"
+        )
         sys.path.insert(0, os.path.abspath(app_path))
-        sys.modules.pop("app", None)
-        cls.module = importlib.import_module("app")
+        for name in (
+            "main",
+            "config",
+            "dto",
+            "inventory",
+            "reports",
+            "journey",
+            "agent_proxy",
+            "errors",
+        ):
+            sys.modules.pop(name, None)
+        cls.module = importlib.import_module("main")
 
     @classmethod
     def tearDownClass(cls):
@@ -339,8 +507,7 @@ class HealthReportUiTests(unittest.TestCase):
             self.model, self.entities, self.relationships
         )
         self.module.health_client = self.cloud
-        self.module.app.config.update(TESTING=True)
-        self.client = self.module.app.test_client()
+        self.client = TestClient(self.module.app, follow_redirects=False)
 
         self.enqueue = mock.patch.object(
             self.module,
@@ -381,62 +548,408 @@ class HealthReportUiTests(unittest.TestCase):
             response.headers["Content-Security-Policy"],
             "default-src 'self'; script-src 'self'; style-src 'self'; "
             "img-src 'self' data:; connect-src 'self'; base-uri 'none'; "
-            "frame-ancestors 'none'",
+            "frame-src 'self'; frame-ancestors 'none'",
         )
 
     def test_plain_root_is_side_effect_free_ui(self):
-        with mock.patch.dict(os.environ, {"COPILOT_URL": ""}):
+        with mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "false"}):
             response = self.client.get("/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.mimetype, "text/html")
-        body = response.get_data(as_text=True)
-        self.assertIn("The Health Pulse", body)
-        self.assertIn("app.css", body)
-        self.assertIn("app.js", body)
-        self.assertNotIn("Health copilot", body)
+        self.assertEqual(mimetype(response), "text/html")
+        body = response.text
+        self.assertIn('id="root"', body)
+        self.assertRegex(body, r"/assets/index-[\w-]+\.js")
+        self.assertNotIn("The Health Pulse", body)
+        self.assertNotIn("displayName", body)
+        self.assertNotIn("'unsafe-inline'", body)
         self.enqueue_mock.assert_not_called()
         self.insert_mock.assert_not_called()
         self.peek_mock.assert_not_called()
         self.assertEqual(self.cloud.entities.list_calls, [])
         self.assert_security_headers(response)
 
-    def test_valid_copilot_url_adds_optional_link_without_replacing_controls(self):
-        with mock.patch.dict(
-            os.environ,
-            {"COPILOT_URL": "https://copilot.example.test"},
-        ):
+    def test_invalid_compatibility_formats_are_safe_and_side_effect_free(self):
+        cases = [
+            "/?format=",
+            "/?format=invalid",
+            "/?format=xml",
+            "/?format=JSON",
+            "/?format=%20html%20",
+            "/?format=json&format=html",
+        ]
+
+        class RecordingHandler(logging.Handler):
+            def __init__(self):
+                super().__init__()
+                self.records = []
+
+            def emit(self, record):
+                self.records.append(record)
+
+        for path in cases:
+            with self.subTest(path=path):
+                handler = RecordingHandler()
+                self.module.logger.addHandler(handler)
+                try:
+                    response = self.client.get(path)
+                finally:
+                    self.module.logger.removeHandler(handler)
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(mimetype(response), "application/json")
+                payload = response.json()
+                self.assertEqual(payload["error"]["code"], "invalid_format")
+                operation_id = payload["error"]["operationId"]
+                self.assertRegex(operation_id, r"^[0-9a-f]{32}$")
+                self.assertEqual(response.headers["X-Operation-ID"], operation_id)
+                self.enqueue_mock.assert_not_called()
+                self.insert_mock.assert_not_called()
+                self.peek_mock.assert_not_called()
+                self.assertEqual(self.cloud.health_models.calls, [])
+                self.assertEqual(self.cloud.entities.list_calls, [])
+                self.assertEqual(self.cloud.relationships.calls, [])
+                self.assertFalse(
+                    any(
+                        record.levelno >= logging.ERROR or record.exc_info
+                        for record in handler.records
+                    )
+                )
+                self.assert_security_headers(response)
+
+    def test_enabled_copilot_is_an_exact_origin_parent_owned_surface(self):
+        with mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}):
             response = self.client.get("/")
 
-        body = response.get_data(as_text=True)
+        body = response.text
         self.assertEqual(response.status_code, 200)
-        self.assertIn(
-            'href="https://copilot.example.test"',
-            body,
-        )
-        self.assertIn("Health copilot", body)
-        self.assertIn("Refresh live status", body)
-        self.assertIn("Stage a health report", body)
-        self.assertIn("Queue + PostgreSQL demo", body)
+        self.assertEqual(mimetype(response), "text/html")
+        self.assertIn('id="root"', body)
+        self.assertRegex(body, r"/assets/index-[\w-]+\.js")
+        self.assertNotIn("copilot.example", body)
+        self.assertNotIn("app-ahm-health-copilot", body)
+        self.assertNotIn("COPILOT_URL", body)
+        self.assertNotIn("//copilot", body)
         self.assert_security_headers(response)
 
-    def test_unsafe_copilot_url_fails_closed_without_link(self):
-        for copilot_url in [
-            "javascript:alert(1)",
-            "http://copilot.example.test",
-            "https://user:password@copilot.example.test",
+    def test_invalid_copilot_enablement_fails_closed(self):
+        for flag in ["false", "1", "yes", "enabled", "true-ish"]:
+            with self.subTest(flag=flag):
+                with mock.patch.dict(
+                    os.environ,
+                    {"HEALTH_COPILOT_ENABLED": flag},
+                ):
+                    shell = self.client.get("/")
+                    agent = self.client.get("/agent")
+                self.assertEqual(shell.status_code, 200)
+                self.assertEqual(agent.status_code, 404)
+                self.assertEqual(agent.json()["error"]["code"], "agent_disabled")
+
+    def test_agent_proxy_preserves_request_response_and_strips_unsafe_headers(self):
+        seen = []
+
+        def upstream(request):
+            body = request.read()
+            seen.append((request, body))
+            return httpx.Response(
+                202,
+                headers={
+                    "Content-Type": "application/json",
+                    "Content-Encoding": "identity",
+                    "Cache-Control": "no-cache",
+                    "Connection": "x-internal",
+                    "X-Internal": "do-not-forward",
+                    "Set-Cookie": "session=secret",
+                    "Content-Length": "999",
+                },
+                stream=httpx.ByteStream(b'{"status":"accepted"}'),
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(upstream))
+        with (
+            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
+            mock.patch.object(
+                self.module,
+                "_agent_client_factory",
+                return_value=client,
+            ),
+        ):
+            response = self.client.post(
+                "/agent/api/copilotkit/default/run?thread=one&thread=two",
+                content=b'{"message":"hello"}',
+                headers={
+                    "content-type": "application/json",
+                    "Cookie": "caller=secret",
+                    "X-Forwarded-Host": "evil.example",
+                    "Connection": "x-caller",
+                    "X-Caller": "do-not-forward",
+                },
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.content, b'{"status":"accepted"}')
+        self.assertEqual(response.headers["Content-Type"], "application/json")
+        self.assertEqual(response.headers["Content-Encoding"], "identity")
+        self.assertEqual(response.headers["Cache-Control"], "no-cache")
+        for name in [
+            "Connection",
+            "X-Internal",
+            "Set-Cookie",
+            "Content-Length",
         ]:
-            with self.subTest(copilot_url=copilot_url):
-                with mock.patch.dict(os.environ, {"COPILOT_URL": copilot_url}):
-                    response = self.client.get("/")
-                self.assertEqual(response.status_code, 200)
-                self.assertNotIn("Health copilot", response.get_data(as_text=True))
+            self.assertNotIn(name, response.headers)
+        self.assertEqual(len(seen), 1)
+        request, body = seen[0]
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(request.url.host, "127.0.0.1")
+        self.assertEqual(request.url.port, 3000)
+        self.assertEqual(request.url.path, "/agent/api/copilotkit/default/run")
+        self.assertEqual(
+            list(request.url.params.multi_items()),
+            [("thread", "one"), ("thread", "two")],
+        )
+        self.assertEqual(body, b'{"message":"hello"}')
+        self.assertEqual(request.headers["host"], "127.0.0.1:3000")
+        for name in ["cookie", "x-forwarded-host", "x-caller"]:
+            self.assertNotIn(name, request.headers)
+
+    def test_agent_proxy_streams_raw_sse_in_order_and_closes(self):
+        class DelayedStream(httpx.SyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            def __iter__(self):
+                yield b"event: start\ndata: one\n\n"
+                time.sleep(0.08)
+                yield b"event: finish\ndata: two\n\n"
+
+            def close(self):
+                self.closed = True
+
+        stream = DelayedStream()
+
+        def upstream(_request):
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Type": "text/event-stream; charset=utf-8",
+                    "Cache-Control": "no-cache",
+                },
+                stream=stream,
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(upstream))
+        with (
+            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
+            mock.patch.object(
+                self.module,
+                "_agent_client_factory",
+                return_value=client,
+            ),
+        ):
+            with self.client.stream(
+                "GET", "/agent/api/copilotkit/default/run"
+            ) as response:
+                chunks = list(response.iter_raw())
+
+        self.assertEqual(
+            b"".join(chunks),
+            (
+                b"event: start\ndata: one\n\n"
+                b"event: finish\ndata: two\n\n"
+            ),
+        )
+        self.assertTrue(stream.closed)
+
+    def test_agent_proxy_disconnect_closes_upstream_stream(self):
+        class OpenStream(httpx.SyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            def __iter__(self):
+                yield b"event: RUN_STARTED\ndata: one\n\n"
+                yield b"event: TEXT_MESSAGE_CONTENT\ndata: two\n\n"
+
+            def close(self):
+                self.closed = True
+
+        stream = OpenStream()
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    200,
+                    headers={"Content-Type": "text/event-stream"},
+                    stream=stream,
+                )
+            )
+        )
+        with (
+            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
+            mock.patch.object(
+                self.module,
+                "_agent_client_factory",
+                return_value=client,
+            ),
+        ):
+            with self.client.stream(
+                "GET", "/agent/api/copilotkit/default/run"
+            ) as response:
+                iterator = response.iter_raw()
+                self.assertIn(b"RUN_STARTED", next(iterator))
+
+        self.assertTrue(stream.closed)
+
+    def test_agent_proxy_rejects_unapproved_inputs_before_upstream(self):
+        upstream = mock.Mock(
+            side_effect=AssertionError("upstream must not be reached")
+        )
+        client = httpx.Client(transport=httpx.MockTransport(upstream))
+        cases = [
+            ("method", "OPTIONS", "/agent", None, None, 405),
+            ("path", "GET", "/agent/private", None, None, 404),
+            (
+                "content-type",
+                "POST",
+                "/agent/api/copilotkit/default/run",
+                b"body",
+                "text/plain",
+                415,
+            ),
+            (
+                "body-size",
+                "POST",
+                "/agent/api/copilotkit/default/run",
+                b"x" * (1_048_576 + 1),
+                "application/json",
+                413,
+            ),
+        ]
+        for label, method, path, body, content_type, expected in cases:
+            with self.subTest(label=label):
+                with (
+                    mock.patch.dict(
+                        os.environ,
+                        {"HEALTH_COPILOT_ENABLED": "true"},
+                    ),
+                    mock.patch.object(
+                        self.module,
+                        "_agent_client_factory",
+                        return_value=client,
+                    ),
+                ):
+                    headers = (
+                        {"content-type": content_type} if content_type else None
+                    )
+                    response = self.client.request(
+                        method,
+                        path,
+                        content=body,
+                        headers=headers,
+                    )
+                self.assertEqual(response.status_code, expected)
+        upstream.assert_not_called()
+
+    def test_agent_proxy_saturation_is_bounded_before_upstream(self):
+        slots = mock.Mock()
+        slots.acquire.return_value = False
+        with (
+            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
+            mock.patch.object(self.module, "_agent_proxy_slots", slots),
+            mock.patch.object(
+                self.module,
+                "_agent_client_factory",
+                side_effect=AssertionError("upstream must not be reached"),
+            ),
+        ):
+            response = self.client.get("/agent")
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(payload["error"]["code"], "agent_proxy_saturated")
+        self.assertTrue(payload["error"]["retryable"])
+        self.assertRegex(payload["error"]["operationId"], r"^[0-9a-f]{32}$")
+
+    def test_agent_proxy_sanitizes_redirects_and_bounds_upstream_failure(self):
+        cases = [
+            (
+                "same-upstream",
+                httpx.Response(
+                    307,
+                    headers={
+                        "Location": (
+                            "http://127.0.0.1:3000/agent"
+                            "/api/copilotkit?resume=1"
+                        )
+                    },
+                    stream=httpx.ByteStream(b""),
+                ),
+                307,
+                "/agent/api/copilotkit?resume=1",
+            ),
+            (
+                "foreign-upstream",
+                httpx.Response(
+                    302,
+                    headers={"Location": "https://evil.example/steal"},
+                    stream=httpx.ByteStream(b""),
+                ),
+                502,
+                None,
+            ),
+        ]
+        for label, upstream_response, expected_status, expected_location in cases:
+            with self.subTest(label=label):
+                client = httpx.Client(
+                    transport=httpx.MockTransport(
+                        lambda _request, value=upstream_response: value
+                    )
+                )
+                with (
+                    mock.patch.dict(
+                        os.environ,
+                        {"HEALTH_COPILOT_ENABLED": "true"},
+                    ),
+                    mock.patch.object(
+                        self.module,
+                        "_agent_client_factory",
+                        return_value=client,
+                    ),
+                ):
+                    response = self.client.get("/agent")
+                self.assertEqual(response.status_code, expected_status)
+                self.assertEqual(
+                    response.headers.get("Location"),
+                    expected_location,
+                )
+                self.assertNotIn("127.0.0.1", response.text)
+                self.assertNotIn("evil.example", response.text)
+
+        failing_client = mock.Mock()
+        failing_client.build_request.return_value = mock.sentinel.request
+        failing_client.send.side_effect = httpx.ConnectError(
+            "secret upstream detail",
+            request=httpx.Request("GET", "http://127.0.0.1:3000/agent"),
+        )
+        with (
+            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
+            mock.patch.object(
+                self.module,
+                "_agent_client_factory",
+                return_value=failing_client,
+            ),
+        ):
+            response = self.client.get("/agent")
+        payload = response.json()
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(payload["error"]["code"], "agent_web_unavailable")
+        self.assertRegex(payload["error"]["operationId"], r"^[0-9a-f]{32}$")
+        self.assertNotIn("secret upstream detail", response.text)
 
     def test_model_read_returns_rich_dynamic_inventory_once(self):
         response = self.client.get("/api/health-model")
 
         self.assertEqual(response.status_code, 200)
-        payload = response.get_json()
+        payload = response.json()
         self.assertEqual(
             payload["model"],
             {
@@ -518,7 +1031,7 @@ class HealthReportUiTests(unittest.TestCase):
         response = self.client.get("/api/entities/api")
 
         self.assertEqual(response.status_code, 200)
-        payload = response.get_json()
+        payload = response.json()
         self.assertEqual(payload["entity"]["name"], "api")
         self.assertEqual(payload["canonicalSignal"]["name"], SIGNAL_NAME)
         self.assertEqual(
@@ -562,7 +1075,7 @@ class HealthReportUiTests(unittest.TestCase):
         response = self.client.get("/api/entities/vanished")
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.get_json()["error"]["code"], "entity_not_found")
+        self.assertEqual(response.json()["error"]["code"], "entity_not_found")
         self.assertEqual(self.cloud.entities.history_calls, [])
         self.assertEqual(self.cloud.entities.signal_history_calls, [])
 
@@ -596,7 +1109,7 @@ class HealthReportUiTests(unittest.TestCase):
                 )
 
                 self.assertEqual(response.status_code, 202)
-                payload = response.get_json()
+                payload = response.json()
                 self.assertEqual(payload["status"], "accepted")
                 self.assertEqual(payload["entityName"], "api")
                 self.assertEqual(payload["signalName"], SIGNAL_NAME)
@@ -617,6 +1130,97 @@ class HealthReportUiTests(unittest.TestCase):
                     self.assertEqual(context["reason"], custom_reason)
                 self.assertLessEqual(len(report["additionalContext"]), 4096)
                 self.assert_security_headers(response)
+
+    def test_quick_report_buttons_send_one_complete_report_per_click(self):
+        single_click = [
+            ("Healthy", 1),
+            ("Degraded", 0.5),
+            ("Unhealthy", 0),
+        ]
+        panel_overrides = [
+            ("Unhealthy", None, "investigating", 5),
+            ("Degraded", 1, "maintenance", 60),
+            ("Healthy", 0, "recovery", 120),
+        ]
+
+        for state, value in single_click:
+            with self.subTest(click=state):
+                self.cloud.entities.ingest_calls.clear()
+
+                response = self.client.post(
+                    "/api/entities/api/health-reports",
+                    json={
+                        "signalName": SIGNAL_NAME,
+                        "healthState": state,
+                        "value": value,
+                        "expiresInMinutes": 30,
+                        "reasonPreset": "demo-test",
+                    },
+                )
+
+                self.assertEqual(response.status_code, 202)
+                self.assertEqual(len(self.cloud.entities.ingest_calls), 1)
+                report = self.cloud.entities.ingest_calls[0][0][3]
+                self.assertEqual(report["healthState"], state)
+                self.assertEqual(report["value"], value)
+                self.assertEqual(report["expiresInMinutes"], 30)
+
+        for state, value, preset, expiry in panel_overrides:
+            with self.subTest(panel=state, preset=preset):
+                self.cloud.entities.ingest_calls.clear()
+
+                response = self.client.post(
+                    "/api/entities/api/health-reports",
+                    json={
+                        "signalName": SIGNAL_NAME,
+                        "healthState": state,
+                        "value": value,
+                        "expiresInMinutes": expiry,
+                        "reasonPreset": preset,
+                    },
+                )
+
+                self.assertEqual(response.status_code, 202)
+                self.assertEqual(len(self.cloud.entities.ingest_calls), 1)
+                report = self.cloud.entities.ingest_calls[0][0][3]
+                self.assertEqual(report["healthState"], state)
+                self.assertEqual(report["value"], value)
+                self.assertEqual(report["expiresInMinutes"], expiry)
+
+    def test_report_reason_transport_is_exact_and_legacy_presets_stay_compatible(self):
+        self.cloud.entities.ingest_calls.clear()
+        response = self.client.post(
+            "/api/entities/api/health-reports",
+            json={
+                "signalName": SIGNAL_NAME,
+                "healthState": "Healthy",
+                "value": 1,
+                "expiresInMinutes": 30,
+                "reasonPreset": "recovery",
+            },
+        )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(len(self.cloud.entities.ingest_calls), 1)
+        args, kwargs = self.cloud.entities.ingest_calls[0]
+        report = args[3] if len(args) == 4 else kwargs["body"]
+        context = json.loads(report["additionalContext"])
+        self.assertEqual(context["reason"], "Recovery confirmed")
+
+        self.cloud.entities.ingest_calls.clear()
+        rejected = self.client.post(
+            "/api/entities/api/health-reports",
+            json={
+                "signalName": SIGNAL_NAME,
+                "healthState": "Healthy",
+                "value": 1,
+                "expiresInMinutes": 30,
+                "reasonPreset": "maintenance",
+                "reason": "Model supplied conflicting maintenance detail",
+            },
+        )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(rejected.json()["error"]["code"], "unknown_field")
+        self.assertEqual(self.cloud.entities.ingest_calls, [])
 
     def test_invalid_reports_never_call_ingest(self):
         valid = {
@@ -699,8 +1303,8 @@ class HealthReportUiTests(unittest.TestCase):
                 self.cloud.entities.ingest_calls.clear()
                 response = self.client.post(
                     f"/api/entities/{entity_name}/health-reports",
-                    data=json.dumps(body),
-                    content_type=content_type,
+                    content=json.dumps(body),
+                    headers={"content-type": content_type},
                 )
                 self.assertEqual(response.status_code, expected_status)
                 self.assertEqual(self.cloud.entities.ingest_calls, [])
@@ -737,10 +1341,10 @@ class HealthReportUiTests(unittest.TestCase):
 
                 self.assertEqual(response.status_code, 200)
                 if path.endswith("html"):
-                    self.assertEqual(response.mimetype, "text/html")
+                    self.assertEqual(mimetype(response), "text/html")
                 else:
                     self.assertEqual(
-                        set(response.get_json()),
+                        set(response.json()),
                         {"request_id", "just_enqueued", "queue_head", "row_count"},
                     )
                 self.enqueue_mock.assert_called_once()
@@ -770,11 +1374,11 @@ class HealthReportUiTests(unittest.TestCase):
                 self.cloud.health_models.error = None
 
                 self.assertEqual(response.status_code, expected_status)
-                payload = response.get_json()
+                payload = response.json()
                 self.assertEqual(payload["error"]["retryable"], retryable)
                 self.assertEqual(len(payload["error"]["operationId"]), 32)
-                self.assertNotIn("SECRET_AZURE_BODY", response.get_data(as_text=True))
-                self.assertNotIn("do-not-leak", response.get_data(as_text=True))
+                self.assertNotIn("SECRET_AZURE_BODY", response.text)
+                self.assertNotIn("do-not-leak", response.text)
                 self.assertNotIn("SECRET_AZURE_BODY", "\n".join(captured.output))
                 self.assertNotIn("do-not-leak", "\n".join(captured.output))
 
@@ -783,7 +1387,7 @@ class HealthReportUiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
-            response.get_json()["entities"][-1]["displayName"],
+            response.json()["entities"][-1]["displayName"],
             "Discovered <img src=x onerror=alert(1)>",
         )
         root = self.client.get("/")

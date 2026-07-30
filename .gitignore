@@ -62,12 +62,19 @@ htmlcov/
 .coverage
 coverage.xml
 
+# Verification evidence: screenshots, Playwright traces, az what-if dumps.
+# Useful to keep on disk, never committed.
+artifacts/
+.playwright-mcp/
+
 # Misc
 *.log
 *.tmp
 *.bak
 
-artifacts/health-report-ui
 *.docx
 DESIGN.md
 PRODUCT.md
+
+# Azure architecture icons (downloaded locally, never committed)
+assets/azure-icons/

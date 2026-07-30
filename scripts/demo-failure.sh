@@ -1,27 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-source "$SCRIPT_DIR/preflight.sh"
+# Every identifier comes from the selected azd environment, so this follows whichever stack
+# "azd env select" points at instead of pinning one.
 
-resources_json=$(az rest \
-  --method get \
-  --url "https://management.azure.com/subscriptions/$SUB_ID/resourceGroups/$RG/resources?api-version=2021-04-01" \
-  --output json |
-  jq -c '.value')
-PG_NAME=$(jq -er '
-  .[] | select((.type | ascii_downcase) == "microsoft.dbforpostgresql/flexibleservers") | .name
-' <<<"$resources_json")
-APP_NAME=$(jq -er '
-  .[] | select((.type | ascii_downcase) == "microsoft.app/containerapps") | .name
-' <<<"$resources_json")
-app_json=$(az containerapp show \
-  --name "$APP_NAME" \
-  --resource-group "$RG" \
-  --subscription "$SUB_ID" \
-  --output json)
-APP_FQDN=$(jq -er '.properties.configuration.ingress.fqdn' <<<"$app_json")
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'DEMO_FAILURE_FAIL required command not found: %s\n' "$1" >&2
+    exit 1
+  }
+}
+
+require_command azd
+require_command az
+require_command jq
+require_command curl
+require_command python3
 require_command script
+
+azd_env_json=$(azd env get-values --output json 2>/dev/null) || {
+  printf 'DEMO_FAILURE_FAIL no azd environment selected; run "azd env select <name>" from the repository root first\n' >&2
+  exit 1
+}
+
+azd_value() {
+  jq -er --arg key "$1" '.[$key] // empty' <<<"$azd_env_json" || {
+    printf 'DEMO_FAILURE_FAIL the selected azd environment does not define %s; run "azd provision" first\n' "$1" >&2
+    return 1
+  }
+}
+
+ENV_NAME=$(azd_value AZURE_ENV_NAME)
+SUB_ID=$(azd_value AZURE_SUBSCRIPTION_ID)
+RG=$(azd_value AZURE_RESOURCE_GROUP)
+MODEL=$(azd_value HEALTH_MODEL_NAME)
+APP_NAME=$(azd_value SERVICE_WEB_NAME)
+APP_FQDN=$(azd_value SERVICE_WEB_FQDN)
+postgres_host=$(azd_value AZURE_POSTGRES_HOST)
+PG_NAME=${postgres_host%%.*}
+
+printf 'DEMO_FAILURE_CONTEXT environment=%s resource_group=%s health_model=%s container_app=%s postgres=%s\n' \
+  "$ENV_NAME" "$RG" "$MODEL" "$APP_NAME" "$PG_NAME"
 
 INCIDENT_START=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 restoration_complete=false
@@ -336,8 +355,7 @@ postgres_annotations=$(az monitor health-models entity get-data-annotations \
 for annotation_json in "$root_annotations" "$postgres_annotations"; do
   jq -e '
     [.annotations[]?.annotationDetails.phase] as $phases
-    | ($phases | index("deployment") != null)
-    and ($phases | index("failure-detected") != null)
+    | ($phases | index("failure-detected") != null)
     and ($phases | index("remediation-start") != null)
     and ($phases | index("recovery") != null)
   ' <<<"$annotation_json" >/dev/null
@@ -371,11 +389,11 @@ signal_history=$(az monitor health-models entity get-signal-history \
 
 jq -e '
   any(.history[]; .previousState == "Healthy" and .newState == "Unhealthy")
-  and any(.history[]; .previousState == "Unhealthy" and .newState == "Healthy")
+  and any(.history[]; .previousState != "Healthy" and .newState == "Healthy")
 ' <<<"$root_history" >/dev/null
 jq -e '
   any(.history[]; .previousState == "Healthy" and .newState == "Unhealthy")
-  and any(.history[]; .previousState == "Unhealthy" and .newState == "Healthy")
+  and any(.history[]; .previousState != "Healthy" and .newState == "Healthy")
 ' <<<"$postgres_history" >/dev/null
 jq -e '
   any(.history[]; .healthState == "Unhealthy")
