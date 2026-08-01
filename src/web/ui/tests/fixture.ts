@@ -109,6 +109,7 @@ export const healthModel: HealthModel = {
     { name: "r1", displayName: "reads", parentEntityName: "svc-a", childEntityName: "svc-b" },
     { name: "r2", displayName: "writes", parentEntityName: "svc-b", childEntityName: "svc-c" },
     { name: "r3", displayName: "queries", parentEntityName: "svc-a", childEntityName: "svc-d" },
+    { name: "r4", displayName: "", parentEntityName: "svc-d", childEntityName: "svc-c" },
   ],
   reportOptions: {
     signalName: "web-ui-health-report",
@@ -185,9 +186,51 @@ function errorEnvelope(code: string, message: string) {
 
 export interface StubState {
   healthModelFails: boolean;
+  model?: HealthModel;
 }
 
+const shardStates: readonly Entity["healthState"][] = [
+  "Healthy",
+  "Degraded",
+  "Unhealthy",
+  "Healthy",
+  "Unknown",
+  "Degraded",
+  "Healthy",
+  "Unhealthy",
+];
+
+const shards: readonly Entity[] = shardStates.map((healthState, index) =>
+  entity({
+    name: `shard-${index + 1}`,
+    displayName: `Payment gateway shard ${index + 1}`,
+    healthState,
+    parents: ["platform"],
+    signals: [signal("lat", "Latency", index * 3, healthState)],
+  }),
+);
+
+export const wideHealthModel: HealthModel = {
+  ...healthModel,
+  entities: [
+    entity({
+      name: "platform",
+      displayName: "Contoso Platform",
+      healthState: "Degraded",
+      children: shards.map((shard) => shard.name),
+    }),
+    ...shards,
+  ],
+  relationships: shards.map((shard, index) => ({
+    name: `rw${index}`,
+    displayName: "",
+    parentEntityName: "platform",
+    childEntityName: shard.name,
+  })),
+};
+
 export async function installStubs(page: Page, state: StubState): Promise<void> {
+  const model = state.model ?? healthModel;
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const { pathname } = new URL(request.url());
@@ -204,7 +247,7 @@ export async function installStubs(page: Page, state: StubState): Promise<void> 
         });
         return;
       }
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(healthModel) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(model) });
       return;
     }
 

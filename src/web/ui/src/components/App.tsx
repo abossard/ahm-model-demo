@@ -2,16 +2,19 @@ import { useEffect } from "react";
 import type { JSX } from "react";
 import { useAppDispatch, useAppSelector } from "../store/store";
 import { loadHealthModel } from "../store/modelSlice";
-import { selectModel, selectPanelOpen } from "../store/selectors";
+import { selectChatOpen, selectModel, selectPanelOpen } from "../store/selectors";
+import { toggleChat } from "../store/uiSlice";
 import { StatusBar } from "./StatusBar";
 import { Topology } from "./Topology";
 import { EntityPanel } from "./EntityPanel";
 import { JourneyPanel } from "./JourneyPanel";
+import { ChatPanel } from "./ChatPanel";
 
 export function App(): JSX.Element {
   const dispatch = useAppDispatch();
   const model = useAppSelector(selectModel);
   const panelOpen = useAppSelector(selectPanelOpen);
+  const chatOpen = useAppSelector(selectChatOpen);
 
   useEffect(() => {
     void dispatch(loadHealthModel());
@@ -35,7 +38,17 @@ export function App(): JSX.Element {
         {panelOpen && model.kind === "success" ? (
           <EntityPanel options={model.value.reportOptions} />
         ) : null}
+        {chatOpen ? <ChatPanel /> : null}
       </div>
+      <button
+        type="button"
+        className="chat-toggle"
+        aria-pressed={chatOpen}
+        onClick={() => dispatch(toggleChat())}
+        data-testid="chat-toggle"
+      >
+        {chatOpen ? "Close copilot" : "Open copilot"}
+      </button>
     </div>
   );
 }

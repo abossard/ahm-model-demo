@@ -66,6 +66,7 @@ coverage.xml
 # Useful to keep on disk, never committed.
 artifacts/
 .playwright-mcp/
+src/web/ui/test-results/
 
 # Misc
 *.log

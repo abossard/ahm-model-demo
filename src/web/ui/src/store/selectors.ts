@@ -36,3 +36,7 @@ export function selectJourneyResult(state: RootState): AsyncState<JourneyResult>
 export function selectPanelOpen(state: RootState): boolean {
   return state.ui.panelOpen;
 }
+
+export function selectChatOpen(state: RootState): boolean {
+  return state.ui.chatOpen;
+}

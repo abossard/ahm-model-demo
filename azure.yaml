@@ -11,7 +11,7 @@ infra:
 
 services:
   web:
-    project: ./src/health-app
+    project: ./src/web
     language: py
     host: containerapp
     docker:

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 
-class GunicornStreamingProxyTests(unittest.TestCase):
+class UvicornStreamingProxyTests(unittest.TestCase):
     def test_first_sse_chunk_arrives_before_upstream_completes(self):
         root = Path(__file__).parents[1]
         environment = {
@@ -35,20 +35,18 @@ class GunicornStreamingProxyTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             text=True,
         )
-        gunicorn = subprocess.Popen(
+        server = subprocess.Popen(
             [
-                str(Path(sys.executable).with_name("gunicorn")),
-                "--chdir",
-                "src/health-app",
-                "--bind",
-                "127.0.0.1:8082",
-                "--workers",
-                "1",
-                "--threads",
-                "4",
-                "--timeout",
-                "120",
-                "app:app",
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "--app-dir",
+                "src/web/app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8082",
+                "main:app",
             ],
             cwd=root,
             env=environment,
@@ -89,7 +87,7 @@ class GunicornStreamingProxyTests(unittest.TestCase):
             self.assertGreaterEqual(finish_elapsed - first_elapsed, 0.45)
             self.assertLess(received.index(b"RUN_STARTED"), received.index(b"RUN_FINISHED"))
         finally:
-            self._stop(gunicorn)
+            self._stop(server)
             self._stop(fake)
 
     @staticmethod

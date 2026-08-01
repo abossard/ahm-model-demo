@@ -1,121 +1,91 @@
-import { useEffect, useRef, useState } from "react";
+import { useMemo } from "react";
 import type { JSX } from "react";
-import { renderSwimlane } from "../diagrammo";
-import type { SwimlaneCard } from "../diagrammo";
-import { encodeSnapshot } from "../model/encode";
+import { ReactFlow, Background, MarkerType } from "@xyflow/react";
+import type { Edge, NodeTypes } from "@xyflow/react";
 import type { Entity, Relationship } from "../model/types";
-import { useAppDispatch, useAppSelector } from "../store/store";
+import { layoutGraph } from "../model/layout";
+import { cardTokens } from "../model/palette";
+import { useAppSelector } from "../store/store";
 import { selectSelectedName } from "../store/selectors";
-import { selectEntity } from "../store/entitySlice";
-import { openPanel } from "../store/uiSlice";
+import { EntityNode, estimateNodeSize, type EntityRfNode } from "./EntityNode";
 
 interface TopologyProps {
   readonly entities: readonly Entity[];
   readonly relationships: readonly Relationship[];
 }
 
-const ENTITY_CARD_ID = /^e(\d+)$/;
+const nodeTypes: NodeTypes = { entity: EntityNode };
 
-function escapeAttr(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function overlayMarkup(
-  cards: readonly SwimlaneCard[],
-  entities: readonly Entity[],
-): string {
-  const groups: string[] = [];
-  for (const card of cards) {
-    const match = ENTITY_CARD_ID.exec(card.id);
-    if (!match) continue;
-    const index = Number(match[1]);
-    const entity = entities[index];
-    if (!entity) continue;
-    const label = escapeAttr(`${entity.displayName || entity.name} — ${entity.healthState}`);
-    groups.push(
-      `<g data-entity="${escapeAttr(entity.name)}" data-lane="${card.lane}" ` +
-        `class="hit-target" role="button" tabindex="0" aria-label="${label}">` +
-        `<rect x="${card.x}" y="${card.y}" width="${card.w}" height="${card.h}" ` +
-        `rx="10" fill="transparent" pointer-events="all"></rect></g>`,
-    );
+function buildEdges(
+  relationships: readonly Relationship[],
+  present: ReadonlySet<string>,
+): Edge[] {
+  const edges: Edge[] = [];
+  for (const relationship of relationships) {
+    if (!present.has(relationship.parentEntityName)) continue;
+    if (!present.has(relationship.childEntityName)) continue;
+    const label = relationship.displayName ?? "";
+    edges.push({
+      id: relationship.name,
+      source: relationship.parentEntityName,
+      target: relationship.childEntityName,
+      type: "smoothstep",
+      label: label || undefined,
+      labelShowBg: label.length > 0,
+      labelBgPadding: [6, 3],
+      labelBgBorderRadius: 9,
+      labelBgStyle: { fill: cardTokens.pillFill, stroke: cardTokens.pillStroke },
+      labelStyle: { fill: cardTokens.ink, fontSize: 10.5 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: cardTokens.pillStroke },
+      style: { stroke: cardTokens.pillStroke },
+    });
   }
-  return `<g class="hit-layer">${groups.join("")}</g>`;
+  return edges;
 }
 
 export function Topology({ entities, relationships }: TopologyProps): JSX.Element {
-  const dispatch = useAppDispatch();
   const selectedName = useAppSelector(selectSelectedName);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
 
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node) return;
-    setWidth(node.clientWidth);
-    const observer = new ResizeObserver((entriesList) => {
-      const entry = entriesList[0];
-      if (entry) setWidth(Math.round(entry.contentRect.width));
+  const layout = useMemo(
+    () => layoutGraph(entities, relationships, estimateNodeSize),
+    [entities, relationships],
+  );
+
+  const nodes = useMemo<EntityRfNode[]>(() => {
+    return entities.map((entity) => {
+      const size = estimateNodeSize(entity);
+      const position = layout.positions.get(entity.name) ?? { x: 0, y: 0 };
+      return {
+        id: entity.name,
+        type: "entity",
+        position: { x: position.x, y: position.y },
+        width: size.width,
+        height: size.height,
+        data: { entity, selected: entity.name === selectedName },
+      };
     });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
+  }, [entities, layout, selectedName]);
 
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node || width === 0) return;
-    const code = encodeSnapshot({ entities, relationships });
-    const result = renderSwimlane(code, { theme: "portal", maxWidth: width });
-    const overlay = overlayMarkup(result.debug.cards, entities);
-    node.innerHTML = result.svg.replace(/<\/svg>\s*$/, `${overlay}</svg>`);
-
-    const entityCards = result.debug.cards.filter((card) => ENTITY_CARD_ID.test(card.id));
-    const rects = node.querySelectorAll<SVGRectElement>('rect[stroke-width="2"]');
-    entityCards.forEach((card, cardIndex) => {
-      const rect = rects[cardIndex];
-      const match = ENTITY_CARD_ID.exec(card.id);
-      const entity = match ? entities[Number(match[1])] : undefined;
-      if (rect && entity) rect.setAttribute("data-entity-card", entity.name);
-    });
-  }, [entities, relationships, width]);
-
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node) return;
-    node
-      .querySelectorAll(".hit-target.is-selected")
-      .forEach((element) => element.classList.remove("is-selected"));
-    if (selectedName) {
-      node
-        .querySelector(`.hit-target[data-entity="${CSS.escape(selectedName)}"]`)
-        ?.classList.add("is-selected");
-    }
-  }, [selectedName, width, entities]);
-
-  const activateFrom = (target: EventTarget | null): void => {
-    if (!(target instanceof Element)) return;
-    const group = target.closest<Element>(".hit-target[data-entity]");
-    const name = group?.getAttribute("data-entity");
-    if (!name) return;
-    dispatch(selectEntity(name));
-    dispatch(openPanel());
-  };
+  const edges = useMemo(
+    () => buildEdges(relationships, new Set(entities.map((entity) => entity.name))),
+    [entities, relationships],
+  );
 
   return (
-    <div
-      id="topology"
-      className="topology"
-      ref={containerRef}
-      onClick={(event) => activateFrom(event.target)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          activateFrom(event.target);
-        }
-      }}
-    />
+    <div id="topology" className="topology">
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        fitView
+        nodesDraggable={false}
+        nodesConnectable={false}
+        nodesFocusable={false}
+        elementsSelectable={false}
+        proOptions={{ hideAttribution: false }}
+      >
+        <Background />
+      </ReactFlow>
+    </div>
   );
 }

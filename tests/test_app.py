@@ -106,10 +106,10 @@ class SourceLayoutContractTests(unittest.TestCase):
             "infra/main.parameters.json",
             "scripts/hooks/preprovision.sh",
             "scripts/hooks/postprovision.sh",
-            "src/health-app/app.py",
-            "src/health-app/templates/index.html",
-            "src/health-app/static/app.css",
-            "src/health-app/static/app.js",
+            "src/web/Dockerfile",
+            "src/web/requirements.txt",
+            "src/web/app/main.py",
+            "src/web/ui/package.json",
             "src/agent-web/package.json",
             "src/agent-web/src/app/page.tsx",
             "src/agent-app/src/main.py",
@@ -1411,6 +1411,68 @@ class HealthReportUiTests(unittest.TestCase):
                     self.module.validate_runtime_scope(candidate)
 
         self.module.validate_runtime_scope(exact)
+
+    def test_ac10_success_and_error_payload_contracts_match_baseline(self):
+        model = self.client.get("/api/health-model")
+        self.assertEqual(model.status_code, 200)
+        self.assertEqual(
+            set(model.json()),
+            {"model", "observedAt", "entities", "relationships", "reportOptions"},
+        )
+
+        detail = self.client.get("/api/entities/api")
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(
+            set(detail.json()),
+            {"entity", "observedAt", "transitions", "canonicalSignal"},
+        )
+
+        report = self.client.post(
+            "/api/entities/api/health-reports",
+            json={
+                "signalName": SIGNAL_NAME,
+                "healthState": "Healthy",
+                "value": 1,
+                "expiresInMinutes": 30,
+                "reasonPreset": "recovery",
+            },
+        )
+        self.assertEqual(report.status_code, 202)
+        self.assertEqual(
+            set(report.json()),
+            {
+                "status",
+                "reportId",
+                "entityName",
+                "signalName",
+                "requestedState",
+                "submittedAt",
+                "expiresAt",
+            },
+        )
+
+        journey = self.client.post("/api/demo-request")
+        self.assertEqual(journey.status_code, 200)
+        self.assertEqual(
+            set(journey.json()),
+            {"request_id", "just_enqueued", "queue_head", "row_count"},
+        )
+
+        from azure.core.exceptions import HttpResponseError
+
+        error = HttpResponseError(message="boom")
+        error.status_code = 500
+        self.cloud.health_models.error = error
+        with self.assertLogs("ahm-demo", level="WARNING"):
+            failure = self.client.get("/api/health-model")
+        self.cloud.health_models.error = None
+
+        self.assertEqual(failure.status_code, 503)
+        self.assertEqual(set(failure.json()), {"error"})
+        self.assertEqual(
+            set(failure.json()["error"]),
+            {"code", "message", "retryable", "operationId"},
+        )
 
 
 if __name__ == "__main__":
