@@ -26,6 +26,12 @@ returns it again at any time:
 SERVICE_WEB_FQDN  ca-<env>-web.<region>.azurecontainerapps.io
 ```
 
+The same `azd up` also deploys the three services to AKS. After it finishes, the AKS copy of the web app is available at the public IP on the `web` service:
+
+```bash
+kubectl get svc web -n ahm -o jsonpath='{.status.loadBalancer.ingress[0].ip}{"\n"}'
+```
+
 Reach the health model from the portal via **Resource groups → the demo group → the health model**.
 
 `azd up` is the only entry point that provisions or changes infrastructure. `infra/main.bicep`
@@ -51,9 +57,7 @@ az monitor diagnostic-settings subscription delete --name "diag-$(azd env get-va
 az role definition delete --name "AHM Demo Health Report Operator ($(azd env get-value AZURE_ENV_NAME))"
 ```
 
-`azd down` removes the resource group. The activity-log diagnostic setting and the custom role
-definition live at subscription scope, outside the resource group, so the two `az` commands finish
-the job.
+`azd down` removes the resource group, including the AKS cluster and its managed node resource group. The activity-log diagnostic setting and the custom role definition live at subscription scope, outside the resource group, so the two `az` commands finish the job.
 
 ## Synthetic traffic
 

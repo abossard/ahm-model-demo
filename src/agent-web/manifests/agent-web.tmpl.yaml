@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ahm
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workload
+  namespace: ahm
+  annotations:
+    azure.workload.identity/client-id: {{.Env.AZURE_IDENTITY_CLIENT_ID}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-web
+  namespace: ahm
+  labels:
+    app.kubernetes.io/name: agent-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent-web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agent-web
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: workload
+      containers:
+        - name: agent-web
+          image: {{.Env.SERVICE_AGENT_WEB_AKS_IMAGE_NAME}}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: AGENT_URL
+              value: http://agent-app:8000/
+            - name: COPILOTKIT_TELEMETRY_DISABLED
+              value: "true"
+          readinessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-web
+  namespace: ahm
+  labels:
+    app.kubernetes.io/name: agent-web
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: agent-web
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

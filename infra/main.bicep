@@ -132,6 +132,29 @@ module rbac 'modules/rbac.bicep' = {
   }
 }
 
+module aks 'modules/aks.bicep' = {
+  scope: rg
+  name: 'aks'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    aksSubnetId: foundation.outputs.aksSubnetId
+    tags: tags
+  }
+}
+
+module aksAccess 'modules/aks-access.bicep' = {
+  scope: rg
+  name: 'aks-access'
+  params: {
+    registryName: foundation.outputs.registryName
+    kubeletObjectId: aks.outputs.kubeletObjectId
+    identityName: foundation.outputs.identityName
+    oidcIssuerUrl: aks.outputs.oidcIssuerUrl
+    namePrefix: namePrefix
+  }
+}
+
 var containerEnvironmentDomain = foundation.outputs.environmentDefaultDomain
 var agentWebOrigin = 'https://${agentWebAppName}.internal.${containerEnvironmentDomain}'
 var agentAppUrl = 'https://${agentAppName}.internal.${containerEnvironmentDomain}/'
@@ -396,14 +419,24 @@ module healthModelDiscovery 'modules/health-model-discovery.bicep' = {
   }
 }
 
-output AZURE_CONTAINER_REGISTRY_ENDPOINT string = rbac.outputs.registryLoginServer
+output AZURE_CONTAINER_REGISTRY_ENDPOINT string = aksAccess.outputs.registryLoginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = foundation.outputs.registryName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = foundation.outputs.environmentId
+output AZURE_AKS_CLUSTER_NAME string = aks.outputs.clusterName
 output AZURE_RESOURCE_GROUP string = rg.name
 output AZURE_IDENTITY_NAME string = foundation.outputs.identityName
+output AZURE_IDENTITY_CLIENT_ID string = foundation.outputs.identityClientId
 output AZURE_IDENTITY_PRINCIPAL_ID string = foundation.outputs.identityPrincipalId
+output AZURE_QUEUE_URL string = rbac.outputs.queueUrl
 output AZURE_POSTGRES_HOST string = foundation.outputs.postgresHost
 output AZURE_POSTGRES_DATABASE string = foundation.outputs.postgresDatabase
+output AZURE_SUBSCRIPTION_ID string = subscription().subscriptionId
+output AZURE_SUBSCRIPTION_NAME string = subscription().displayName
+output APPLICATIONINSIGHTS_CONNECTION_STRING string = rbac.outputs.applicationInsightsConnectionString
+output AZURE_OPENAI_ENDPOINT string = copilot.outputs.azureOpenAIEndpoint
+output AZURE_OPENAI_CHAT_DEPLOYMENT_NAME string = copilot.outputs.azureOpenAIDeploymentName
+output AZURE_HEALTH_MODEL_NAME string = healthModel.outputs.modelName
+output HEALTH_MODEL_LOCATION string = healthModelLocation
 output SERVICE_WEB_NAME string = web.outputs.containerAppName
 output SERVICE_WEB_FQDN string = web.outputs.fqdn
 output SERVICE_WEB_ID string = web.outputs.containerAppId

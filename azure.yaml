@@ -31,6 +31,36 @@ services:
     docker:
       path: ./Dockerfile
       remoteBuild: true
+  web-aks:
+    project: ./src/web
+    language: py
+    host: aks
+    docker:
+      path: ./Dockerfile
+      remoteBuild: true
+    k8s:
+      namespace: ahm
+      deploymentPath: manifests
+  agent-web-aks:
+    project: ./src/agent-web
+    language: ts
+    host: aks
+    docker:
+      path: ./Dockerfile
+      remoteBuild: true
+    k8s:
+      namespace: ahm
+      deploymentPath: manifests
+  agent-app-aks:
+    project: ./src/agent-app
+    language: py
+    host: aks
+    docker:
+      path: ./Dockerfile
+      remoteBuild: true
+    k8s:
+      namespace: ahm
+      deploymentPath: manifests
 
 hooks:
   preprovision:
