@@ -84,6 +84,26 @@ body {
   font-size: 13px;
 }
 
+.model-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-picker__label {
+  color: var(--muted);
+}
+
+.model-picker select {
+  font: inherit;
+  color: var(--ink);
+  padding: 4px 8px;
+  border: 1px solid var(--pill-stroke);
+  border-radius: 6px;
+  background: var(--pill-fill);
+  max-width: 260px;
+}
+
 .app-body {
   flex: 1;
   display: flex;

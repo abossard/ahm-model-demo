@@ -5,7 +5,10 @@ import type {
   HealthReportBody,
   HealthReportResult,
   JourneyResult,
+  ModelCatalog,
+  ModelRef,
 } from "../model/types";
+import { searchFromSelection } from "../model/selection";
 
 function fallbackError(message: string): ApiError {
   return { code: "network_error", message, retryable: true, operationId: null };
@@ -47,20 +50,34 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function fetchHealthModel(): Promise<HealthModel> {
-  return requestJson<HealthModel>("/api/health-model");
+function scoped(path: string, selection: ModelRef | null): string {
+  return selection ? `${path}${searchFromSelection(selection)}` : path;
 }
 
-export function fetchEntityDetail(name: string): Promise<EntityDetail> {
-  return requestJson<EntityDetail>(`/api/entities/${encodeURIComponent(name)}`);
+export function fetchModelCatalog(): Promise<ModelCatalog> {
+  return requestJson<ModelCatalog>("/api/health-models");
+}
+
+export function fetchHealthModel(selection: ModelRef | null): Promise<HealthModel> {
+  return requestJson<HealthModel>(scoped("/api/health-model", selection));
+}
+
+export function fetchEntityDetail(
+  name: string,
+  selection: ModelRef | null,
+): Promise<EntityDetail> {
+  return requestJson<EntityDetail>(
+    scoped(`/api/entities/${encodeURIComponent(name)}`, selection),
+  );
 }
 
 export function postHealthReport(
   name: string,
   body: HealthReportBody,
+  selection: ModelRef | null,
 ): Promise<HealthReportResult> {
   return requestJson<HealthReportResult>(
-    `/api/entities/${encodeURIComponent(name)}/health-reports`,
+    scoped(`/api/entities/${encodeURIComponent(name)}/health-reports`, selection),
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

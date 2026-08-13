@@ -73,6 +73,7 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2026-04-01' = {
   }
 }
 
+output clusterId string = cluster.id
 output clusterName string = cluster.name
 output oidcIssuerUrl string = cluster.properties.oidcIssuerProfile.issuerURL
 output kubeletObjectId string = cluster.properties.identityProfile.kubeletidentity.objectId

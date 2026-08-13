@@ -21,8 +21,8 @@ class UvicornStreamingProxyTests(unittest.TestCase):
             "APPLICATIONINSIGHTS_CONNECTION_STRING": (
                 "InstrumentationKey=00000000-0000-0000-0000-000000000000"
             ),
-            "AZURE_SUBSCRIPTION_ID": "b2af20ad-98fa-4aa7-94c3-059663641d9f",
-            "AZURE_SUBSCRIPTION_NAME": "ME-MngEnvMCAP462928-anbossar-1",
+            "AZURE_SUBSCRIPTION_ID": "11111111-1111-1111-1111-111111111111",
+            "AZURE_SUBSCRIPTION_NAME": "Example Subscription",
             "AZURE_RESOURCE_GROUP": "rg-ahm-demo",
             "HEALTH_MODEL_NAME": "hm-ahm-demo",
             "HEALTH_MODEL_LOCATION": "northeurope",

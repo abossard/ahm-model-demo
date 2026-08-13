@@ -6,6 +6,7 @@ import type {
   HealthReportBody,
   HealthReportResult,
 } from "../model/types";
+import type { RootState } from "./store";
 import * as api from "./api";
 
 interface ReportState {
@@ -19,10 +20,10 @@ const initialState: ReportState = {
 export const submitHealthReport = createAsyncThunk<
   HealthReportResult,
   { readonly name: string; readonly body: HealthReportBody },
-  { rejectValue: ApiError }
->("report/submit", async ({ name, body }, { rejectWithValue }) => {
+  { state: RootState; rejectValue: ApiError }
+>("report/submit", async ({ name, body }, { getState, rejectWithValue }) => {
   try {
-    return await api.postHealthReport(name, body);
+    return await api.postHealthReport(name, body, getState().catalog.selected);
   } catch (error) {
     return rejectWithValue(error as ApiError);
   }

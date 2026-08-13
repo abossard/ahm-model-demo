@@ -13,57 +13,47 @@ resource model 'Microsoft.CloudHealth/healthmodels@2026-05-01-preview' existing 
   name: modelName
 }
 
-resource rootToJourney 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+resource relRootSendHealthReports 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-root-send-health-reports'
+  properties: {
+    parentEntityName: entityNames.root
+    childEntityName: entityNames.sendHealthReports
+    displayName: 'serves'
+  }
+}
+
+resource relRootRequestJourney 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
   name: 'r-root-request-journey'
   properties: {
     parentEntityName: entityNames.root
     childEntityName: entityNames.requestJourney
-    displayName: 'serves requests through'
+    displayName: 'serves'
   }
 }
 
-resource journeyToRuntime 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+resource relRootViewHealthModel 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
-  name: 'r-journey-runtime'
+  name: 'r-root-view-health-model'
   properties: {
-    parentEntityName: entityNames.requestJourney
-    childEntityName: entityNames.applicationRuntime
-    displayName: 'runs on'
+    parentEntityName: entityNames.root
+    childEntityName: entityNames.viewHealthModel
+    displayName: 'serves'
   }
 }
 
-resource runtimeToApp 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+resource relRootAskCopilot 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
-  name: 'r-runtime-container-app'
+  name: 'r-root-ask-copilot'
   properties: {
-    parentEntityName: entityNames.applicationRuntime
-    childEntityName: entityNames.containerApp
-    displayName: 'hosts'
+    parentEntityName: entityNames.root
+    childEntityName: entityNames.askCopilot
+    displayName: 'serves'
   }
 }
 
-resource appToPostgres 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
-  parent: model
-  name: 'r-app-postgres'
-  properties: {
-    parentEntityName: entityNames.containerApp
-    childEntityName: entityNames.postgres
-    displayName: 'persists events in'
-  }
-}
-
-resource appToQueue 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
-  parent: model
-  name: 'r-app-queue'
-  properties: {
-    parentEntityName: entityNames.containerApp
-    childEntityName: entityNames.queueStorage
-    displayName: 'enqueues events in'
-  }
-}
-
-resource rootToPlatform 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+resource relRootPlatform 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
   name: 'r-root-platform'
   properties: {
@@ -73,7 +63,7 @@ resource rootToPlatform 'Microsoft.CloudHealth/healthmodels/relationships@2026-0
   }
 }
 
-resource rootToDiscovery 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+resource relRootDiscovery 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
   name: 'r-root-discovery'
   properties: {
@@ -83,7 +73,157 @@ resource rootToDiscovery 'Microsoft.CloudHealth/healthmodels/relationships@2026-
   }
 }
 
+resource relSendHealthReportsAppHosting 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-send-health-reports-app-hosting'
+  properties: {
+    parentEntityName: entityNames.sendHealthReports
+    childEntityName: entityNames.systemAppHosting
+    displayName: 'runs on'
+  }
+}
+
+resource relRequestJourneyAppHosting 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-request-journey-app-hosting'
+  properties: {
+    parentEntityName: entityNames.requestJourney
+    childEntityName: entityNames.systemAppHosting
+    displayName: 'runs on'
+  }
+}
+
+resource relRequestJourneyDatabase 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-request-journey-database'
+  properties: {
+    parentEntityName: entityNames.requestJourney
+    childEntityName: entityNames.systemDatabase
+    displayName: 'persists through'
+  }
+}
+
+resource relRequestJourneyQueueing 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-request-journey-queueing'
+  properties: {
+    parentEntityName: entityNames.requestJourney
+    childEntityName: entityNames.systemQueueing
+    displayName: 'enqueues through'
+  }
+}
+
+resource relViewHealthModelAppHosting 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-view-health-model-app-hosting'
+  properties: {
+    parentEntityName: entityNames.viewHealthModel
+    childEntityName: entityNames.systemAppHosting
+    displayName: 'runs on'
+  }
+}
+
+resource relAskCopilotAppHosting 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-ask-copilot-app-hosting'
+  properties: {
+    parentEntityName: entityNames.askCopilot
+    childEntityName: entityNames.systemAppHosting
+    displayName: 'runs on'
+  }
+}
+
+resource relAskCopilotAgentRuntime 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-ask-copilot-agent-runtime'
+  properties: {
+    parentEntityName: entityNames.askCopilot
+    childEntityName: entityNames.systemAgentRuntime
+    displayName: 'reasons through'
+  }
+}
+
+resource relAskCopilotAiInference 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-ask-copilot-ai-inference'
+  properties: {
+    parentEntityName: entityNames.askCopilot
+    childEntityName: entityNames.systemAiInference
+    displayName: 'infers through'
+  }
+}
+
+resource relAppHostingContainerApp 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-app-hosting-container-app'
+  properties: {
+    parentEntityName: entityNames.systemAppHosting
+    childEntityName: entityNames.containerApp
+    displayName: 'hosted by'
+  }
+}
+
+resource relAppHostingAks 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-app-hosting-aks'
+  properties: {
+    parentEntityName: entityNames.systemAppHosting
+    childEntityName: entityNames.aksCluster
+    displayName: 'hosted by'
+  }
+}
+
+resource relDatabasePostgres 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-database-postgres'
+  properties: {
+    parentEntityName: entityNames.systemDatabase
+    childEntityName: entityNames.postgres
+    displayName: 'backed by'
+  }
+}
+
+resource relQueueingQueueStorage 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-queueing-queue-storage'
+  properties: {
+    parentEntityName: entityNames.systemQueueing
+    childEntityName: entityNames.queueStorage
+    displayName: 'backed by'
+  }
+}
+
+resource relAgentRuntimeAgentWeb 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-agent-runtime-agent-web'
+  properties: {
+    parentEntityName: entityNames.systemAgentRuntime
+    childEntityName: entityNames.agentWebApp
+    displayName: 'hosted by'
+  }
+}
+
+resource relAgentRuntimeAgentApp 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-agent-runtime-agent-app'
+  properties: {
+    parentEntityName: entityNames.systemAgentRuntime
+    childEntityName: entityNames.agentApp
+    displayName: 'hosted by'
+  }
+}
+
+resource relAiInferenceOpenai 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-ai-inference-openai'
+  properties: {
+    parentEntityName: entityNames.systemAiInference
+    childEntityName: entityNames.openAiAccount
+    displayName: 'backed by'
+  }
+}
+
 @description('The discovery source, now safe to attach because every hand-authored edge exists.')
 output discoverySourceId string = discoverySourceId
 
-output deterministicRelationshipCount int = 7
+output deterministicRelationshipCount int = 21

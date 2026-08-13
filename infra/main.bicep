@@ -231,26 +231,6 @@ module web 'modules/container-app.bicep' = {
         value: healthModelLocation
       }
       {
-        name: 'EXPECTED_SUBSCRIPTION_ID'
-        value: subscription().subscriptionId
-      }
-      {
-        name: 'EXPECTED_SUBSCRIPTION_NAME'
-        value: subscription().displayName
-      }
-      {
-        name: 'EXPECTED_RESOURCE_GROUP'
-        value: rg.name
-      }
-      {
-        name: 'EXPECTED_MODEL_NAME'
-        value: healthModelName
-      }
-      {
-        name: 'EXPECTED_MODEL_LOCATION'
-        value: healthModelLocation
-      }
-      {
         name: 'HEALTH_COPILOT_ENABLED'
         value: 'true'
       }
@@ -379,8 +359,12 @@ module healthModelAccess 'modules/health-model-access.bicep' = {
     modelPrincipalId: healthModel.outputs.modelPrincipalId
     monitoredResources: {
       containerApp: web.outputs.containerAppId
+      aksCluster: aks.outputs.clusterId
       postgres: foundation.outputs.postgresId
       storage: storage.outputs.storageId
+      agentWebApp: agentWeb.outputs.containerAppId
+      agentApp: agentApp.outputs.containerAppId
+      openAi: copilot.outputs.aiAccountId
       logAnalyticsWorkspace: foundation.outputs.workspaceId
       applicationInsights: foundation.outputs.applicationInsightsId
     }

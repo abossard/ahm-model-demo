@@ -5,7 +5,7 @@ import os
 import uvicorn
 from agent_framework.openai import OpenAIChatClient
 from agent_framework_ag_ui import add_agent_framework_fastapi_endpoint
-from azure.identity import ManagedIdentityCredential
+from azure.identity import DefaultAzureCredential
 from azure.monitor.opentelemetry import configure_azure_monitor
 from fastapi import FastAPI
 
@@ -21,12 +21,12 @@ def _required(name: str) -> str:
 
 
 def build_app() -> FastAPI:
-    client_id = _required("AZURE_CLIENT_ID")
+    client_id = os.environ.get("AZURE_CLIENT_ID", "").strip() or None
     endpoint = _required("AZURE_OPENAI_ENDPOINT")
     deployment_name = _required("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
     health_base_url = _required("HEALTH_APP_BASE_URL")
 
-    credential = ManagedIdentityCredential(client_id=client_id)
+    credential = DefaultAzureCredential(managed_identity_client_id=client_id)
     monitor_connection = os.environ.get(
         "APPLICATIONINSIGHTS_CONNECTION_STRING",
         "",
@@ -65,7 +65,7 @@ def build_app() -> FastAPI:
     async def ready() -> dict[str, str]:
         return {
             "status": "ready",
-            "authentication": "managed-identity",
+            "authentication": "default-azure-credential",
             "deployment": deployment_name,
         }
 

@@ -1,16 +1,16 @@
-FROM node:20.19.5-bookworm-slim AS dependencies
+FROM node:26-bookworm-slim AS dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 
-FROM node:20.19.5-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 WORKDIR /app
 ENV COPILOTKIT_TELEMETRY_DISABLED=true
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-FROM node:20.19.5-bookworm-slim AS runtime
+FROM node:26-bookworm-slim AS runtime
 ENV NODE_ENV=production COPILOTKIT_TELEMETRY_DISABLED=true
 WORKDIR /app
 RUN groupadd --system --gid 10001 copilot \

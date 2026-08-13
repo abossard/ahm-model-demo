@@ -63,16 +63,6 @@ spec:
               value: {{.Env.HEALTH_MODEL_NAME}}
             - name: HEALTH_MODEL_LOCATION
               value: {{.Env.HEALTH_MODEL_LOCATION}}
-            - name: EXPECTED_SUBSCRIPTION_ID
-              value: {{.Env.AZURE_SUBSCRIPTION_ID}}
-            - name: EXPECTED_SUBSCRIPTION_NAME
-              value: {{.Env.AZURE_SUBSCRIPTION_NAME}}
-            - name: EXPECTED_RESOURCE_GROUP
-              value: {{.Env.AZURE_RESOURCE_GROUP}}
-            - name: EXPECTED_MODEL_NAME
-              value: {{.Env.HEALTH_MODEL_NAME}}
-            - name: EXPECTED_MODEL_LOCATION
-              value: {{.Env.HEALTH_MODEL_LOCATION}}
             - name: HEALTH_COPILOT_ENABLED
               value: "true"
             - name: AGENT_WEB_ORIGIN

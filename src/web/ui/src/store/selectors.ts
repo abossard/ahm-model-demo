@@ -5,7 +5,17 @@ import type {
   HealthModel,
   HealthReportResult,
   JourneyResult,
+  ModelCatalog,
+  ModelRef,
 } from "../model/types";
+
+export function selectModelCatalog(state: RootState): AsyncState<ModelCatalog> {
+  return state.catalog.data;
+}
+
+export function selectSelectedModel(state: RootState): ModelRef | null {
+  return state.catalog.selected;
+}
 
 export function selectModel(state: RootState): AsyncState<HealthModel> {
   return state.model.data;

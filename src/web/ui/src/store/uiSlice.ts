@@ -1,4 +1,5 @@
 import { createSlice } from "@reduxjs/toolkit";
+import { chooseModel } from "./catalogSlice";
 
 interface UiState {
   readonly panelOpen: boolean;
@@ -23,6 +24,11 @@ const uiSlice = createSlice({
     toggleChat: (state) => {
       state.chatOpen = !state.chatOpen;
     },
+  },
+  extraReducers: (builder) => {
+    builder.addCase(chooseModel, (state) => {
+      state.panelOpen = false;
+    });
   },
 });
 

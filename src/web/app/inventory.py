@@ -10,6 +10,85 @@ from config import (
 from dto import entity_dto, entity_order, field, relationship_dto, scalar
 
 
+SELECTOR_KEYS = ("model", "resourceGroup")
+
+
+def resource_group_from_id(resource_id):
+    if not isinstance(resource_id, str):
+        return None
+    parts = resource_id.split("/")
+    for index in range(len(parts) - 1):
+        if parts[index].casefold() == "resourcegroups":
+            return parts[index + 1] or None
+    return None
+
+
+def model_ref(item):
+    resource_id = field(item, "id")
+    properties = field(item, "properties")
+    return {
+        "id": resource_id,
+        "name": field(item, "name"),
+        "resourceGroup": resource_group_from_id(resource_id),
+        "location": field(item, "location"),
+        "provisioningState": scalar(
+            field(properties, "provisioning_state", "provisioningState")
+        ),
+    }
+
+
+def fallback_ref(resource_group, model_name):
+    return {
+        "id": None,
+        "name": model_name,
+        "resourceGroup": resource_group,
+        "location": None,
+        "provisioningState": None,
+    }
+
+
+def sort_refs(refs):
+    return sorted(
+        refs,
+        key=lambda item: (
+            (item["resourceGroup"] or "").casefold(),
+            (item["name"] or "").casefold(),
+        ),
+    )
+
+
+def list_models(health_client, resource_group, model_name):
+    fallback = [fallback_ref(resource_group, model_name)]
+    try:
+        items = list(health_client.health_models.list_by_subscription())
+    except Exception:
+        return fallback
+    refs = [
+        model_ref(item)
+        for item in items
+        if field(item, "name") and resource_group_from_id(field(item, "id"))
+    ]
+    return sort_refs(refs) or fallback
+
+
+def resolve_selection(query_params, list_models_now, resource_group, model_name):
+    requested = {key: query_params.get(key) for key in SELECTOR_KEYS}
+    if not any(requested.values()):
+        return (resource_group, model_name), None
+    match = next(
+        (
+            item
+            for item in list_models_now()
+            if item["name"] == requested["model"]
+            and item["resourceGroup"] == requested["resourceGroup"]
+        ),
+        None,
+    )
+    if match is None:
+        return None, "unknown_model"
+    return (match["resourceGroup"], match["name"]), None
+
+
 def read_inventory(health_client, resource_group, model_name):
     model = health_client.health_models.get(resource_group, model_name)
     entities = list(

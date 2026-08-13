@@ -1,7 +1,46 @@
 import type { JSX } from "react";
 import { useAppDispatch, useAppSelector } from "../store/store";
-import { selectLastObservedAt, selectModel } from "../store/selectors";
+import {
+  selectLastObservedAt,
+  selectModel,
+  selectModelCatalog,
+  selectSelectedModel,
+} from "../store/selectors";
 import { loadHealthModel } from "../store/modelSlice";
+import { chooseModel } from "../store/catalogSlice";
+import type { ModelRef } from "../model/types";
+
+function ModelPicker(): JSX.Element | null {
+  const dispatch = useAppDispatch();
+  const catalog = useAppSelector(selectModelCatalog);
+  const selected = useAppSelector(selectSelectedModel);
+
+  if (catalog.kind !== "success" || !selected) return null;
+
+  const key = (item: ModelRef): string => `${item.resourceGroup}/${item.name}`;
+
+  return (
+    <label className="model-picker">
+      <span className="model-picker__label">Health model</span>
+      <select
+        data-testid="model-picker"
+        value={key(selected)}
+        onChange={(event) => {
+          const next = catalog.value.models.find(
+            (item) => key(item) === event.target.value,
+          );
+          if (next) dispatch(chooseModel(next));
+        }}
+      >
+        {catalog.value.models.map((item) => (
+          <option key={key(item)} value={key(item)}>
+            {item.name} ({item.resourceGroup})
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 export function StatusBar(): JSX.Element {
   const dispatch = useAppDispatch();
@@ -16,6 +55,7 @@ export function StatusBar(): JSX.Element {
           <span data-testid="status-error-message">{model.error.message}</span>
         </div>
         <div className="status-meta">
+          <ModelPicker />
           <span data-testid="status-last-observed">
             {lastObservedAt
               ? `Last successful observation ${lastObservedAt}`
@@ -47,6 +87,7 @@ export function StatusBar(): JSX.Element {
         ) : null}
       </div>
       <div className="status-meta">
+        <ModelPicker />
         {model.kind === "loading" ? <span className="muted">Loading…</span> : null}
         {model.kind === "success" ? (
           <span data-testid="model-observed">Observed {model.value.observedAt}</span>

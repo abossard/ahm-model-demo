@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 import unittest
@@ -19,8 +20,12 @@ def mimetype(response):
     return response.headers["content-type"].split(";")[0].strip()
 
 
-SUBSCRIPTION_ID = "b2af20ad-98fa-4aa7-94c3-059663641d9f"
-SUBSCRIPTION_NAME = "ME-MngEnvMCAP462928-anbossar-1"
+# Split so the pattern does not match its own source and exempt this file from the sweep.
+ACCOUNT_IDENTIFIER = r"ME-" r"MngEnv\w*|@microsoft\.com"
+
+
+SUBSCRIPTION_ID = "11111111-1111-1111-1111-111111111111"
+SUBSCRIPTION_NAME = "Example Subscription"
 RESOURCE_GROUP = "rg-ahm-demo"
 MODEL_NAME = "hm-ahm-demo"
 MODEL_LOCATION = "northeurope"
@@ -136,6 +141,7 @@ class SourceLayoutContractTests(unittest.TestCase):
                 "scripts/demo-failure.sh",
                 "scripts/hooks/postprovision.sh",
                 "scripts/hooks/preprovision.sh",
+                "scripts/local-env.sh",
             ],
         )
         self.assertEqual(
@@ -199,14 +205,53 @@ class StoryboardSceneGuideTests(unittest.TestCase):
         self.assertEqual(unresolved_icons, {})
         self.assertTrue((scenes / "icons" / "README.md").is_file())
 
+    def test_tracked_files_carry_no_real_subscription_identity(self):
+        # Everything git tracks is shareable, so a subscription id or account name may only
+        # appear as an obviously synthetic placeholder (one repeated hex digit).
+        root = Path(__file__).parents[1]
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=root,
+            capture_output=True,
+            check=True,
+        ).stdout.split(b"\0")
+        account = re.compile(ACCOUNT_IDENTIFIER, re.IGNORECASE)
+        subscription = re.compile(
+            r"SUBSCRIPTION_ID\W{0,4}"
+            r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+            re.IGNORECASE,
+        )
+        synthetic = re.compile(r"^([0-9a-f])\1{7}(-\1{4}){3}-\1{12}$", re.IGNORECASE)
+
+        leaked = {}
+        for raw in tracked:
+            name = raw.decode()
+            path = root / name
+            if not name or not path.is_file() or name.startswith("docs/scenes/icons/"):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            hits = sorted(
+                set(account.findall(text))
+                | {
+                    guid
+                    for guid in subscription.findall(text)
+                    if not synthetic.match(guid)
+                }
+            )
+            if hits:
+                leaked[name] = hits
+
+        self.assertEqual(leaked, {})
+
     def test_scene_guides_carry_no_environment_identifiers(self):
         # The guides are handed to an external video crew, so they must describe the demo
         # without naming the account it runs in.
         forbidden = re.compile(
             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-            r"|ME-MngEnv\w*"
-            r"|anbossar"
-            r"|@microsoft\.com"
+            r"|" + ACCOUNT_IDENTIFIER + r""
             r"|/subscriptions/"
             r"|AZURE_MUTATION_COORDINATION_ACK",
             re.IGNORECASE,
@@ -242,17 +287,42 @@ class StoryboardSceneGuideTests(unittest.TestCase):
         self.assertEqual(len(set(names.values())), 1, names)
 
 
+def catalog_model(name, resource_group, location, provisioning_state="Succeeded"):
+    return ns(
+        id=(
+            f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/{resource_group}"
+            f"/providers/Microsoft.CloudHealth/healthmodels/{name}"
+        ),
+        name=name,
+        location=location,
+        properties=ns(provisioning_state=provisioning_state),
+    )
+
+
 class RecordingHealthModels:
     def __init__(self, model):
         self.model = model
         self.calls = []
+        self.list_calls = []
         self.error = None
+        self.list_error = None
+        self.catalog = [
+            catalog_model("hm-zulu", RESOURCE_GROUP, MODEL_LOCATION),
+            catalog_model(MODEL_NAME, RESOURCE_GROUP, MODEL_LOCATION),
+            catalog_model("hm-alpha", "rg-other", "westeurope", "Creating"),
+        ]
 
     def get(self, *args, **kwargs):
         self.calls.append((args, kwargs))
         if self.error:
             raise self.error
         return self.model
+
+    def list_by_subscription(self, *args, **kwargs):
+        self.list_calls.append((args, kwargs))
+        if self.list_error:
+            raise self.list_error
+        return iter(list(self.catalog))
 
 
 class RecordingEntities:
@@ -371,11 +441,11 @@ class HealthReportUiTests(unittest.TestCase):
         cls.env_patch = mock.patch.dict(os.environ, cls.environment, clear=False)
         cls.env_patch.start()
 
-        cls.credential = mock.Mock(name="managed_identity_credential")
+        cls.credential = mock.Mock(name="default_azure_credential")
         cls.bootstrap_cloud = mock.Mock(name="bootstrap_cloud_client")
         cls.patchers = [
             mock.patch(
-                "azure.identity.ManagedIdentityCredential",
+                "azure.identity.DefaultAzureCredential",
                 return_value=cls.credential,
             ),
             mock.patch(
@@ -409,6 +479,8 @@ class HealthReportUiTests(unittest.TestCase):
         ):
             sys.modules.pop(name, None)
         cls.module = importlib.import_module("main")
+        cls.inventory = importlib.import_module("inventory")
+        cls.config = importlib.import_module("config")
 
     @classmethod
     def tearDownClass(cls):
@@ -1394,23 +1466,238 @@ class HealthReportUiTests(unittest.TestCase):
         self.assertNotIn("unsafe-inline", root.headers["Content-Security-Policy"])
         self.assert_security_headers(root)
 
-    def test_runtime_scope_rejects_every_mismatch(self):
+    def test_missing_runtime_config_fails_at_import_and_names_every_gap(self):
         exact = dict(self.environment)
-        cases = {
-            "AZURE_SUBSCRIPTION_ID": "00000000-0000-0000-0000-000000000000",
-            "AZURE_SUBSCRIPTION_NAME": "another-subscription",
-            "AZURE_RESOURCE_GROUP": "another-rg",
-            "HEALTH_MODEL_NAME": "another-model",
-            "HEALTH_MODEL_LOCATION": "eastus",
+        required = self.module.require_runtime_config(exact)
+        self.assertEqual(
+            required,
+            {
+                "subscription_id": SUBSCRIPTION_ID,
+                "resource_group": RESOURCE_GROUP,
+                "model_name": MODEL_NAME,
+            },
+        )
+
+        for key in (
+            "APPLICATIONINSIGHTS_CONNECTION_STRING",
+            "AZURE_RESOURCE_GROUP",
+            "AZURE_SUBSCRIPTION_ID",
+            "HEALTH_MODEL_NAME",
+            "POSTGRES_HOST",
+            "POSTGRES_USER",
+            "QUEUE_URL",
+        ):
+            for label, blanked in (("absent", None), ("blank", "   ")):
+                with self.subTest(key=key, case=label):
+                    candidate = dict(exact)
+                    if blanked is None:
+                        candidate.pop(key)
+                    else:
+                        candidate[key] = blanked
+                    with self.assertRaises(RuntimeError) as caught:
+                        self.module.require_runtime_config(candidate)
+                    self.assertIn(key, str(caught.exception))
+
+        stripped = {
+            key: value
+            for key, value in exact.items()
+            if key not in self.config.REQUIRED_ENV
         }
+        with self.assertRaises(RuntimeError) as caught:
+            self.module.require_runtime_config(stripped)
+        message = str(caught.exception)
+        for key in self.config.REQUIRED_ENV:
+            self.assertIn(key, message)
 
-        for key, wrong_value in cases.items():
-            with self.subTest(key=key):
-                candidate = {**exact, key: wrong_value}
-                with self.assertRaises(RuntimeError):
-                    self.module.validate_runtime_scope(candidate)
+    def test_arm_id_yields_its_resource_group_or_nothing(self):
+        cases = [
+            (
+                f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg-other"
+                f"/providers/Microsoft.CloudHealth/healthmodels/hm-alpha",
+                "rg-other",
+            ),
+            (
+                f"/subscriptions/{SUBSCRIPTION_ID}/resourcegroups/rg-lower"
+                f"/providers/Microsoft.CloudHealth/healthmodels/hm-alpha",
+                "rg-lower",
+            ),
+            (f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups", None),
+            ("", None),
+            (None, None),
+        ]
 
-        self.module.validate_runtime_scope(exact)
+        for resource_id, expected in cases:
+            with self.subTest(resource_id=resource_id):
+                self.assertEqual(
+                    self.inventory.resource_group_from_id(resource_id), expected
+                )
+
+    def test_catalog_lists_every_visible_model_in_stable_order(self):
+        response = self.client.get("/api/health-models")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(set(payload), {"models", "default"})
+        self.assertEqual(
+            payload["default"],
+            {"resourceGroup": RESOURCE_GROUP, "name": MODEL_NAME},
+        )
+        self.assertEqual(
+            [(item["resourceGroup"], item["name"]) for item in payload["models"]],
+            [
+                (RESOURCE_GROUP, MODEL_NAME),
+                (RESOURCE_GROUP, "hm-zulu"),
+                ("rg-other", "hm-alpha"),
+            ],
+        )
+        self.assertEqual(
+            set(payload["models"][0]),
+            {"id", "name", "resourceGroup", "location", "provisioningState"},
+        )
+        self.assertEqual(payload["models"][2]["location"], "westeurope")
+        self.assertEqual(payload["models"][2]["provisioningState"], "Creating")
+
+    def test_unreadable_or_empty_catalog_degrades_to_the_configured_model(self):
+        from azure.core.exceptions import HttpResponseError
+
+        forbidden = HttpResponseError(message="forbidden")
+        forbidden.status_code = 403
+        unauthorized = HttpResponseError(message="unauthorized")
+        unauthorized.status_code = 401
+        cases = [
+            ("forbidden", forbidden, None),
+            ("unauthorized", unauthorized, None),
+            ("empty", None, []),
+        ]
+
+        for label, error, catalog in cases:
+            with self.subTest(label=label):
+                self.cloud.health_models.list_error = error
+                if catalog is not None:
+                    self.cloud.health_models.catalog = catalog
+                response = self.client.get("/api/health-models")
+                self.cloud.health_models.list_error = None
+
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertEqual(
+                    payload["models"],
+                    [
+                        {
+                            "id": None,
+                            "name": MODEL_NAME,
+                            "resourceGroup": RESOURCE_GROUP,
+                            "location": None,
+                            "provisioningState": None,
+                        }
+                    ],
+                )
+                self.assertEqual(
+                    payload["default"],
+                    {"resourceGroup": RESOURCE_GROUP, "name": MODEL_NAME},
+                )
+
+    def test_selected_model_retargets_every_read_and_write(self):
+        selector = "?model=hm-alpha&resourceGroup=rg-other"
+
+        model = self.client.get(f"/api/health-model{selector}")
+        self.assertEqual(model.status_code, 200)
+        self.assertEqual(
+            self.cloud.entities.list_calls[-1][0][:2], ("rg-other", "hm-alpha")
+        )
+        self.assertEqual(
+            self.cloud.relationships.calls[-1][0][:2], ("rg-other", "hm-alpha")
+        )
+
+        detail = self.client.get(f"/api/entities/api{selector}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(
+            self.cloud.entities.get_calls[-1][0][:2], ("rg-other", "hm-alpha")
+        )
+        self.assertEqual(
+            self.cloud.entities.history_calls[-1][0][:2], ("rg-other", "hm-alpha")
+        )
+
+        report = self.client.post(
+            f"/api/entities/api/health-reports{selector}",
+            json={
+                "signalName": SIGNAL_NAME,
+                "healthState": "Healthy",
+                "value": 1,
+                "expiresInMinutes": 30,
+                "reasonPreset": "recovery",
+            },
+        )
+        self.assertEqual(report.status_code, 202)
+        self.assertEqual(
+            self.cloud.entities.ingest_calls[-1][0][:2], ("rg-other", "hm-alpha")
+        )
+
+    def test_undiscoverable_model_is_rejected_before_any_sdk_call(self):
+        cases = [
+            ("unknown name", "?model=hm-ghost&resourceGroup=rg-other"),
+            ("wrong group", f"?model={MODEL_NAME}&resourceGroup=rg-ghost"),
+            ("group only", "?resourceGroup=rg-other"),
+            ("name only", "?model=hm-alpha"),
+        ]
+
+        for label, selector in cases:
+            with self.subTest(label=label):
+                self.cloud.entities.list_calls.clear()
+                self.cloud.entities.ingest_calls.clear()
+                self.cloud.entities.history_calls.clear()
+
+                response = self.client.get(f"/api/health-model{selector}")
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error"]["code"], "unknown_model")
+
+                report = self.client.post(
+                    f"/api/entities/api/health-reports{selector}",
+                    json={
+                        "signalName": SIGNAL_NAME,
+                        "healthState": "Healthy",
+                        "value": 1,
+                        "expiresInMinutes": 30,
+                        "reasonPreset": "recovery",
+                    },
+                )
+                self.assertEqual(report.status_code, 400)
+                self.assertEqual(report.json()["error"]["code"], "unknown_model")
+
+                self.assertEqual(self.cloud.entities.list_calls, [])
+                self.assertEqual(self.cloud.entities.ingest_calls, [])
+                self.assertEqual(self.cloud.entities.history_calls, [])
+
+    def test_absent_selector_keeps_the_configured_model(self):
+        response = self.client.get("/api/health-model")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.cloud.entities.list_calls[-1][0][:2], (RESOURCE_GROUP, MODEL_NAME)
+        )
+        self.assertEqual(self.cloud.health_models.list_calls, [])
+
+    def test_detail_allows_only_the_model_selector_query(self):
+        cases = [
+            ("history control", "?top=5", 400),
+            ("model only", "?model=hm-alpha", 400),
+            ("group only", "?resourceGroup=rg-other", 400),
+            ("valid selector", "?model=hm-alpha&resourceGroup=rg-other", 200),
+            (
+                "selector plus extra",
+                "?model=hm-alpha&resourceGroup=rg-other&top=5",
+                400,
+            ),
+        ]
+
+        for label, selector, expected in cases:
+            with self.subTest(label=label):
+                response = self.client.get(f"/api/entities/api{selector}")
+                self.assertEqual(response.status_code, expected)
+                if expected == 400 and label in ("history control", "selector plus extra"):
+                    self.assertEqual(
+                        response.json()["error"]["code"], "unsupported_query"
+                    )
 
     def test_ac10_success_and_error_payload_contracts_match_baseline(self):
         model = self.client.get("/api/health-model")

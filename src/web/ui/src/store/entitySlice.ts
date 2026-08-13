@@ -1,6 +1,8 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
 import type { Draft } from "@reduxjs/toolkit";
 import type { ApiError, AsyncState, EntityDetail } from "../model/types";
+import type { RootState } from "./store";
+import { chooseModel } from "./catalogSlice";
 import * as api from "./api";
 
 interface EntityState {
@@ -16,10 +18,10 @@ const initialState: EntityState = {
 export const loadEntityDetail = createAsyncThunk<
   EntityDetail,
   string,
-  { rejectValue: ApiError }
->("entity/load", async (name, { rejectWithValue }) => {
+  { state: RootState; rejectValue: ApiError }
+>("entity/load", async (name, { getState, rejectWithValue }) => {
   try {
-    return await api.fetchEntityDetail(name);
+    return await api.fetchEntityDetail(name, getState().catalog.selected);
   } catch (error) {
     return rejectWithValue(error as ApiError);
   }
@@ -40,6 +42,10 @@ const entitySlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
+      .addCase(chooseModel, (state) => {
+        state.selectedName = null;
+        state.detail = { kind: "idle" };
+      })
       .addCase(loadEntityDetail.pending, (state) => {
         state.detail = { kind: "loading" };
       })

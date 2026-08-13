@@ -2,15 +2,19 @@ import os
 from pathlib import Path
 
 
-EXPECTED_SUBSCRIPTION_ID = os.environ.get(
-    "EXPECTED_SUBSCRIPTION_ID", "b2af20ad-98fa-4aa7-94c3-059663641d9f"
+# Every deployed value comes from the selected azd environment: bicep writes its outputs back
+# into `.azure/<env>/.env`, and both hosting paths inject them as container env vars. Nothing
+# here may name a stack, so an unconfigured app fails at import instead of silently reporting
+# health into whichever environment a stale literal happened to name.
+REQUIRED_ENV = (
+    "APPLICATIONINSIGHTS_CONNECTION_STRING",
+    "AZURE_RESOURCE_GROUP",
+    "AZURE_SUBSCRIPTION_ID",
+    "HEALTH_MODEL_NAME",
+    "POSTGRES_HOST",
+    "POSTGRES_USER",
+    "QUEUE_URL",
 )
-EXPECTED_SUBSCRIPTION_NAME = os.environ.get(
-    "EXPECTED_SUBSCRIPTION_NAME", "ME-MngEnvMCAP462928-anbossar-1"
-)
-EXPECTED_RESOURCE_GROUP = os.environ.get("EXPECTED_RESOURCE_GROUP", "rg-ahm-demo")
-EXPECTED_MODEL_NAME = os.environ.get("EXPECTED_MODEL_NAME", "hm-ahm-demo")
-EXPECTED_MODEL_LOCATION = os.environ.get("EXPECTED_MODEL_LOCATION", "northeurope")
 CLOUDHEALTH_API_VERSION = "2026-05-01-preview"
 CANONICAL_SIGNAL_NAME = "web-ui-health-report"
 RESERVED_SIGNAL_NAME = "database-connectivity-probe"
@@ -90,23 +94,20 @@ UI_DIST_DIR = Path(
 )
 
 
-def validate_runtime_scope(environment):
-    expected = {
-        "AZURE_SUBSCRIPTION_ID": EXPECTED_SUBSCRIPTION_ID,
-        "AZURE_SUBSCRIPTION_NAME": EXPECTED_SUBSCRIPTION_NAME,
-        "AZURE_RESOURCE_GROUP": EXPECTED_RESOURCE_GROUP,
-        "HEALTH_MODEL_NAME": EXPECTED_MODEL_NAME,
-        "HEALTH_MODEL_LOCATION": EXPECTED_MODEL_LOCATION,
-    }
-    mismatches = [
-        key
-        for key, value in expected.items()
-        if environment.get(key, "").strip().lower() != value.lower()
-    ]
-    if mismatches:
+def require_runtime_config(environment):
+    missing = [name for name in REQUIRED_ENV if not environment.get(name, "").strip()]
+    if missing:
         raise RuntimeError(
-            "Health Model runtime scope mismatch: " + ",".join(sorted(mismatches))
+            "Missing Health Model runtime configuration: "
+            + ",".join(missing)
+            + ". Run 'azd env select <name>' then 'scripts/local-env.sh' to export the "
+            "selected environment, or redeploy so the platform injects them."
         )
+    return {
+        "subscription_id": environment["AZURE_SUBSCRIPTION_ID"].strip(),
+        "resource_group": environment["AZURE_RESOURCE_GROUP"].strip(),
+        "model_name": environment["HEALTH_MODEL_NAME"].strip(),
+    }
 
 
 def copilot_enabled(environment):

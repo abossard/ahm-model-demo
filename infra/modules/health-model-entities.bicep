@@ -27,7 +27,7 @@ resource root 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' =
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 500
+      x: 560
       y: 40
     }
     alerts: {
@@ -48,15 +48,18 @@ resource root 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' =
   }
 }
 
+// Layer 1 - user flows. The paths a user takes through the app. No signals of their own; they
+// aggregate the system flows they depend on. Entity name kept as 'request-journey' because
+// scripts/demo-failure.sh polls it by name.
 resource requestJourney 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
   name: 'request-journey'
   properties: {
-    displayName: 'Request Journey'
+    displayName: 'Do A Queue Thingy'
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 300
+      x: 320
       y: 190
     }
     signalGroups: {
@@ -68,16 +71,16 @@ resource requestJourney 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-
   }
 }
 
-resource applicationRuntime 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+resource sendHealthReports 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
-  name: 'application-runtime'
+  name: 'flow-send-health-reports'
   properties: {
-    displayName: 'Application Runtime'
+    displayName: 'Send Health Reports'
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 300
-      y: 330
+      x: 80
+      y: 190
     }
     signalGroups: {
       dependencies: {
@@ -88,6 +91,151 @@ resource applicationRuntime 'Microsoft.CloudHealth/healthmodels/entities@2026-05
   }
 }
 
+resource viewHealthModel 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'flow-view-health-model'
+  properties: {
+    displayName: 'View Health Model'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 560
+      y: 190
+    }
+    signalGroups: {
+      dependencies: {
+        aggregationType: 'WorstOf'
+        ignoreUnknown: true
+      }
+    }
+  }
+}
+
+resource askCopilot 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'flow-ask-copilot'
+  properties: {
+    displayName: 'Ask the Health Copilot'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 800
+      y: 190
+    }
+    signalGroups: {
+      dependencies: {
+        aggregationType: 'WorstOf'
+        ignoreUnknown: true
+      }
+    }
+  }
+}
+
+// Layer 2 - system flows. Internal processes that enable the user flows. Each is a single entity
+// with as many parents as it has user flows; the CloudHealth graph is a DAG, so a shared system
+// flow is never duplicated per flow.
+resource systemAppHosting 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'system-app-hosting'
+  properties: {
+    displayName: 'App Hosting'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 200
+      y: 340
+    }
+    signalGroups: {
+      dependencies: {
+        aggregationType: 'WorstOf'
+        ignoreUnknown: true
+      }
+    }
+  }
+}
+
+resource systemDatabase 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'system-database'
+  properties: {
+    displayName: 'Database'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 440
+      y: 340
+    }
+    signalGroups: {
+      dependencies: {
+        aggregationType: 'WorstOf'
+        ignoreUnknown: true
+      }
+    }
+  }
+}
+
+resource systemQueueing 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'system-queueing'
+  properties: {
+    displayName: 'Queueing'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 640
+      y: 340
+    }
+    signalGroups: {
+      dependencies: {
+        aggregationType: 'WorstOf'
+        ignoreUnknown: true
+      }
+    }
+  }
+}
+
+resource systemAgentRuntime 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'system-agent-runtime'
+  properties: {
+    displayName: 'Agent Runtime'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 840
+      y: 340
+    }
+    signalGroups: {
+      dependencies: {
+        aggregationType: 'WorstOf'
+        ignoreUnknown: true
+      }
+    }
+  }
+}
+
+resource systemAiInference 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'system-ai-inference'
+  properties: {
+    displayName: 'AI Inference'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 1060
+      y: 340
+    }
+    signalGroups: {
+      dependencies: {
+        aggregationType: 'WorstOf'
+        ignoreUnknown: true
+      }
+    }
+  }
+}
+
+// Layer 3 - the Azure resources. Every health signal in the model lives here.
+
 resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
   name: 'container-app'
@@ -96,8 +244,8 @@ resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 300
-      y: 470
+      x: 80
+      y: 490
     }
     signalGroups: {
       dependencies: {
@@ -270,8 +418,8 @@ resource postgres 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-previe
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 140
-      y: 650
+      x: 460
+      y: 490
     }
     signalGroups: {
       azureResource: {
@@ -398,8 +546,8 @@ resource queueStorage 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 460
-      y: 650
+      x: 640
+      y: 490
     }
     signalGroups: {
       azureResource: {
@@ -484,6 +632,246 @@ resource queueStorage 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
   }
 }
 
+resource aksCluster 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'aks-cluster'
+  properties: {
+    displayName: 'AKS Cluster'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 260
+      y: 490
+    }
+    signalGroups: {
+      azureResource: {
+        authenticationSetting: authenticationSettingName
+        azureResourceId: monitoredResources.aksCluster
+        azureResourceKind: 'AksCluster'
+        resourceHealth: {
+          enabled: 'Enabled'
+        }
+        signals: [
+          {
+            name: 'node-cpu'
+            displayName: 'Node CPU usage'
+            signalKind: 'AzureResourceMetric'
+            metricNamespace: 'Microsoft.ContainerService/managedClusters'
+            metricName: 'node_cpu_usage_percentage'
+            aggregationType: 'Average'
+            dataUnit: 'Percent'
+            timeGrain: 'PT5M'
+            refreshInterval: 'PT5M'
+            evaluationRules: {
+              unhealthyRule: {
+                operator: 'GreaterThan'
+                threshold: 95
+              }
+            }
+          }
+          {
+            name: 'node-memory'
+            displayName: 'Node memory working set'
+            signalKind: 'AzureResourceMetric'
+            metricNamespace: 'Microsoft.ContainerService/managedClusters'
+            metricName: 'node_memory_working_set_percentage'
+            aggregationType: 'Average'
+            dataUnit: 'Percent'
+            timeGrain: 'PT5M'
+            refreshInterval: 'PT5M'
+            evaluationRules: {
+              unhealthyRule: {
+                operator: 'GreaterThan'
+                threshold: 95
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+
+resource agentWebApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'agent-web-app'
+  properties: {
+    displayName: 'Agent Web Container App'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 840
+      y: 490
+    }
+    signalGroups: {
+      azureResource: {
+        authenticationSetting: authenticationSettingName
+        azureResourceId: monitoredResources.agentWebApp
+        azureResourceKind: 'ContainerApp'
+        resourceHealth: {
+          enabled: 'Enabled'
+        }
+        signals: [
+          {
+            name: 'cpu-percentage'
+            displayName: 'CPU percentage'
+            signalKind: 'AzureResourceMetric'
+            metricNamespace: 'Microsoft.App/containerApps'
+            metricName: 'CpuPercentage'
+            aggregationType: 'Average'
+            dataUnit: 'Percent'
+            timeGrain: 'PT1M'
+            refreshInterval: 'PT1M'
+            evaluationRules: {
+              unhealthyRule: {
+                operator: 'GreaterThan'
+                threshold: 95
+              }
+            }
+          }
+          {
+            name: 'memory-percentage'
+            displayName: 'Memory percentage'
+            signalKind: 'AzureResourceMetric'
+            metricNamespace: 'Microsoft.App/containerApps'
+            metricName: 'MemoryPercentage'
+            aggregationType: 'Average'
+            dataUnit: 'Percent'
+            timeGrain: 'PT1M'
+            refreshInterval: 'PT1M'
+            evaluationRules: {
+              unhealthyRule: {
+                operator: 'GreaterThan'
+                threshold: 95
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+
+resource agentAppEntity 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'agent-app'
+  properties: {
+    displayName: 'Agent Backend Container App'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 1020
+      y: 490
+    }
+    signalGroups: {
+      azureResource: {
+        authenticationSetting: authenticationSettingName
+        azureResourceId: monitoredResources.agentApp
+        azureResourceKind: 'ContainerApp'
+        resourceHealth: {
+          enabled: 'Enabled'
+        }
+        signals: [
+          {
+            name: 'cpu-percentage'
+            displayName: 'CPU percentage'
+            signalKind: 'AzureResourceMetric'
+            metricNamespace: 'Microsoft.App/containerApps'
+            metricName: 'CpuPercentage'
+            aggregationType: 'Average'
+            dataUnit: 'Percent'
+            timeGrain: 'PT1M'
+            refreshInterval: 'PT1M'
+            evaluationRules: {
+              unhealthyRule: {
+                operator: 'GreaterThan'
+                threshold: 95
+              }
+            }
+          }
+          {
+            name: 'memory-percentage'
+            displayName: 'Memory percentage'
+            signalKind: 'AzureResourceMetric'
+            metricNamespace: 'Microsoft.App/containerApps'
+            metricName: 'MemoryPercentage'
+            aggregationType: 'Average'
+            dataUnit: 'Percent'
+            timeGrain: 'PT1M'
+            refreshInterval: 'PT1M'
+            evaluationRules: {
+              unhealthyRule: {
+                operator: 'GreaterThan'
+                threshold: 95
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+
+resource openAiAccount 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'openai-account'
+  properties: {
+    displayName: 'Azure OpenAI Account'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 1200
+      y: 490
+    }
+    signalGroups: {
+      azureResource: {
+        authenticationSetting: authenticationSettingName
+        azureResourceId: monitoredResources.openAi
+        azureResourceKind: 'CognitiveServicesAccount'
+        resourceHealth: {
+          enabled: 'Enabled'
+        }
+        signals: [
+          {
+            name: 'client-errors'
+            displayName: 'Client errors'
+            signalKind: 'AzureResourceMetric'
+            metricNamespace: 'Microsoft.CognitiveServices/accounts'
+            metricName: 'ClientErrors'
+            aggregationType: 'Total'
+            dataUnit: 'Count'
+            timeGrain: 'PT5M'
+            refreshInterval: 'PT5M'
+            evaluationRules: {
+              unhealthyRule: {
+                operator: 'GreaterThan'
+                threshold: 10
+              }
+            }
+          }
+          {
+            name: 'server-errors'
+            displayName: 'Server errors'
+            signalKind: 'AzureResourceMetric'
+            metricNamespace: 'Microsoft.CognitiveServices/accounts'
+            metricName: 'ServerErrors'
+            aggregationType: 'Total'
+            dataUnit: 'Count'
+            timeGrain: 'PT5M'
+            refreshInterval: 'PT5M'
+            evaluationRules: {
+              unhealthyRule: {
+                operator: 'GreaterThan'
+                threshold: 0
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+
 resource platformContext 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
   name: 'platform-context'
@@ -492,7 +880,7 @@ resource platformContext 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01
     healthObjective: 99
     impact: 'Limited'
     canvasPosition: {
-      x: 700
+      x: 1300
       y: 190
     }
     signalGroups: {
@@ -562,7 +950,7 @@ resource discoveredTopology 'Microsoft.CloudHealth/healthmodels/entities@2026-05
     healthObjective: 99
     impact: 'Suppressed'
     canvasPosition: {
-      x: 900
+      x: 1520
       y: 190
     }
     signalGroups: {
@@ -576,13 +964,24 @@ resource discoveredTopology 'Microsoft.CloudHealth/healthmodels/entities@2026-05
 
 output entityNames object = {
   root: root.name
+  sendHealthReports: sendHealthReports.name
   requestJourney: requestJourney.name
-  applicationRuntime: applicationRuntime.name
+  viewHealthModel: viewHealthModel.name
+  askCopilot: askCopilot.name
+  systemAppHosting: systemAppHosting.name
+  systemDatabase: systemDatabase.name
+  systemQueueing: systemQueueing.name
+  systemAgentRuntime: systemAgentRuntime.name
+  systemAiInference: systemAiInference.name
   containerApp: containerApp.name
+  aksCluster: aksCluster.name
   postgres: postgres.name
   queueStorage: queueStorage.name
+  agentWebApp: agentWebApp.name
+  agentApp: agentAppEntity.name
+  openAiAccount: openAiAccount.name
   platformContext: platformContext.name
   discoveredTopology: discoveredTopology.name
 }
 
-output deterministicEntityCount int = 8
+output deterministicEntityCount int = 19

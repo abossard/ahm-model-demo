@@ -1,6 +1,13 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { healthModel, installStubs, journeyResponse, reportResponse } from "./fixture";
+import {
+  healthModel,
+  installStubs,
+  journeyResponse,
+  modelCatalog,
+  paymentsHealthModel,
+  reportResponse,
+} from "./fixture";
 
 const STATE_PALETTE: Readonly<
   Record<string, { readonly border: string; readonly fill: string; readonly word: string }>
@@ -106,15 +113,15 @@ test("AC6 — activating a node opens the detail panel by pointer and keyboard",
   await bootTopology(page);
 
   const pointerRequest = page.waitForRequest(
-    (req) => req.url().endsWith("/api/entities/svc-a") && req.method() === "GET",
+    (req) => new URL(req.url()).pathname === "/api/entities/svc-a" && req.method() === "GET",
   );
   await page.locator(`.react-flow__node[data-id="svc-a"] .entity-node`).click();
-  await pointerRequest;
+  expect(new URL((await pointerRequest).url()).searchParams.get("model")).toBe("hm-demo");
   await expect(page.getByTestId("entity-panel")).toBeVisible();
   await expect(page.getByTestId("entity-name")).toHaveText("Service A");
 
   const keyboardRequest = page.waitForRequest(
-    (req) => req.url().endsWith("/api/entities/svc-e") && req.method() === "GET",
+    (req) => new URL(req.url()).pathname === "/api/entities/svc-e" && req.method() === "GET",
   );
   await page.locator(`.react-flow__node[data-id="svc-e"] .entity-node`).focus();
   await page.keyboard.press("Enter");
@@ -146,7 +153,8 @@ test("report submission posts the exact body and shows the receipt", async ({ pa
   await page.selectOption("#report-reason", { label: "Maintenance window" });
 
   const postRequest = page.waitForRequest(
-    (req) => req.url().endsWith("/api/entities/svc-a/health-reports") && req.method() === "POST",
+    (req) =>
+      new URL(req.url()).pathname === "/api/entities/svc-a/health-reports" && req.method() === "POST",
   );
   await page.getByRole("button", { name: "Submit report" }).click();
   const body = (await postRequest).postDataJSON();
@@ -219,4 +227,70 @@ test("health-model failure shows error and retry recovers the topology", async (
 
   await page.waitForSelector(".react-flow__node .entity-node");
   await expect(page.locator(".react-flow__node")).toHaveCount(healthModel.entities.length);
+});
+
+test("AC8 — the status bar lists every discoverable model with the active one selected", async ({ page }) => {
+  await bootTopology(page);
+
+  const picker = page.getByTestId("model-picker");
+  await expect(picker).toBeVisible();
+  await expect(picker.locator("option")).toHaveCount(modelCatalog.models.length);
+  await expect(picker.locator("option")).toHaveText(
+    modelCatalog.models.map((item) => `${item.name} (${item.resourceGroup})`),
+  );
+  await expect(picker).toHaveValue("rg-demo/hm-demo");
+  await expect(page.getByTestId("model-name")).toHaveText(healthModel.model.name);
+});
+
+test("AC9 — choosing a model refetches it, closes the entity panel and redraws the topology", async ({ page }) => {
+  await installStubs(page, {
+    healthModelFails: false,
+    modelsByName: { "hm-demo": healthModel, "hm-payments": paymentsHealthModel },
+  });
+  await page.goto("/");
+  await page.waitForSelector(".react-flow__node .entity-node");
+
+  await page.locator(`.react-flow__node[data-id="svc-a"] .entity-node`).click();
+  await expect(page.getByTestId("entity-panel")).toBeVisible();
+
+  const refetch = page.waitForRequest(
+    (req) => req.url().includes("/api/health-model?") && req.url().includes("model=hm-payments"),
+  );
+  await page.getByTestId("model-picker").selectOption("rg-demo/hm-payments");
+  const url = new URL((await refetch).url());
+  expect(url.searchParams.get("model")).toBe("hm-payments");
+  expect(url.searchParams.get("resourceGroup")).toBe("rg-demo");
+
+  await expect(page.getByTestId("entity-panel")).toHaveCount(0);
+  await expect(page.getByTestId("model-name")).toHaveText(paymentsHealthModel.model.name);
+  await expect(page.locator(".react-flow__node")).toHaveCount(paymentsHealthModel.entities.length);
+});
+
+test("AC10 — the selected model round-trips through the URL on reload", async ({ page }) => {
+  await installStubs(page, {
+    healthModelFails: false,
+    modelsByName: { "hm-demo": healthModel, "hm-payments": paymentsHealthModel },
+  });
+  await page.goto("/");
+  await page.waitForSelector(".react-flow__node .entity-node");
+  await page.getByTestId("model-picker").selectOption("rg-demo/hm-payments");
+  await expect(page.getByTestId("model-name")).toHaveText(paymentsHealthModel.model.name);
+
+  const shared = page.url();
+  expect(new URL(shared).search).toBe("?model=hm-payments&resourceGroup=rg-demo");
+
+  const requests: string[] = [];
+  page.on("request", (req) => {
+    if (req.url().includes("/api/health-model?") || req.url().endsWith("/api/health-model")) {
+      requests.push(req.url());
+    }
+  });
+  await page.goto(shared);
+  await page.waitForSelector(".react-flow__node .entity-node");
+
+  expect(requests.length).toBeGreaterThan(0);
+  const first = new URL(requests[0]!);
+  expect(first.searchParams.get("model")).toBe("hm-payments");
+  expect(first.searchParams.get("resourceGroup")).toBe("rg-demo");
+  await expect(page.locator(".react-flow__node")).toHaveCount(paymentsHealthModel.entities.length);
 });

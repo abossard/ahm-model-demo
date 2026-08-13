@@ -6,6 +6,7 @@ import type {
   HealthModel,
   HealthReportResult,
   JourneyResult,
+  ModelCatalog,
 } from "../src/model/types";
 
 function signal(
@@ -187,6 +188,8 @@ function errorEnvelope(code: string, message: string) {
 export interface StubState {
   healthModelFails: boolean;
   model?: HealthModel;
+  catalog?: ModelCatalog;
+  modelsByName?: Readonly<Record<string, HealthModel>>;
 }
 
 const shardStates: readonly Entity["healthState"][] = [
@@ -229,12 +232,76 @@ export const wideHealthModel: HealthModel = {
   })),
 };
 
+export const modelCatalog: ModelCatalog = {
+  models: [
+    {
+      id: "/subscriptions/x/resourceGroups/rg-demo/providers/Microsoft.CloudHealth/healthmodels/hm-demo",
+      name: "hm-demo",
+      resourceGroup: "rg-demo",
+      location: "northeurope",
+      provisioningState: "Succeeded",
+    },
+    {
+      id: "/subscriptions/x/resourceGroups/rg-demo/providers/Microsoft.CloudHealth/healthmodels/hm-payments",
+      name: "hm-payments",
+      resourceGroup: "rg-demo",
+      location: "northeurope",
+      provisioningState: "Succeeded",
+    },
+    {
+      id: "/subscriptions/x/resourceGroups/rg-eu/providers/Microsoft.CloudHealth/healthmodels/hm-eu",
+      name: "hm-eu",
+      resourceGroup: "rg-eu",
+      location: "westeurope",
+      provisioningState: "Creating",
+    },
+  ],
+  default: { name: "hm-demo", resourceGroup: "rg-demo" },
+};
+
+const paymentsShards: readonly Entity[] = ["Healthy", "Unhealthy"].map((healthState, index) =>
+  entity({
+    name: `pay-${index + 1}`,
+    displayName: `Payments shard ${index + 1}`,
+    healthState: healthState as Entity["healthState"],
+    parents: ["pay-root"],
+  }),
+);
+
+export const paymentsHealthModel: HealthModel = {
+  ...healthModel,
+  model: { ...healthModel.model, name: "Contoso Payments Health", healthState: "Unhealthy" },
+  observedAt: "2026-07-30T16:09:00Z",
+  entities: [
+    entity({
+      name: "pay-root",
+      displayName: "Payments",
+      healthState: "Unhealthy",
+      children: paymentsShards.map((shard) => shard.name),
+    }),
+    ...paymentsShards,
+  ],
+  relationships: paymentsShards.map((shard, index) => ({
+    name: `rp${index}`,
+    displayName: "",
+    parentEntityName: "pay-root",
+    childEntityName: shard.name,
+  })),
+};
+
 export async function installStubs(page: Page, state: StubState): Promise<void> {
   const model = state.model ?? healthModel;
+  const catalog = state.catalog ?? modelCatalog;
+  const byModel = state.modelsByName ?? {};
   await page.route("**/api/**", async (route) => {
     const request = route.request();
-    const { pathname } = new URL(request.url());
+    const { pathname, searchParams } = new URL(request.url());
     const method = request.method();
+
+    if (pathname === "/api/health-models") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(catalog) });
+      return;
+    }
 
     if (pathname === "/api/health-model") {
       if (state.healthModelFails) {
@@ -247,7 +314,8 @@ export async function installStubs(page: Page, state: StubState): Promise<void> 
         });
         return;
       }
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(model) });
+      const requested = byModel[searchParams.get("model") ?? ""] ?? model;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(requested) });
       return;
     }
 

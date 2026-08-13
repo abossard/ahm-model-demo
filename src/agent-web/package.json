@@ -10,31 +10,31 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ag-ui/client": "0.0.57",
-    "@copilotkit/react-core": "1.62.3",
-    "@copilotkit/react-ui": "1.62.3",
-    "@copilotkit/runtime": "1.62.3",
-    "hono": "4.12.10",
-    "next": "16.2.10",
-    "react": "19.2.7",
-    "react-dom": "19.2.7",
-    "zod": "3.25.76"
+    "@ag-ui/client": "^0.0.57",
+    "@copilotkit/react-core": "^1.64.2",
+    "@copilotkit/react-ui": "^1.64.2",
+    "@copilotkit/runtime": "^1.64.2",
+    "hono": "^4.12.33",
+    "next": "^16.2.12",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@axe-core/playwright": "4.12.1",
-    "@playwright/test": "1.61.1",
-    "@types/node": "20.19.25",
-    "@types/react": "19.2.7",
-    "@types/react-dom": "19.2.3",
-    "typescript": "5.9.3"
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "typescript": "^6.0.3"
   },
   "overrides": {
-    "@ag-ui/client": "0.0.57",
-    "@ag-ui/core": "0.0.57",
-    "@ag-ui/encoder": "0.0.57",
-    "@ag-ui/proto": "0.0.57"
+    "@ag-ui/client": "^0.0.57",
+    "@ag-ui/core": "^0.0.57",
+    "@ag-ui/encoder": "^0.0.57",
+    "@ag-ui/proto": "^0.0.57"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=26"
   }
 }

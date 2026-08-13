@@ -1,5 +1,6 @@
 import { configureStore } from "@reduxjs/toolkit";
 import { useDispatch, useSelector } from "react-redux";
+import { catalogReducer } from "./catalogSlice";
 import { modelReducer } from "./modelSlice";
 import { entityReducer } from "./entitySlice";
 import { reportReducer } from "./reportSlice";
@@ -8,6 +9,7 @@ import { uiReducer } from "./uiSlice";
 
 export const store = configureStore({
   reducer: {
+    catalog: catalogReducer,
     model: modelReducer,
     entity: entityReducer,
     report: reportReducer,

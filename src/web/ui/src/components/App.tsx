@@ -2,7 +2,14 @@ import { useEffect } from "react";
 import type { JSX } from "react";
 import { useAppDispatch, useAppSelector } from "../store/store";
 import { loadHealthModel } from "../store/modelSlice";
-import { selectChatOpen, selectModel, selectPanelOpen } from "../store/selectors";
+import { loadModelCatalog } from "../store/catalogSlice";
+import {
+  selectChatOpen,
+  selectModel,
+  selectPanelOpen,
+  selectSelectedModel,
+} from "../store/selectors";
+import { searchFromSelection } from "../model/selection";
 import { toggleChat } from "../store/uiSlice";
 import { StatusBar } from "./StatusBar";
 import { Topology } from "./Topology";
@@ -13,12 +20,19 @@ import { ChatPanel } from "./ChatPanel";
 export function App(): JSX.Element {
   const dispatch = useAppDispatch();
   const model = useAppSelector(selectModel);
+  const selected = useAppSelector(selectSelectedModel);
   const panelOpen = useAppSelector(selectPanelOpen);
   const chatOpen = useAppSelector(selectChatOpen);
 
   useEffect(() => {
-    void dispatch(loadHealthModel());
+    void dispatch(loadModelCatalog());
   }, [dispatch]);
+
+  useEffect(() => {
+    if (!selected) return;
+    window.history.replaceState(null, "", searchFromSelection(selected));
+    void dispatch(loadHealthModel());
+  }, [dispatch, selected]);
 
   return (
     <div className="app-shell">

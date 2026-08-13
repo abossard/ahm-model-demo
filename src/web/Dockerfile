@@ -1,11 +1,11 @@
-FROM node:24.18.0-bookworm-slim AS ui-build
+FROM node:26-bookworm-slim AS ui-build
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY ui/ ./
 RUN npm run build
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

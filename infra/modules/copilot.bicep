@@ -67,6 +67,9 @@ resource inferenceRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+@description('Account the health model reads inference signals from.')
+output aiAccountId string = aiAccount.id
+
 @description('Inference endpoint the identity may now call.')
 output azureOpenAIEndpoint string = aiAccount.properties.endpoint
 

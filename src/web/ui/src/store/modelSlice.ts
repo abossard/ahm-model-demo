@@ -1,6 +1,7 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
 import type { Draft } from "@reduxjs/toolkit";
 import type { ApiError, AsyncState, HealthModel } from "../model/types";
+import type { RootState } from "./store";
 import * as api from "./api";
 
 interface ModelState {
@@ -16,10 +17,10 @@ const initialState: ModelState = {
 export const loadHealthModel = createAsyncThunk<
   HealthModel,
   void,
-  { rejectValue: ApiError }
->("model/load", async (_arg, { rejectWithValue }) => {
+  { state: RootState; rejectValue: ApiError }
+>("model/load", async (_arg, { getState, rejectWithValue }) => {
   try {
-    return await api.fetchHealthModel();
+    return await api.fetchHealthModel(getState().catalog.selected);
   } catch (error) {
     return rejectWithValue(error as ApiError);
   }

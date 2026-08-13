@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import psycopg
 from azure.core.exceptions import HttpResponseError
-from azure.identity import ManagedIdentityCredential
+from azure.identity import DefaultAzureCredential
 from azure.mgmt.cloudhealth import CloudHealthMgmtClient
 from azure.monitor.opentelemetry import configure_azure_monitor
 from azure.storage.queue import QueueClient
@@ -33,7 +33,7 @@ from config import (
     REASON_PRESETS,
     UI_DIST_DIR,
     copilot_enabled,
-    validate_runtime_scope,
+    require_runtime_config,
 )
 from dto import (
     entity_dto,
@@ -54,18 +54,18 @@ from errors import (
 from journey import as_html
 
 
-validate_runtime_scope(os.environ)
+RUNTIME_SCOPE = require_runtime_config(os.environ)
 
-CLIENT_ID = os.environ["AZURE_CLIENT_ID"]
+CLIENT_ID = os.environ.get("AZURE_CLIENT_ID", "").strip() or None
 QUEUE_URL = os.environ["QUEUE_URL"]
 POSTGRES_HOST = os.environ["POSTGRES_HOST"]
 POSTGRES_DATABASE = os.environ.get("POSTGRES_DATABASE", "demo")
 POSTGRES_USER = os.environ["POSTGRES_USER"]
-SUBSCRIPTION_ID = os.environ["AZURE_SUBSCRIPTION_ID"]
-RESOURCE_GROUP = os.environ["AZURE_RESOURCE_GROUP"]
-MODEL_NAME = os.environ["HEALTH_MODEL_NAME"]
+SUBSCRIPTION_ID = RUNTIME_SCOPE["subscription_id"]
+RESOURCE_GROUP = RUNTIME_SCOPE["resource_group"]
+MODEL_NAME = RUNTIME_SCOPE["model_name"]
 
-credential = ManagedIdentityCredential(client_id=CLIENT_ID)
+credential = DefaultAzureCredential(managed_identity_client_id=CLIENT_ID)
 configure_azure_monitor(
     connection_string=os.environ["APPLICATIONINSIGHTS_CONNECTION_STRING"],
     credential=credential,
@@ -441,13 +441,43 @@ async def demo_request():
         return run_request_journey(span, "json", "POST", "/api/demo-request")
 
 
+@app.get("/api/health-models")
+async def health_models():
+    with tracer.start_as_current_span("healthmodel.catalog", kind=SpanKind.CLIENT) as span:
+        span.set_attribute("cloudhealth.operation", "catalog.read")
+        models = inventory.list_models(health_client, RESOURCE_GROUP, MODEL_NAME)
+        span.set_attribute("cloudhealth.model_count", len(models))
+        return JSONResponse(
+            {
+                "models": models,
+                "default": {"resourceGroup": RESOURCE_GROUP, "name": MODEL_NAME},
+            }
+        )
+
+
+def _selected_model(request):
+    return inventory.resolve_selection(
+        request.query_params,
+        lambda: inventory.list_models(health_client, RESOURCE_GROUP, MODEL_NAME),
+        RESOURCE_GROUP,
+        MODEL_NAME,
+    )
+
+
 @app.get("/api/health-model")
-async def health_model():
+async def health_model(request: Request):
+    selection, rejected = _selected_model(request)
+    if rejected:
+        return validation_error(
+            rejected, "The requested Health Model is not available to this app."
+        )
+    resource_group, model_name = selection
     with tracer.start_as_current_span("healthmodel.read", kind=SpanKind.CLIENT) as span:
         span.set_attribute("cloudhealth.operation", "inventory.read")
+        span.set_attribute("cloudhealth.model", model_name)
         try:
             return JSONResponse(
-                inventory.read_inventory(health_client, RESOURCE_GROUP, MODEL_NAME)
+                inventory.read_inventory(health_client, resource_group, model_name)
             )
         except HttpResponseError as error:
             return sdk_error_response(error, "inventory.read")
@@ -455,18 +485,28 @@ async def health_model():
 
 @app.get("/api/entities/{entity_name:path}")
 async def entity_detail(entity_name: str, request: Request):
-    if request.query_params:
+    if set(request.query_params) - set(inventory.SELECTOR_KEYS):
         return validation_error(
             "unsupported_query", "History selection is server controlled."
         )
+    selection, rejected = _selected_model(request)
+    if rejected:
+        return validation_error(
+            rejected, "The requested Health Model is not available to this app."
+        )
+    selected_group, selected_model = selection
     with tracer.start_as_current_span(
         "healthmodel.history", kind=SpanKind.CLIENT
     ) as span:
         span.set_attribute("cloudhealth.operation", "entity.history")
         span.set_attribute("cloudhealth.entity", entity_name)
+        span.set_attribute("cloudhealth.model", selected_model)
         try:
             current = inventory.find_current_entity(
-                health_client, RESOURCE_GROUP, MODEL_NAME, entity_name
+                health_client,
+                selected_group,
+                selected_model,
+                entity_name,
             )
             if current is None:
                 return error_response(
@@ -476,7 +516,7 @@ async def entity_detail(entity_name: str, request: Request):
                     False,
                 )
             exact = health_client.entities.get(
-                RESOURCE_GROUP, MODEL_NAME, entity_name
+                selected_group, selected_model, entity_name
             )
             end_at = datetime.now(timezone.utc)
             start_at = end_at - timedelta(days=7)
@@ -492,11 +532,14 @@ async def entity_detail(entity_name: str, request: Request):
                 "top": 20,
             }
             history = health_client.entities.get_history(
-                RESOURCE_GROUP, MODEL_NAME, entity_name, history_body
+                selected_group, selected_model, entity_name, history_body
             )
             try:
                 signal_history = health_client.entities.get_signal_history(
-                    RESOURCE_GROUP, MODEL_NAME, entity_name, signal_body
+                    selected_group,
+                    selected_model,
+                    entity_name,
+                    signal_body,
                 )
                 signal_items = history_items(signal_history)
             except HttpResponseError as error:
@@ -551,14 +594,21 @@ async def ingest_health_report(entity_name: str, request: Request):
     invalid = reports.validate_report_body(body)
     if invalid:
         return validation_error(*invalid)
+    selection, rejected = _selected_model(request)
+    if rejected:
+        return validation_error(
+            rejected, "The requested Health Model is not available to this app."
+        )
+    selected_group, selected_model = selection
     with tracer.start_as_current_span(
         "healthmodel.report", kind=SpanKind.CLIENT
     ) as span:
         span.set_attribute("cloudhealth.operation", "entity.report")
         span.set_attribute("cloudhealth.entity", entity_name)
+        span.set_attribute("cloudhealth.model", selected_model)
         try:
             current = inventory.find_current_entity(
-                health_client, RESOURCE_GROUP, MODEL_NAME, entity_name
+                health_client, selected_group, selected_model, entity_name
             )
             if current is None:
                 return error_response(
@@ -613,7 +663,7 @@ async def ingest_health_report(entity_name: str, request: Request):
             )
             span.set_attribute("demo.report_id", report_id)
             health_client.entities.ingest_health_report(
-                RESOURCE_GROUP, MODEL_NAME, entity_name, report
+                selected_group, selected_model, entity_name, report
             )
             submitted_at = datetime.now(timezone.utc)
             expires_at = submitted_at + timedelta(

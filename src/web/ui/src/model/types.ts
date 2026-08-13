@@ -106,6 +106,24 @@ export interface ModelSummary {
   readonly healthState: HealthState;
 }
 
+export interface ModelRef {
+  readonly id: string | null;
+  readonly name: string;
+  readonly resourceGroup: string;
+  readonly location: string | null;
+  readonly provisioningState: string | null;
+}
+
+export interface ModelDefault {
+  readonly name: string;
+  readonly resourceGroup: string;
+}
+
+export interface ModelCatalog {
+  readonly models: readonly ModelRef[];
+  readonly default: ModelDefault;
+}
+
 export interface HealthModel {
   readonly model: ModelSummary;
   readonly observedAt: string;
