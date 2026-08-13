@@ -16,6 +16,10 @@ export const stateTokens: Record<HealthState, StateTokens> = {
   Deleted: { border: "#8661c5", fill: "#f4f0fb", dot: "#8661c5", word: "Standby", dashed: false },
 };
 
+export function tokensFor(state: string): StateTokens {
+  return stateTokens[state as HealthState] ?? stateTokens.Unknown;
+}
+
 export const cardTokens = {
   ink: "#242424",
   muted: "#605e5c",

@@ -1,10 +1,10 @@
 import { useMemo } from "react";
 import type { JSX } from "react";
-import { ReactFlow, Background, MarkerType } from "@xyflow/react";
+import { ReactFlow, Background } from "@xyflow/react";
 import type { Edge, NodeTypes } from "@xyflow/react";
 import type { Entity, Relationship } from "../model/types";
 import { layoutGraph } from "../model/layout";
-import { cardTokens } from "../model/palette";
+import { cardTokens, tokensFor } from "../model/palette";
 import { useAppSelector } from "../store/store";
 import { selectSelectedName } from "../store/selectors";
 import { EntityNode, estimateNodeSize, type EntityRfNode } from "./EntityNode";
@@ -18,12 +18,13 @@ const nodeTypes: NodeTypes = { entity: EntityNode };
 
 function buildEdges(
   relationships: readonly Relationship[],
-  present: ReadonlySet<string>,
+  byName: ReadonlyMap<string, Entity>,
 ): Edge[] {
   const edges: Edge[] = [];
   for (const relationship of relationships) {
-    if (!present.has(relationship.parentEntityName)) continue;
-    if (!present.has(relationship.childEntityName)) continue;
+    const child = byName.get(relationship.childEntityName);
+    if (!byName.has(relationship.parentEntityName)) continue;
+    if (!child) continue;
     const label = relationship.displayName ?? "";
     edges.push({
       id: relationship.name,
@@ -36,8 +37,7 @@ function buildEdges(
       labelBgBorderRadius: 9,
       labelBgStyle: { fill: cardTokens.pillFill, stroke: cardTokens.pillStroke },
       labelStyle: { fill: cardTokens.ink, fontSize: 10.5 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: cardTokens.pillStroke },
-      style: { stroke: cardTokens.pillStroke },
+      style: { stroke: tokensFor(child.healthState).dot },
     });
   }
   return edges;
@@ -67,7 +67,7 @@ export function Topology({ entities, relationships }: TopologyProps): JSX.Elemen
   }, [entities, layout, selectedName]);
 
   const edges = useMemo(
-    () => buildEdges(relationships, new Set(entities.map((entity) => entity.name))),
+    () => buildEdges(relationships, new Map(entities.map((entity) => [entity.name, entity]))),
     [entities, relationships],
   );
 

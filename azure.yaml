@@ -32,6 +32,7 @@ services:
       path: ./Dockerfile
       remoteBuild: true
   web-aks:
+    resourceName: ${AZURE_AKS_CLUSTER_NAME}
     project: ./src/web
     language: py
     host: aks
@@ -42,6 +43,7 @@ services:
       namespace: ahm
       deploymentPath: manifests
   agent-web-aks:
+    resourceName: ${AZURE_AKS_CLUSTER_NAME}
     project: ./src/agent-web
     language: ts
     host: aks
@@ -52,6 +54,7 @@ services:
       namespace: ahm
       deploymentPath: manifests
   agent-app-aks:
+    resourceName: ${AZURE_AKS_CLUSTER_NAME}
     project: ./src/agent-app
     language: py
     host: aks
@@ -68,4 +71,5 @@ hooks:
     run: bash ./scripts/hooks/preprovision.sh
   postprovision:
     shell: sh
+    interactive: true
     run: bash ./scripts/hooks/postprovision.sh

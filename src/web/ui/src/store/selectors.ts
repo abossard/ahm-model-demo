@@ -50,3 +50,15 @@ export function selectPanelOpen(state: RootState): boolean {
 export function selectChatOpen(state: RootState): boolean {
   return state.ui.chatOpen;
 }
+
+export function selectModelRefreshing(state: RootState): boolean {
+  return state.model.refreshing;
+}
+
+export function selectAutoRefreshMs(state: RootState): number {
+  return state.ui.autoRefreshMs;
+}
+
+export function selectRefreshCountdown(state: RootState): number {
+  return state.ui.refreshCountdown;
+}

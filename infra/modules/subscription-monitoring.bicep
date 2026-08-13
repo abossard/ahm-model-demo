@@ -57,9 +57,11 @@ resource healthReportRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' =
       }
     ]
     assignableScopes: [
-      taskResourceGroupId
+      subscription().id
     ]
   }
 }
 
 output healthReportRoleDefinitionId string = healthReportRole.id
+
+output healthReportRoleName string = healthReportRoleName

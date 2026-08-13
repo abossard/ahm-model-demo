@@ -6,6 +6,7 @@ import type {
   ReportOptions,
   SignalValue,
 } from "../model/types";
+import { tokensFor } from "../model/palette";
 import { useAppDispatch, useAppSelector } from "../store/store";
 import { selectReportResult } from "../store/selectors";
 import { resetReport, submitHealthReport } from "../store/reportSlice";
@@ -42,8 +43,7 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
     dispatch(resetReport());
   }, [dispatch, entityName]);
 
-  const submit = (event: FormEvent): void => {
-    event.preventDefault();
+  const send = (state: HealthState): void => {
     if (reasonPreset === CUSTOM_PRESET) {
       const trimmed = customReason.trim();
       if (trimmed.length < REASON_MIN || trimmed.length > REASON_MAX) {
@@ -55,7 +55,7 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
     const value = options.values[valueIndex] ?? null;
     const body: HealthReportBody = {
       signalName: options.signalName,
-      healthState,
+      healthState: state,
       value,
       expiresInMinutes,
       reasonPreset,
@@ -64,8 +64,28 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
     void dispatch(submitHealthReport({ name: entityName, body }));
   };
 
+  const submit = (event: FormEvent): void => {
+    event.preventDefault();
+    send(healthState);
+  };
+
   return (
     <form className="report-form" onSubmit={submit} aria-label="Submit a health report">
+      <div className="quick-send" data-testid="quick-send" role="group" aria-label="Quick send">
+        {options.healthStates.map((state) => (
+          <button
+            key={state}
+            type="button"
+            className="quick-send__button"
+            data-testid={`quick-send-${state}`}
+            style={{ backgroundColor: tokensFor(state).dot }}
+            onClick={() => send(state)}
+          >
+            {state}
+          </button>
+        ))}
+      </div>
+
       <div className="field">
         <label htmlFor="report-state">Health state</label>
         <select

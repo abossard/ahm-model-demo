@@ -42,6 +42,12 @@ const RELATIONSHIPS: readonly Relationship[] = [
 
 const SIZE: NodeSize = { width: 240, height: 120 };
 
+const HEIGHTS: Readonly<Record<string, number>> = { a: 120, b: 220, c: 120, d: 60, orphan: 300 };
+
+function sizeOf(item: Entity): NodeSize {
+  return { width: 240, height: HEIGHTS[item.name] ?? 120 };
+}
+
 describe("layoutGraph", () => {
   it("places every node with finite coordinates and every parent above its children", () => {
     const { positions } = layoutGraph(ENTITIES, RELATIONSHIPS, () => SIZE);
@@ -66,5 +72,13 @@ describe("layoutGraph", () => {
         `${relationship.parentEntityName} above ${relationship.childEntityName}`,
       ).toBe(true);
     }
+  });
+
+  it("top aligns same-rank nodes whose heights differ", () => {
+    const { positions } = layoutGraph(ENTITIES, RELATIONSHIPS, sizeOf);
+
+    expect(positions.get("a")?.y).toBe(positions.get("orphan")?.y);
+    expect(positions.get("b")?.y).toBe(positions.get("d")?.y);
+    expect(positions.get("c")?.y).toBeGreaterThan(positions.get("b")?.y ?? 0);
   });
 });

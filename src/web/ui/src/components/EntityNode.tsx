@@ -3,7 +3,7 @@ import type { JSX, KeyboardEvent } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
 import type { Entity, HealthState, SignalValue } from "../model/types";
-import { cardTokens, stateTokens } from "../model/palette";
+import { cardTokens, tokensFor } from "../model/palette";
 import { useAppDispatch } from "../store/store";
 import { selectEntity } from "../store/entitySlice";
 import { openPanel } from "../store/uiSlice";
@@ -48,7 +48,7 @@ function pickIcon(label: string): string {
 }
 
 function StateDot({ state }: { readonly state: HealthState }): JSX.Element {
-  const token = stateTokens[state];
+  const token = tokensFor(state);
   return (
     <svg className="entity-node__dot" viewBox="0 0 12 12" aria-hidden="true">
       <circle cx="6" cy="6" r="6" fill={token.dot} />
@@ -90,7 +90,7 @@ export type EntityRfNode = Node<EntityNodeData, "entity">;
 
 function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
   const { entity, selected } = data;
-  const token = stateTokens[entity.healthState];
+  const token = tokensFor(entity.healthState);
   const dispatch = useAppDispatch();
   const name = entity.displayName || entity.name;
 
@@ -157,7 +157,7 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
                     className="entity-node__row-value"
                     style={{
                       fontWeight: healthy ? 400 : 600,
-                      color: healthy ? cardTokens.muted : stateTokens[signal.healthState].dot,
+                      color: healthy ? cardTokens.muted : tokensFor(signal.healthState).dot,
                     }}
                   >
                     {value}
@@ -177,7 +177,7 @@ export const EntityNode = memo(EntityNodeImpl);
 
 export function estimateNodeSize(entity: Entity): { readonly width: number; readonly height: number } {
   const name = entity.displayName || entity.name;
-  const pillWidth = 34 + stateTokens[entity.healthState].word.length * 6.6;
+  const pillWidth = 34 + tokensFor(entity.healthState).word.length * 6.6;
   const nameAvail = Math.max(80, CARD_WIDTH - 34 - pillWidth - 12);
   const nameLines = Math.max(1, Math.ceil((name.length * 6.9) / nameAvail));
   const headerHeight = 24 + Math.max(20, nameLines * 17, 18);

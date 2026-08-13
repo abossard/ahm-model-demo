@@ -39,12 +39,20 @@ export function layoutGraph(
 
   dagre.layout(graph);
 
+  const rankTop = new Map<number, number>();
+  for (const entity of entities) {
+    const node = graph.node(entity.name);
+    const top = node.y - node.height / 2;
+    const current = rankTop.get(node.y);
+    if (current === undefined || top < current) rankTop.set(node.y, top);
+  }
+
   const positions = new Map<string, Point>();
   for (const entity of entities) {
     const node = graph.node(entity.name);
     positions.set(entity.name, {
       x: node.x - node.width / 2,
-      y: node.y - node.height / 2,
+      y: rankTop.get(node.y) ?? node.y - node.height / 2,
     });
   }
 

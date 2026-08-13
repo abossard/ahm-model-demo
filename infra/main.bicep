@@ -420,6 +420,7 @@ output APPLICATIONINSIGHTS_CONNECTION_STRING string = rbac.outputs.applicationIn
 output AZURE_OPENAI_ENDPOINT string = copilot.outputs.azureOpenAIEndpoint
 output AZURE_OPENAI_CHAT_DEPLOYMENT_NAME string = copilot.outputs.azureOpenAIDeploymentName
 output AZURE_HEALTH_MODEL_NAME string = healthModel.outputs.modelName
+output HEALTH_REPORT_ROLE_NAME string = subscriptionMonitoring.outputs.healthReportRoleName
 output HEALTH_MODEL_LOCATION string = healthModelLocation
 output SERVICE_WEB_NAME string = web.outputs.containerAppName
 output SERVICE_WEB_FQDN string = web.outputs.fqdn

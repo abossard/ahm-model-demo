@@ -1,14 +1,84 @@
+import { useEffect } from "react";
 import type { JSX } from "react";
 import { useAppDispatch, useAppSelector } from "../store/store";
 import {
+  selectAutoRefreshMs,
   selectLastObservedAt,
   selectModel,
   selectModelCatalog,
+  selectModelRefreshing,
+  selectRefreshCountdown,
   selectSelectedModel,
 } from "../store/selectors";
 import { loadHealthModel } from "../store/modelSlice";
 import { chooseModel } from "../store/catalogSlice";
+import { setAutoRefresh, tickRefreshCountdown } from "../store/uiSlice";
 import type { ModelRef } from "../model/types";
+
+const AUTO_REFRESH_CHOICES: readonly { readonly ms: number; readonly label: string }[] = [
+  { ms: 0, label: "Off" },
+  { ms: 60_000, label: "Every 1 min" },
+  { ms: 300_000, label: "Every 5 min" },
+];
+
+function RefreshControls(): JSX.Element {
+  const dispatch = useAppDispatch();
+  const refreshing = useAppSelector(selectModelRefreshing);
+  const autoRefreshMs = useAppSelector(selectAutoRefreshMs);
+  const countdown = useAppSelector(selectRefreshCountdown);
+
+  useEffect(() => {
+    if (autoRefreshMs <= 0) return;
+    const timer = setInterval(() => void dispatch(loadHealthModel()), autoRefreshMs);
+    return () => clearInterval(timer);
+  }, [dispatch, autoRefreshMs]);
+
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const timer = setTimeout(() => {
+      dispatch(tickRefreshCountdown());
+      if (countdown === 1) void dispatch(loadHealthModel());
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [dispatch, countdown]);
+
+  return (
+    <>
+      {countdown > 0 ? (
+        <span data-testid="refresh-countdown" className="refresh-countdown">
+          {countdown}
+        </span>
+      ) : null}
+      {refreshing ? (
+        <span data-testid="refresh-indicator" className="muted" role="status">
+          Refreshing…
+        </span>
+      ) : null}
+      <button
+        type="button"
+        className="refresh-now"
+        data-testid="refresh-now"
+        onClick={() => void dispatch(loadHealthModel())}
+      >
+        Refresh
+      </button>
+      <label className="model-picker">
+        <span className="model-picker__label">Auto-refresh</span>
+        <select
+          data-testid="auto-refresh"
+          value={autoRefreshMs}
+          onChange={(event) => dispatch(setAutoRefresh(Number(event.target.value)))}
+        >
+          {AUTO_REFRESH_CHOICES.map((choice) => (
+            <option key={choice.ms} value={choice.ms}>
+              {choice.label}
+            </option>
+          ))}
+        </select>
+      </label>
+    </>
+  );
+}
 
 function ModelPicker(): JSX.Element | null {
   const dispatch = useAppDispatch();
@@ -69,6 +139,7 @@ export function StatusBar(): JSX.Element {
           >
             Retry
           </button>
+          <RefreshControls />
         </div>
       </div>
     );
@@ -92,6 +163,7 @@ export function StatusBar(): JSX.Element {
         {model.kind === "success" ? (
           <span data-testid="model-observed">Observed {model.value.observedAt}</span>
         ) : null}
+        <RefreshControls />
       </div>
     </div>
   );
