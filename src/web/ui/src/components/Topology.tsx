@@ -83,11 +83,9 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
   const fitViewRef = useRef(fitView);
   fitViewRef.current = fitView;
 
-  const childful = useMemo(
-    () => new Set(relationships.map((item) => item.parentEntityName)),
-    [relationships],
-  );
-
+  // Single source of truth for "has something to collapse": `descendantCounts` already drops
+  // self-loops and edges pointing at absent entities, so a node cannot get a toggle that hides
+  // nothing.
   const descendants = useMemo(
     () => descendantCounts(entities, relationships),
     [entities, relationships],
@@ -102,10 +100,10 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
     () =>
       new Map(
         visible.entities.map(
-          (item) => [item.name, estimateNodeSize(item, childful.has(item.name))] as const,
+          (item) => [item.name, estimateNodeSize(item, descendants.has(item.name))] as const,
         ),
       ),
-    [visible.entities, childful],
+    [visible.entities, descendants],
   );
 
   const [layout, setLayout] = useState<GraphLayout>(EMPTY_LAYOUT);
@@ -121,7 +119,7 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
 
     void engine
       .run(visible.entities, visible.relationships, (item) =>
-        estimateNodeSize(item, childful.has(item.name)),
+        estimateNodeSize(item, descendants.has(item.name)),
       )
       .then((next) => {
         if (cancelled) return;
@@ -135,7 +133,7 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
     return () => {
       cancelled = true;
     };
-  }, [layoutId, sortKey, sortReversed, visible, sizes, childful, fitOn]);
+  }, [layoutId, sortKey, sortReversed, visible, sizes, descendants, fitOn]);
 
   useEffect(() => {
     if (fitToken === 0) return;
@@ -179,13 +177,13 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
             entity,
             selected: entity.name === selectedName,
             highlighted: entity.name === highlightedName,
-            hasChildren: childful.has(entity.name),
+            hasChildren: descendants.has(entity.name),
             collapsed: collapsed.includes(entity.name),
             hiddenCount: descendants.get(entity.name) ?? 0,
           },
         };
       }),
-    [visible, layout, sizes, selectedName, highlightedName, childful, collapsed, descendants],
+    [visible, layout, sizes, selectedName, highlightedName, collapsed, descendants],
   );
 
   const edges = useMemo(

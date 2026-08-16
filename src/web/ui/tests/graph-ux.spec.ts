@@ -312,7 +312,17 @@ test("AC21 — layout, collapse and search changes are announced politely", asyn
   await expect(status).toContainText("Showing Service B");
 });
 
-test("AC23 — the built app loads with no Content Security Policy violation", async ({ page }) => {
+/**
+ * Verbatim copy of `PARENT_SECURITY_POLICY` in `src/web/app/config.py`. The Playwright preview server
+ * serves no CSP header of its own, so without injecting the real policy this test would pass on an
+ * unprotected page and prove nothing.
+ */
+const SERVED_CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self'; " +
+  "img-src 'self' data:; connect-src 'self'; base-uri 'none'; " +
+  "frame-src 'self'; frame-ancestors 'none'";
+
+test("AC23 — the built app runs clean under the policy the server actually sends", async ({ page }) => {
   const violations: string[] = [];
   page.on("console", (message) => {
     if (/content security policy/i.test(message.text())) violations.push(message.text());
@@ -321,11 +331,54 @@ test("AC23 — the built app loads with no Content Security Policy violation", a
     if (/content security policy/i.test(error.message)) violations.push(error.message);
   });
 
+  // Attach the production policy to the document, which the preview server omits.
+  await page.route("**/*", async (route) => {
+    const response = await route.fetch();
+    const headers = response.headers();
+    if ((headers["content-type"] ?? "").includes("text/html")) {
+      headers["content-security-policy"] = SERVED_CSP;
+    }
+    await route.fulfill({ response, headers });
+  });
+
   await boot(page);
   await chooseLayout(page, "elk-layered");
   await chooseLayout(page, "d3-force");
+  await openSearch(page);
+  await page.getByTestId("search-input").fill("Service");
+  await page.keyboard.press("Escape");
 
   expect(violations).toEqual([]);
+});
+
+test("AC23b — the injected policy is real enough to block a violation", async ({ page }) => {
+  // Guards the test above: if the header were not actually applied, this inline script would run and
+  // the CSP proof would be vacuous.
+  const violations: string[] = [];
+  page.on("console", (message) => {
+    if (/content security policy/i.test(message.text())) violations.push(message.text());
+  });
+
+  await page.route("**/*", async (route) => {
+    const response = await route.fetch();
+    const headers = response.headers();
+    if ((headers["content-type"] ?? "").includes("text/html")) {
+      headers["content-security-policy"] = SERVED_CSP;
+    }
+    await route.fulfill({ response, headers });
+  });
+
+  await boot(page);
+  const ran = await page.evaluate(() => {
+    const marker = "__csp_probe__";
+    const script = document.createElement("script");
+    script.textContent = `window.${marker} = true;`;
+    document.head.appendChild(script);
+    return Boolean((window as unknown as Record<string, boolean>)[marker]);
+  });
+
+  expect(ran).toBe(false);
+  expect(violations.length).toBeGreaterThan(0);
 });
 
 test("AC24 — collapsing keeps the viewport where the user left it", async ({ page }) => {
@@ -422,4 +475,68 @@ test("AC31 — the Last-observed sort reverses on screen", async ({ page }) => {
   await page.getByTestId("sort-reverse").click();
   await page.waitForTimeout(900);
   expect(await rankOrder()).toEqual([...forward].reverse());
+});
+
+test("AC12b — a self-loop or an edge to an absent entity offers no collapse toggle", async ({ page }) => {
+  // Degenerate relationships must not be mistaken for something worth collapsing.
+  await installStubs(page, {
+    healthModelFails: false,
+    model: {
+      ...healthModel,
+      relationships: [
+        ...healthModel.relationships,
+        { name: "r5-self", displayName: null, parentEntityName: "svc-e", childEntityName: "svc-e" },
+        { name: "r6-ghost", displayName: null, parentEntityName: "svc-f", childEntityName: "absent" },
+      ],
+    },
+  });
+  await page.goto("/");
+  await page.waitForSelector(".react-flow__node .entity-node");
+
+  for (const name of ["svc-e", "svc-f"]) {
+    await expect(
+      page.locator(`.react-flow__node[data-id="${name}"] [data-testid="collapse-toggle"]`),
+    ).toHaveCount(0);
+  }
+  // The real parent still has one.
+  await expect(
+    page.locator('.react-flow__node[data-id="svc-a"] [data-testid="collapse-toggle"]'),
+  ).toHaveCount(1);
+});
+
+test("AC16b — a relationship result frames both endpoints and a signal result frames its owner", async ({
+  page,
+}) => {
+  await boot(page);
+
+  await openSearch(page);
+  await page.getByTestId("search-input").fill("reads");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("search-overlay")).toHaveCount(0);
+  // `r1` is svc-a → svc-b, so the child is highlighted and both endpoints stay in view.
+  await expect(page.locator('.react-flow__node[data-id="svc-b"] .entity-node')).toHaveAttribute(
+    "data-highlighted",
+    "true",
+  );
+  await page.waitForTimeout(1200);
+  const framed = await page.evaluate(() => {
+    const pane = document.querySelector(".react-flow__pane") as HTMLElement;
+    const rect = pane.getBoundingClientRect();
+    return ["svc-a", "svc-b"].map((id) => {
+      const node = document.querySelector(`.react-flow__node[data-id="${id}"]`) as HTMLElement;
+      const box = node.getBoundingClientRect();
+      return box.right > rect.left && box.left < rect.right && box.bottom > rect.top;
+    });
+  });
+  expect(framed).toEqual([true, true]);
+
+  await openSearch(page);
+  await page.getByTestId("search-input").fill("Queue");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("search-overlay")).toHaveCount(0);
+  // The `queue` signal belongs to svc-b, so its owner is what gets highlighted.
+  await expect(page.locator('.react-flow__node[data-id="svc-b"] .entity-node')).toHaveAttribute(
+    "data-highlighted",
+    "true",
+  );
 });

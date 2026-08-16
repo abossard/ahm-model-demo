@@ -99,6 +99,18 @@ describe("searchGraph", () => {
     expect(searchGraph("svc-b", ENTITIES, RELATIONSHIPS).length).toBeGreaterThan(0);
   });
 
+  it("never marks a slice that does not equal the query, even under locale folding", () => {
+    // "İ" lowercases to two UTF-16 units, so an index found in the folded string can address
+    // different characters in the original.
+    const folding: readonly Entity[] = [entity("svc-x", "İX")];
+
+    for (const hit of searchGraph("x", folding, [])) {
+      const marked = hit.label.slice(hit.matchStart, hit.matchStart + hit.matchLength);
+      expect(marked === "" || marked.toLocaleLowerCase() === "x").toBe(true);
+    }
+    expect(searchGraph("x", folding, [])).toHaveLength(1);
+  });
+
   it("returns nothing for a blank or unmatched query", () => {
     expect(searchGraph("   ", ENTITIES, RELATIONSHIPS)).toEqual([]);
     expect(searchGraph("zzzz", ENTITIES, RELATIONSHIPS)).toEqual([]);
