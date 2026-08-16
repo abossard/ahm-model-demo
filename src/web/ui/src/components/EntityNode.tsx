@@ -6,7 +6,7 @@ import type { Entity, HealthState, SignalValue } from "../model/types";
 import { cardTokens, tokensFor } from "../model/palette";
 import { useAppDispatch } from "../store/store";
 import { selectEntity } from "../store/entitySlice";
-import { openPanel } from "../store/uiSlice";
+import { announce, openPanel, toggleCollapse } from "../store/uiSlice";
 
 export const CARD_WIDTH = 260;
 
@@ -84,12 +84,68 @@ function formatValue(value: SignalValue): string {
 export interface EntityNodeData extends Record<string, unknown> {
   readonly entity: Entity;
   readonly selected: boolean;
+  readonly highlighted: boolean;
+  readonly hasChildren: boolean;
+  readonly collapsed: boolean;
+  readonly hiddenCount: number;
+}
+
+const CHEVRON = `<path d="M4 6.5 8 10.5 12 6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`;
+
+function CollapseToggle({
+  entity,
+  collapsed,
+  hiddenCount,
+}: {
+  readonly entity: Entity;
+  readonly collapsed: boolean;
+  readonly hiddenCount: number;
+}): JSX.Element {
+  const dispatch = useAppDispatch();
+  const token = tokensFor(entity.healthState);
+  const name = entity.displayName || entity.name;
+  const label = collapsed
+    ? `Expand ${name}, ${hiddenCount} hidden`
+    : `Collapse ${name}`;
+
+  return (
+    <button
+      type="button"
+      className="entity-node__collapse"
+      data-testid="collapse-toggle"
+      style={{ borderColor: token.border, backgroundColor: token.fill }}
+      aria-expanded={!collapsed}
+      aria-label={label}
+      onClick={(event) => {
+        event.stopPropagation();
+        dispatch(toggleCollapse(entity.name));
+        dispatch(
+          announce(
+            collapsed ? `${name} expanded.` : `${name} collapsed, ${hiddenCount} nodes hidden.`,
+          ),
+        );
+      }}
+    >
+      <span
+        className={`entity-node__chevron${collapsed ? " is-collapsed" : ""}`}
+        aria-hidden="true"
+        dangerouslySetInnerHTML={{
+          __html: `<svg viewBox="0 0 16 16" width="16" height="16">${CHEVRON}</svg>`,
+        }}
+      />
+      {collapsed ? (
+        <span className="entity-node__hidden" data-testid="hidden-count">
+          {hiddenCount}
+        </span>
+      ) : null}
+    </button>
+  );
 }
 
 export type EntityRfNode = Node<EntityNodeData, "entity">;
 
 function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
-  const { entity, selected } = data;
+  const { entity, selected, highlighted, hasChildren, collapsed, hiddenCount } = data;
   const token = tokensFor(entity.healthState);
   const dispatch = useAppDispatch();
   const name = entity.displayName || entity.name;
@@ -110,22 +166,24 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
   );
 
   return (
-    <div
-      className={`entity-node${selected ? " is-selected" : ""}`}
-      data-entity={entity.name}
-      role="button"
-      tabIndex={0}
-      aria-label={`${name} — ${entity.healthState}`}
-      style={{
-        width: CARD_WIDTH,
-        borderStyle: token.dashed ? "dashed" : "solid",
-        borderColor: token.border,
-        backgroundColor: token.fill,
-      }}
-      onClick={activate}
-      onKeyDown={onKeyDown}
-    >
+    <div className="entity-node-shell" style={{ width: CARD_WIDTH }}>
       <Handle type="target" position={Position.Top} className="entity-node__handle" />
+      <div
+        className={`entity-node${selected ? " is-selected" : ""}${highlighted ? " is-highlighted" : ""}`}
+        data-entity={entity.name}
+        data-highlighted={highlighted ? "true" : undefined}
+        role="button"
+        tabIndex={0}
+        aria-label={`${name} — ${entity.healthState}`}
+        style={{
+          width: CARD_WIDTH,
+          borderStyle: token.dashed ? "dashed" : "solid",
+          borderColor: token.border,
+          backgroundColor: token.fill,
+        }}
+        onClick={activate}
+        onKeyDown={onKeyDown}
+      >
       <div className="entity-node__header">
         <span
           className="entity-node__icon"
@@ -168,6 +226,10 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
           </ul>
         </>
       ) : null}
+      </div>
+      {hasChildren ? (
+        <CollapseToggle entity={entity} collapsed={collapsed} hiddenCount={hiddenCount} />
+      ) : null}
       <Handle type="source" position={Position.Bottom} className="entity-node__handle" />
     </div>
   );
@@ -175,12 +237,15 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
 
 export const EntityNode = memo(EntityNodeImpl);
 
-export function estimateNodeSize(entity: Entity): { readonly width: number; readonly height: number } {
+export function estimateNodeSize(
+  entity: Entity,
+  hasChildren = false,
+): { readonly width: number; readonly height: number } {
   const name = entity.displayName || entity.name;
   const pillWidth = 34 + tokensFor(entity.healthState).word.length * 6.6;
   const nameAvail = Math.max(80, CARD_WIDTH - 34 - pillWidth - 12);
   const nameLines = Math.max(1, Math.ceil((name.length * 6.9) / nameAvail));
   const headerHeight = 24 + Math.max(20, nameLines * 17, 18);
   const rowsHeight = entity.signals.length > 0 ? 16 + entity.signals.length * 22 : 0;
-  return { width: CARD_WIDTH, height: headerHeight + rowsHeight };
+  return { width: CARD_WIDTH, height: headerHeight + rowsHeight + (hasChildren ? 26 : 0) };
 }

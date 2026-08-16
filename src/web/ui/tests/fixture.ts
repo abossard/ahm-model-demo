@@ -43,6 +43,7 @@ function entity(base: Partial<Entity> & Pick<Entity, "name" | "displayName" | "h
 }
 
 const svcA = entity({
+  latestEvaluationAt: "2026-07-30T16:00:00Z",
   name: "svc-a",
   displayName: "Service A",
   healthState: "Healthy",
@@ -81,6 +82,7 @@ const svcD = entity({
 });
 
 const svcE = entity({
+  latestEvaluationAt: "2026-07-28T09:00:00Z",
   name: "svc-e",
   displayName: "Service E (retired)",
   healthState: "Deleted",
@@ -89,6 +91,7 @@ const svcE = entity({
 });
 
 const svcF = entity({
+  latestEvaluationAt: "2026-07-29T12:00:00Z",
   name: "svc-f",
   displayName: "Very Long Downstream Analytics And Reporting Service Name",
   healthState: "Healthy",
