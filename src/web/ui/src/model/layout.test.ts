@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { layoutGraph, type NodeSize } from "./layout";
+import { LAYOUT_CHOICES, LAYOUT_ENGINES, layoutGraph, type NodeSize } from "./layout";
 import type { Entity, Relationship } from "./types";
 
 function entity(name: string): Entity {
@@ -80,5 +80,66 @@ describe("layoutGraph", () => {
     expect(positions.get("a")?.y).toBe(positions.get("orphan")?.y);
     expect(positions.get("b")?.y).toBe(positions.get("d")?.y);
     expect(positions.get("c")?.y).toBeGreaterThan(positions.get("b")?.y ?? 0);
+  });
+});
+
+describe("layout engine registry", () => {
+  const linked = RELATIONSHIPS.filter(
+    (item) =>
+      ENTITIES.some((entity) => entity.name === item.parentEntityName) &&
+      ENTITIES.some((entity) => entity.name === item.childEntityName),
+  );
+
+  it.each([
+    ["dagre-tb", (parent: readonly [number, number], child: readonly [number, number]) => parent[1] < child[1]],
+    ["dagre-bt", (parent: readonly [number, number], child: readonly [number, number]) => parent[1] > child[1]],
+    ["dagre-lr", (parent: readonly [number, number], child: readonly [number, number]) => parent[0] < child[0]],
+    ["dagre-rl", (parent: readonly [number, number], child: readonly [number, number]) => parent[0] > child[0]],
+  ] as const)("orients every edge correctly under %s", async (id, holds) => {
+    const { positions } = await LAYOUT_ENGINES[id].run(ENTITIES, RELATIONSHIPS, sizeOf);
+
+    for (const item of linked) {
+      const parent = positions.get(item.parentEntityName);
+      const child = positions.get(item.childEntityName);
+      expect(
+        holds([parent?.x ?? 0, parent?.y ?? 0], [child?.x ?? 0, child?.y ?? 0]),
+        `${item.parentEntityName} vs ${item.childEntityName} under ${id}`,
+      ).toBe(true);
+    }
+  });
+
+  it.each(LAYOUT_CHOICES.map((engine) => engine.id))(
+    "%s places every node through the one shared async call shape",
+    async (id) => {
+      const layout = await LAYOUT_ENGINES[id].run(ENTITIES, RELATIONSHIPS, sizeOf);
+
+      expect(layout.positions.size).toBe(ENTITIES.length);
+      for (const item of ENTITIES) {
+        const point = layout.positions.get(item.name);
+        expect(Number.isFinite(point?.x), `${item.name}.x under ${id}`).toBe(true);
+        expect(Number.isFinite(point?.y), `${item.name}.y under ${id}`).toBe(true);
+      }
+      expect(Number.isFinite(layout.width)).toBe(true);
+      expect(Number.isFinite(layout.height)).toBe(true);
+    },
+  );
+
+  it("offers exactly the seven advertised engines in order", () => {
+    expect(LAYOUT_CHOICES.map((engine) => engine.id)).toEqual([
+      "dagre-tb",
+      "dagre-bt",
+      "dagre-lr",
+      "dagre-rl",
+      "elk-layered",
+      "elk-radial",
+      "d3-force",
+    ]);
+  });
+
+  it("returns a finite width for an empty model", async () => {
+    const layout = await LAYOUT_ENGINES["dagre-tb"].run([], [], sizeOf);
+
+    expect(Number.isFinite(layout.width)).toBe(true);
+    expect(Number.isFinite(layout.height)).toBe(true);
   });
 });

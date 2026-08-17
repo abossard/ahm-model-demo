@@ -8,6 +8,8 @@ import type {
   ModelCatalog,
   ModelRef,
 } from "../model/types";
+import type { LayoutId } from "../model/layout";
+import type { SortKey } from "../model/ordering";
 
 export function selectModelCatalog(state: RootState): AsyncState<ModelCatalog> {
   return state.catalog.data;
@@ -61,4 +63,40 @@ export function selectAutoRefreshMs(state: RootState): number {
 
 export function selectRefreshCountdown(state: RootState): number {
   return state.ui.refreshCountdown;
+}
+
+export function selectLayoutId(state: RootState): LayoutId {
+  return state.ui.layoutId;
+}
+
+export function selectSortKey(state: RootState): SortKey {
+  return state.ui.sortKey;
+}
+
+export function selectSortReversed(state: RootState): boolean {
+  return state.ui.sortReversed;
+}
+
+export function selectCollapsed(state: RootState): readonly string[] {
+  return state.ui.collapsed;
+}
+
+export function selectSearchOpen(state: RootState): boolean {
+  return state.ui.searchOpen;
+}
+
+export function selectHighlightedName(state: RootState): string | null {
+  return state.ui.highlightedName;
+}
+
+export function selectFocusNames(state: RootState): readonly string[] {
+  return state.ui.focusNames;
+}
+
+export function selectFocusSeq(state: RootState): number {
+  return state.ui.focusSeq;
+}
+
+export function selectAnnouncement(state: RootState): string {
+  return state.ui.announcement;
 }
