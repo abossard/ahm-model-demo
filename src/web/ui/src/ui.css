@@ -289,12 +289,6 @@ body {
   pointer-events: none;
 }
 
-/* A route no corridor could clear must never read as an ordinary edge. */
-.topology .react-flow__edge.route-blocked .react-flow__edge-path {
-  stroke-dasharray: 6 5;
-  opacity: 0.45;
-}
-
 .entity-panel {
   width: 380px;
   max-width: 42vw;

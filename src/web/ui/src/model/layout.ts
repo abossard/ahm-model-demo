@@ -132,15 +132,6 @@ export function anchorLayout(
 /** The axis along which same-rank nodes spread. `null` means the layout has no ranks. */
 export type RankAxis = "x" | "y" | null;
 
-/**
- * Where an engine's edge geometry comes from. `computed` is the obstacle-aware router in
- * `edgeRouting.ts`. Nothing declares `engine` today: `orderWithinRanks` re-seats same-rank nodes
- * after the engine has run, so dagre's edge points and ELK's edge sections describe coordinates the
- * cards no longer occupy, and radial and force emit no usable route at all. The declaration is
- * asserted per layout id so wiring an engine route in, or losing one, cannot pass unnoticed.
- */
-export type RouteSource = "computed" | "engine";
-
 export type LayoutId =
   | "dagre-tb"
   | "dagre-bt"
@@ -155,7 +146,6 @@ export interface LayoutEngine {
   readonly label: string;
   readonly rankAxis: RankAxis;
   readonly flow: LayoutFlow;
-  readonly routeSource: RouteSource;
   readonly run: (
     entities: readonly Entity[],
     relationships: readonly Relationship[],
@@ -243,7 +233,6 @@ function dagreEngine(id: LayoutId, label: string, rankdir: RankDir): LayoutEngin
     label,
     rankAxis: rankdir === "TB" || rankdir === "BT" ? "x" : "y",
     flow: rankdir.toLowerCase() as LayoutFlow,
-    routeSource: "computed",
     run: (entities, relationships, sizeOf) =>
       Promise.resolve(dagreLayout(entities, relationships, sizeOf, rankdir)),
   };
@@ -259,7 +248,6 @@ export const LAYOUT_CHOICES: readonly LayoutEngine[] = [
     label: "ELK layered",
     rankAxis: "x",
     flow: "tb",
-    routeSource: "computed",
     run: (entities, relationships, sizeOf) => elkLayout(entities, relationships, sizeOf, "layered"),
   },
   {
@@ -267,7 +255,6 @@ export const LAYOUT_CHOICES: readonly LayoutEngine[] = [
     label: "ELK radial",
     rankAxis: null,
     flow: "free",
-    routeSource: "computed",
     run: (entities, relationships, sizeOf) => elkLayout(entities, relationships, sizeOf, "radial"),
   },
   {
@@ -275,7 +262,6 @@ export const LAYOUT_CHOICES: readonly LayoutEngine[] = [
     label: "Force directed",
     rankAxis: null,
     flow: "free",
-    routeSource: "computed",
     run: (entities, relationships, sizeOf) => forceLayout(entities, relationships, sizeOf),
   },
 ];

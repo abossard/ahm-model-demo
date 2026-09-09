@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import { ReactFlow, ReactFlowProvider, Background, useReactFlow } from "@xyflow/react";
-import type { Edge, EdgeTypes, NodeTypes } from "@xyflow/react";
+import type { EdgeTypes, NodeTypes } from "@xyflow/react";
 import type { Entity, HealthState, Relationship } from "../model/types";
 import {
   LAYOUT_ENGINES,
@@ -9,12 +9,9 @@ import {
   type GraphLayout,
   type NodeSize,
   type Point,
-  type RouteSource,
 } from "../model/layout";
 import {
   sidesFor,
-  ROUTE_REFERENCE_ZOOM,
-  routeEdges,
   type ConnectionPolicy,
   type EdgeStyle,
   type LayoutFlow,
@@ -37,7 +34,7 @@ import {
   selectSortReversed,
 } from "../store/selectors";
 import { EntityNode, estimateNodeSize, type EntityRfNode } from "./EntityNode";
-import { FloatingEdge } from "./FloatingEdge";
+import { FloatingEdge, type FloatingRfEdge } from "./FloatingEdge";
 import { GraphToolbar } from "./GraphToolbar";
 import { SearchOverlay } from "./SearchOverlay";
 
@@ -75,31 +72,20 @@ function pushGroup(map: Map<string, string[]>, key: string, name: string): void 
   else map.set(key, [name]);
 }
 
-/**
- * The edges React Flow paints, exported so a test can measure the real lane assignment and the real
- * routes rather than a second copy of both.
- */
 export function buildEdges(
   relationships: readonly Relationship[],
   byName: ReadonlyMap<string, Entity>,
   rects: ReadonlyMap<string, Rect>,
-  routeSource: RouteSource,
   flow: LayoutFlow = "free",
-  edgeStyle: EdgeStyle = "rounded",
-  connectionPolicy: ConnectionPolicy = "free",
-): Edge[] {
+  edgeStyle: EdgeStyle = "smooth",
+  connectionPolicy: ConnectionPolicy = "with-layout",
+): FloatingRfEdge[] {
   const drawable = relationships.filter(
-    (item) => rects.has(item.parentEntityName) && rects.has(item.childEntityName),
+    (item) => rects.has(item.parentEntityName) && rects.has(item.childEntityName) && byName.has(item.childEntityName),
   );
 
   const boundaries = new Map<string, string[]>();
-  const sidesByEdge = new Map<
-    string,
-    {
-      readonly sourceSide: ReturnType<typeof sidesFor>["sourceSide"];
-      readonly targetSide: ReturnType<typeof sidesFor>["targetSide"];
-    }
-  >();
+  const sidesByEdge = new Map<string, ReturnType<typeof sidesFor>>();
   for (const item of drawable) {
     const source = rects.get(item.parentEntityName) as Rect;
     const target = rects.get(item.childEntityName) as Rect;
@@ -109,80 +95,25 @@ export function buildEdges(
     pushGroup(boundaries, `${item.childEntityName}|${sides.targetSide}`, item.name);
   }
 
-  const prepared: {
-    readonly relationship: Relationship;
-    readonly child: Entity;
-    readonly sourceLane: number;
-    readonly targetLane: number;
-    readonly sourceLaneCount: number;
-    readonly targetLaneCount: number;
-    readonly obstacles: readonly Rect[];
-  }[] = [];
+  const edges: FloatingRfEdge[] = [];
   for (const relationship of drawable) {
     const child = byName.get(relationship.childEntityName);
     if (!child) continue;
-    const sides = sidesByEdge.get(relationship.name) as {
-      readonly sourceSide: ReturnType<typeof sidesFor>["sourceSide"];
-      readonly targetSide: ReturnType<typeof sidesFor>["targetSide"];
-    };
+    const sides = sidesByEdge.get(relationship.name)!;
     const sourceGroup = boundaries.get(`${relationship.parentEntityName}|${sides.sourceSide}`) ?? [];
     const targetGroup = boundaries.get(`${relationship.childEntityName}|${sides.targetSide}`) ?? [];
     const sourceLane = laneOf(sourceGroup.indexOf(relationship.name), sourceGroup.length);
     const targetLane = laneOf(targetGroup.indexOf(relationship.name), targetGroup.length);
-    const obstacles: Rect[] = [];
-    for (const [name, rect] of rects) {
-      if (name === relationship.parentEntityName || name === relationship.childEntityName) continue;
-      obstacles.push(rect);
-    }
-
-    prepared.push({
-      relationship,
-      child,
-      sourceLane,
-      targetLane,
-      sourceLaneCount: sourceGroup.length,
-      targetLaneCount: targetGroup.length,
-      obstacles,
-    });
-  }
-
-  const routes = routeEdges(
-    prepared.map(({ relationship, sourceLane, targetLane, sourceLaneCount, targetLaneCount, obstacles }) => {
-      const sides = sidesByEdge.get(relationship.name) as {
-        readonly sourceSide: ReturnType<typeof sidesFor>["sourceSide"];
-        readonly targetSide: ReturnType<typeof sidesFor>["targetSide"];
-      };
-      return {
-        source: rects.get(relationship.parentEntityName) as Rect,
-        target: rects.get(relationship.childEntityName) as Rect,
-        obstacles,
-        lane: 0,
-        options: {
-          ...sides,
-          sourceLane,
-          targetLane,
-          sourceLaneCount,
-          targetLaneCount,
-          detourLane: Math.abs(sourceLane) >= Math.abs(targetLane) ? sourceLane : targetLane,
-        },
-      };
-    }),
-  );
-
-  const edges: Edge[] = [];
-  for (const [index, item] of prepared.entries()) {
-    const { relationship, child, sourceLane, targetLane, sourceLaneCount, targetLaneCount } = item;
     const label = relationship.displayName ?? "";
-    const route = routes[index] as (typeof routes)[number];
     edges.push({
       id: relationship.name,
       source: relationship.parentEntityName,
       target: relationship.childEntityName,
       type: "floating",
-      data: { route, lane: targetLane, sourceLane, targetLane, sourceLaneCount, targetLaneCount, style: edgeStyle },
-      // Painted on the element so a routing miss surfaces instead of drawing a wrong path that
-      // looks the same as a right one, and so a layout cannot change route source unnoticed.
-      className: `route-source-${routeSource} route-${route.clear ? "clear" : "blocked"}`,
+      data: {
+        ...sides, sourceLane, targetLane,
+        sourceLaneCount: sourceGroup.length, targetLaneCount: targetGroup.length, style: edgeStyle,
+      },
       label: label || undefined,
       labelShowBg: label.length > 0,
       labelBgPadding: [6, 3],
@@ -359,22 +290,17 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
     return map;
   }, [layout, sizes]);
 
-  const routedEdges = useMemo(
+  const edges = useMemo(
     () =>
       buildEdges(
         visible.relationships,
         new Map(visible.entities.map((entity) => [entity.name, entity])),
         rects,
-        LAYOUT_ENGINES[layoutId].routeSource,
         LAYOUT_ENGINES[layoutId].flow,
-        "rounded",
+        edgeStyle,
         connectionPolicy,
       ),
-    [visible, rects, layoutId, connectionPolicy],
-  );
-  const edges = useMemo(
-    () => routedEdges.map((edge) => ({ ...edge, data: { ...edge.data, style: edgeStyle } })),
-    [routedEdges, edgeStyle],
+    [visible, rects, layoutId, edgeStyle, connectionPolicy],
   );
 
   return (
@@ -392,7 +318,7 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           fitView
-          minZoom={ROUTE_REFERENCE_ZOOM}
+          minZoom={0.5}
           nodesDraggable={false}
           nodesConnectable={false}
           nodesFocusable={false}

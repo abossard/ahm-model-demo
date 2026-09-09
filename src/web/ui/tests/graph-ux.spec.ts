@@ -1,15 +1,8 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { healthModel, installStubs } from "./fixture";
-import { SHARED_CLEARANCE, SHARED_DISTANCE, SHARED_RUN_TOLERANCE } from "../src/model/edgeRouting";
-import {
-  DENSE_BLOCKED_EDGE,
-  DENSE_CROSSED_CARD,
-  DENSE_SEED,
-  REAL_SHARED_RUN_PAIRS,
-  denseModel,
-  realAnbomovModel,
-} from "./denseModel";
+import { getBezierPath, getSmoothStepPath, Position } from "@xyflow/react";
+import { DENSE_SEED, denseModel, realAnbomovModel } from "./denseModel";
 
 const LAYOUT_IDS = [
   "dagre-tb",
@@ -671,16 +664,9 @@ async function edgePathShapes(page: Page): Promise<readonly string[]> {
     .evaluateAll((paths) => paths.map((path) => path.getAttribute("d") ?? ""));
 }
 
-async function nodeTransforms(page: Page): Promise<readonly string[]> {
-  return page
-    .locator(".react-flow__node")
-    .evaluateAll((nodes) =>
-      nodes.map((node) => `${node.getAttribute("data-id")}:${(node as HTMLElement).style.transform}`).sort(),
-    );
-}
-
 test("C3-1 — every edge leaves and enters on the boundary facing the other card", async ({ page }) => {
   await boot(page);
+  await page.getByLabel("Connection points").selectOption("free");
 
   const ends = await edgeEnds(page);
   expect(ends).toHaveLength(4);
@@ -693,9 +679,6 @@ test("C3-1 — every edge leaves and enters on the boundary facing the other car
     // The endpoint sits on the painted card boundary, not somewhere near it.
     expect([end.id, end.sourceGap <= 1, end.targetGap <= 1]).toEqual([end.id, true, true]);
   }
-
-  // No path re-enters a card body, its own source and target included.
-  expect(await crossings(page)).toEqual([]);
 
   // A second render of the same graph must resolve every side identically rather than flickering.
   await chooseLayout(page, "elk-layered");
@@ -732,10 +715,11 @@ test("C3-1b — all four card boundaries are used across the seven layouts", asy
 });
 
 for (const layoutId of LAYOUT_IDS) {
-  test(`C3-2 — ${layoutId} attaches every edge to the facing boundary and declares its route source`, async ({
+  test(`C3-2 — ${layoutId} attaches every Free edge to the facing boundary`, async ({
     page,
   }) => {
     await boot(page);
+    await page.getByLabel("Connection points").selectOption("free");
     await chooseLayout(page, layoutId);
 
     await expect(page.locator(".react-flow__edge")).toHaveCount(4);
@@ -751,365 +735,10 @@ for (const layoutId of LAYOUT_IDS) {
       ]);
     }
 
-    // Every layout declares where its geometry came from, so wiring an engine route in, or losing
-    // one, changes the painted class instead of degrading in silence.
-    await expect(page.locator(".react-flow__edge.route-source-computed")).toHaveCount(4);
-    await expect(page.locator(".react-flow__edge.route-clear")).toHaveCount(4);
-    await expect(page.locator(".react-flow__edge.route-blocked")).toHaveCount(0);
-    // `route-clear` has to mean clear of every card, endpoints included, or the class is decoration.
-    expect([layoutId, ...(await crossings(page))]).toEqual([layoutId]);
   });
 }
 
-/**
- * Every sampled interior point of every edge, tested against every card. Both endpoint cards are
- * included: the attachment points themselves sit on a boundary and so are never interior, but any
- * segment that dives back under its own source or target is a crossing like any other.
- */
-async function crossings(page: Page): Promise<string[]> {
-  return page.evaluate(() => {
-    const cards = [...document.querySelectorAll(".react-flow__node")].map((node) => ({
-      id: (node as HTMLElement).getAttribute("data-id") ?? "",
-      rect: (node.querySelector(".entity-node") as HTMLElement).getBoundingClientRect(),
-    }));
-
-    const found: string[] = [];
-    for (const edge of document.querySelectorAll(".react-flow__edge")) {
-      const path = edge.querySelector("path.react-flow__edge-path") as unknown as SVGPathElement;
-      const matrix = (path as SVGGraphicsElement).getScreenCTM() as DOMMatrix;
-      const total = path.getTotalLength();
-      const step = 0.5 / Math.hypot(matrix.a, matrix.b);
-      for (let at = 0; at <= total; at += step) {
-        const raw = path.getPointAtLength(at);
-        const point = new DOMPoint(raw.x, raw.y).matrixTransform(matrix);
-        for (const card of cards) {
-          const { rect } = card;
-          if (
-            point.x > rect.left + 0.5 &&
-            point.x < rect.right - 0.5 &&
-            point.y > rect.top + 0.5 &&
-            point.y < rect.bottom - 0.5
-          ) {
-            found.push(`${edge.getAttribute("data-id")} crosses ${card.id}`);
-          }
-        }
-      }
-    }
-    return [...new Set(found)];
-  });
-}
-
-interface SharedRun {
-  readonly pair: string;
-  readonly maxSharedRun: number;
-}
-
-async function sharedRuns(page: Page, includePointContacts = false): Promise<SharedRun[]> {
-  return page.evaluate(({ clearance, distance, pointTolerance, includePointContacts }) => {
-    const cards = [...document.querySelectorAll(".react-flow__node")].map((node) => ({
-      rect: (() => {
-        const box = (node.querySelector(".entity-node") as HTMLElement).getBoundingClientRect();
-        return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
-      })(),
-    }));
-    const nearCard = (point: { x: number; y: number }): boolean =>
-      cards.some(
-        ({ rect }) =>
-          point.x >= rect.left - clearance &&
-          point.x <= rect.right + clearance &&
-          point.y >= rect.top - clearance &&
-          point.y <= rect.bottom + clearance,
-      );
-    type Sample = { x: number; y: number; dx: number; dy: number; at: number; near: boolean };
-    const sampled = [...document.querySelectorAll(".react-flow__edge")].map((edge) => {
-      const path = edge.querySelector("path.react-flow__edge-path") as unknown as SVGPathElement;
-      const matrix = (path as SVGGraphicsElement).getScreenCTM() as DOMMatrix;
-      const total = path.getTotalLength();
-      const scale = Math.hypot(matrix.a, matrix.b);
-      const style = getComputedStyle(path);
-      const strokeWidth = Number.parseFloat(style.strokeWidth) * (style.vectorEffect === "non-scaling-stroke" ? 1 : scale);
-      const step = 0.5 / scale;
-      const out: Sample[] = [];
-      for (let index = 0; index <= Math.ceil(total / step); index += 1) {
-        const at = Math.min(total, index * step);
-        const raw = path.getPointAtLength(at);
-        const prev = path.getPointAtLength(Math.max(0, at - step));
-        const next = path.getPointAtLength(Math.min(total, at + step));
-        const point = new DOMPoint(raw.x, raw.y).matrixTransform(matrix);
-        const before = new DOMPoint(prev.x, prev.y).matrixTransform(matrix);
-        const after = new DOMPoint(next.x, next.y).matrixTransform(matrix);
-        const length = Math.hypot(after.x - before.x, after.y - before.y) || 1;
-        out.push({
-          x: point.x,
-          y: point.y,
-          dx: (after.x - before.x) / length,
-          dy: (after.y - before.y) / length,
-          at: at * scale,
-          near: nearCard(point),
-        });
-      }
-      const cells = new Map<string, number[]>();
-      for (let i = 1; i < out.length; i += 1) {
-        const a = out[i - 1]!;
-        const b = out[i]!;
-        for (let x = Math.floor((Math.min(a.x, b.x) - distance) / distance);
-          x <= Math.floor((Math.max(a.x, b.x) + distance) / distance); x += 1) {
-          for (let y = Math.floor((Math.min(a.y, b.y) - distance) / distance);
-            y <= Math.floor((Math.max(a.y, b.y) + distance) / distance); y += 1) {
-            const key = `${x},${y}`;
-            const entries = cells.get(key) ?? [];
-            entries.push(i);
-            cells.set(key, entries);
-          }
-        }
-      }
-      return { id: edge.getAttribute("data-id") ?? "", points: out, cells, strokeWidth };
-    });
-
-    const runs: SharedRun[] = [];
-    for (let left = 0; left < sampled.length; left += 1) {
-      for (let right = left + 1; right < sampled.length; right += 1) {
-        const leftEdge = sampled[left]!;
-        const rightEdge = sampled[right]!;
-        const strokeContact = (leftEdge.strokeWidth + rightEdge.strokeWidth) / 2;
-        let chain: { at: number; near: boolean; normal: number; angle: number; otherAt: number }[] = [];
-        let maxSharedRun = 0;
-        const finish = (): void => {
-          let nearRun = 0;
-          let nearMax = 0;
-          let parallelRun = 0;
-          let parallelMax = 0;
-          let lastSign = 0;
-          let crossings = 0;
-          let normalMin = 0;
-          let normalMax = 0;
-          for (let i = 0; i < chain.length; i += 1) {
-            const sample = chain[i]!;
-            const previous = chain[i - 1];
-            const length = previous ? sample.at - previous.at : 0;
-            nearRun = sample.near && previous?.near ? nearRun + length : 0;
-            nearMax = Math.max(nearMax, nearRun);
-            // Float32 SVG samples introduce tiny tangent noise on straight tracks.
-            parallelRun = sample.angle < 0.001 && previous && previous.angle < 0.001 ? parallelRun + length : 0;
-            parallelMax = Math.max(parallelMax, parallelRun);
-            normalMin = Math.min(normalMin, sample.normal);
-            normalMax = Math.max(normalMax, sample.normal);
-            const sign = Math.abs(sample.normal) > 0.01 ? Math.sign(sample.normal) : 0;
-            if (sign && lastSign && sign !== lastSign) crossings += 1;
-            if (sign) lastSign = sign;
-          }
-          // An isolated crossing must separate the painted strokes on both sides.
-          // A sign change inside their combined half-widths is still a merged bend.
-          const transverse = crossings === 1 && normalMin < -strokeContact && normalMax > strokeContact;
-          if (!transverse || parallelMax > pointTolerance) maxSharedRun = Math.max(maxSharedRun, nearMax);
-          chain = [];
-        };
-        for (const a of leftEdge.points) {
-          let nearest: typeof chain[number] | undefined;
-          let best = distance;
-          for (const index of rightEdge.cells.get(`${Math.floor(a.x / distance)},${Math.floor(a.y / distance)}`) ?? []) {
-            const from = rightEdge.points[index - 1]!;
-            const to = rightEdge.points[index]!;
-            const dx = to.x - from.x;
-            const dy = to.y - from.y;
-            const length = Math.hypot(dx, dy);
-            if (length === 0) continue;
-            const angle = Math.abs(a.dx * dy - a.dy * dx) / length;
-            if (angle >= 0.15) continue;
-            const fraction = ((a.x - from.x) * dx + (a.y - from.y) * dy) / (length * length);
-            if (fraction < 0 || fraction > 1) continue;
-            const b = { x: from.x + fraction * dx, y: from.y + fraction * dy };
-            const gap = Math.hypot(a.x - b.x, a.y - b.y);
-            if (gap >= best) continue;
-            best = gap;
-            nearest = { at: a.at, near: a.near || nearCard(b),
-              normal: a.dx * (b.y - a.y) - a.dy * (b.x - a.x), angle,
-              otherAt: from.at + fraction * (to.at - from.at) };
-          }
-          const previous = chain[chain.length - 1];
-          if (!nearest || (previous && Math.abs(nearest.otherAt - previous.otherAt) > distance * 2)) finish();
-          if (nearest) chain.push(nearest);
-        }
-        finish();
-        if (maxSharedRun > (includePointContacts ? 0 : pointTolerance)) runs.push({ pair: `${leftEdge.id}|${rightEdge.id}`, maxSharedRun });
-      }
-    }
-    return runs.sort((a, b) => b.maxSharedRun - a.maxSharedRun);
-  }, { clearance: SHARED_CLEARANCE, distance: SHARED_DISTANCE, pointTolerance: SHARED_RUN_TOLERANCE, includePointContacts });
-}
-
-for (const layoutId of LAYOUT_IDS) {
-  test(`C3-3 — ${layoutId} routes every edge around every card, its own two included`, async ({ page }) => {
-    await boot(page);
-    await chooseLayout(page, layoutId);
-
-    expect([layoutId, ...(await crossings(page))]).toEqual([layoutId]);
-    // Rounded bends, so the corridor reads as a path rather than a hard staircase.
-    const bends = await page
-      .locator(".react-flow__edge path.react-flow__edge-path")
-      .evaluateAll((paths) =>
-        paths.map((path) => ((path.getAttribute("d") ?? "").match(/Q/g) ?? []).length),
-      );
-    expect(bends.some((count) => count > 0)).toBe(true);
-  });
-}
-
-test("C10 oracle distinguishes point crossings from parallel runs and merged curves", async ({ page }) => {
-  await page.setContent(`<div class="react-flow__node"><div class="entity-node"
-    style="position:absolute;left:95px;top:80px;width:130px;height:10px"></div></div>
-    <svg width="300" height="200" style="position:absolute;left:0;top:0">
-      <g transform="translate(100 100)" stroke="green" stroke-width="1" fill="none">
-        <g class="react-flow__edge" data-id="a"><path class="react-flow__edge-path" d="M 0,0 L 100,0"/></g>
-        <g class="react-flow__edge" data-id="b"><path class="react-flow__edge-path" d="M 0,-4 L 100,4"/></g>
-      </g>
-    </svg>`);
-  const measurements: { name: string; maximum: number }[] = [];
-  for (const [name, a, b, scale, positive] of [
-    ["shallow isolated crossing", "M 0,0 L 100,0", "M 0,-4 L 100,4", 1, false],
-    ["recorded production rounded bend", "M 0,0 L 12,0 Q 24,0 24,12 L 24,24",
-      "M 0,0.2 L 12.299999999999999,0.2 Q 24.2,0.2 24.2,12.1 L 24.2,24", 0.5, true],
-    ["coincident", "M 0,0 L 100,0", "M 20,0 L 80,0", 1, true],
-    ["antiparallel", "M 0,0 L 100,0", "M 80,0 L 20,0", 1, true],
-    ["orthogonal point", "M 0,0 L 100,0", "M 50,-50 L 50,50", 1, false],
-    ["near parallel", "M 0,0 L 100,0", "M 0,1.125 L 100,1.125", 1, true],
-    ["separated parallel", "M 0,0 L 100,0", "M 0,3 L 100,3", 1, false],
-    ["half zoom parallel", "M 0,0 L 100,0", "M 0,3 L 100,3", 0.5, true],
-    ["quadratic merge", "M 0,0 Q 50,0 50,50", "M 0,1 Q 49,1 49,50", 1, true],
-    ["cubic merge", "M 0,0 C 50,0 50,0 50,50", "M 0,1 C 49,1 49,1 49,50", 1, true],
-    ["cross then shared tail", "M 0,0 L 100,0", "M 0,-4 L 50,4 L 60,1 L 100,1", 1, true],
-  ] as const) {
-    await page.locator("svg > g").evaluate((group, value) => group.setAttribute("transform", `translate(100 100) scale(${value})`), scale);
-    await page.locator('[data-id="a"] path').evaluate((path, value) => path.setAttribute("d", value), a);
-    await page.locator('[data-id="b"] path').evaluate((path, value) => path.setAttribute("d", value), b);
-    const maximum = (await sharedRuns(page, true))[0]?.maxSharedRun ?? 0;
-    measurements.push({ name, maximum });
-    expect(maximum > SHARED_RUN_TOLERANCE, name).toBe(positive);
-  }
-  expect(measurements.find((entry) => entry.name === "half zoom parallel")?.maximum).toBeCloseTo(50, 0);
-  expect(measurements.find((entry) => entry.name === "coincident")?.maximum).toBeCloseTo(60, 0);
-  expect(measurements.find((entry) => entry.name === "antiparallel")?.maximum).toBeCloseTo(60, 0);
-  expect(measurements.find((entry) => entry.name === "recorded production rounded bend")?.maximum).toBeCloseTo(21.739355087280273, 3);
-  await test.info().attach("oracle-controls.json", { body: JSON.stringify(measurements, null, 2), contentType: "application/json" });
-});
-
-/**
- * The independent inspection's counterexample, rebuilt deterministically: a valid 12-node /
- * 18-edge acyclic model whose `d3-force` layout produced one route the fixed corridor shapes could
- * not clear. It was painted through third-party card `n0` with the ordinary health stroke, so the
- * failure was invisible. Each layout runs the same model and reads the painted SVG.
- *
- * `elk-radial` is left out: elkjs's radial algorithm never returns on this model, with or without
- * the router change, so there is no layout to route. Seven-mode coverage stays on the repository
- * fixture in `C3-2` and `C3-3`.
- */
-for (const layoutId of LAYOUT_IDS.filter((id) => id !== "elk-radial")) {
-  test(`C3-3c — ${layoutId} routes the recorded dense counterexample clear of every card`, async ({
-    page,
-  }) => {
-    await installStubs(page, { healthModelFails: false, model: denseModel(DENSE_SEED) });
-    await page.goto("/");
-    await page.waitForSelector(".react-flow__node .entity-node");
-    await expect(page.locator(".react-flow__node")).toHaveCount(12);
-    await expect(page.locator(".react-flow__edge")).toHaveCount(18);
-    await chooseLayout(page, layoutId);
-
-    // One assertion carrying both halves of the published counterevidence: the router's own verdict
-    // and the picture. `route-blocked` alone would not prove the path is off the cards, and a clean
-    // sample alone would not prove the router knew it.
-    const blocked = await page
-      .locator(".react-flow__edge.route-blocked")
-      .evaluateAll((edges) => edges.map((edge) => `${edge.getAttribute("data-id")} blocked`));
-    expect([layoutId, ...blocked, ...(await crossings(page))]).toEqual([layoutId]);
-
-    if (layoutId === "d3-force") {
-      // The exact edge and card the inspection published, so this specific miss cannot come back
-      // hidden behind an otherwise green sweep.
-      await expect(page.locator(`.react-flow__edge[data-id="${DENSE_BLOCKED_EDGE}"]`)).toHaveClass(
-        /route-clear/,
-      );
-      expect(await crossings(page)).not.toContain(
-        `${DENSE_BLOCKED_EDGE} crosses ${DENSE_CROSSED_CARD}`,
-      );
-    }
-  });
-}
-
-test("C10 — real model edges do not merge into shared near-card corridors", async ({ page }) => {
-  await installStubs(page, { healthModelFails: false, model: realAnbomovModel() });
-  await page.goto("/");
-  await page.waitForSelector(".react-flow__node .entity-node");
-  await expect(page.locator(".react-flow__node")).toHaveCount(22);
-  await expect(page.locator(".react-flow__edge")).toHaveCount(24);
-
-  await page.getByTestId("edge-style-picker").selectOption("rounded");
-  await page.getByTestId("connection-policy-picker").selectOption("with-layout");
-  await chooseLayout(page, "dagre-tb");
-
-  const runs = await sharedRuns(page);
-  const byPair = new Map(runs.map((run) => [run.pair, run.maxSharedRun] as const));
-
-  expect(REAL_SHARED_RUN_PAIRS.map(([left, right]) => [`${left}|${right}`, byPair.get(`${left}|${right}`) ?? 0])).toEqual([
-    ["8da6b1cd-61e8-4206-9663-3cf7f6800221|r-app-hosting-aks", 0],
-    ["r-ask-copilot-ai-inference|r-ask-copilot-app-hosting", 0],
-  ]);
-  expect(runs).toEqual([]);
-  expect(await crossings(page)).toEqual([]);
-  await page.locator('.react-flow__node[data-id="flow-ask-copilot"] .entity-node').click();
-  await page.locator("#topology").screenshot({ path: test.info().outputPath("dagre-tb-selected-corridors.png") });
-});
-
-test("C10 — real model style and policy matrices stay clear without shared corridors", async ({
-  page,
-}) => {
-  test.setTimeout(360_000);
-  await installStubs(page, { healthModelFails: false, model: realAnbomovModel() });
-  await page.goto("/");
-  await page.waitForSelector(".react-flow__node .entity-node");
-  await expect(page.locator(".react-flow__edge")).toHaveCount(24);
-
-  const failures: string[] = [];
-  const sharedMaxima: { readonly case: string; readonly max: number; readonly runs: readonly SharedRun[];
-    readonly edges: number; readonly endpoints: number; readonly blocked: readonly string[];
-    readonly crossings: readonly string[]; readonly viewport: string }[] = [];
-  const record = async (caseId: string): Promise<void> => {
-    const blocked = await page
-      .locator(".react-flow__edge.route-blocked")
-      .evaluateAll((edges) => edges.map((edge) => `${edge.getAttribute("data-id")} blocked`));
-    const ends = await edgeEnds(page);
-    const crossingList = await crossings(page);
-    const runs = await sharedRuns(page, true);
-    sharedMaxima.push({ case: caseId, max: runs[0]?.maxSharedRun ?? 0, runs, edges: ends.length,
-      endpoints: ends.length * 2, blocked, crossings: crossingList, viewport: await viewportTransform(page) });
-    if (ends.length !== 24) failures.push(`${caseId} edges=${ends.length}`);
-    if (ends.length * 2 !== 48) failures.push(`${caseId} boundary=${ends.length * 2}`);
-    if ((runs[0]?.maxSharedRun ?? 0) > SHARED_RUN_TOLERANCE) failures.push(`${caseId} shared ${runs[0]?.pair} ${runs[0]?.maxSharedRun}px`);
-    failures.push(...blocked.map((item) => `${caseId} ${item}`));
-    failures.push(...crossingList.map((item) => `${caseId} ${item}`));
-  };
-
-  for (const style of ["rounded", "right-angle", "smooth"]) {
-    await page.getByTestId("edge-style-picker").selectOption(style);
-    for (const policy of ["with-layout", "free", "lr", "rl", "tb", "bt"]) {
-      await page.getByTestId("connection-policy-picker").selectOption(policy);
-      for (const layoutId of LAYOUT_IDS) {
-        await chooseLayout(page, layoutId);
-        await record(`${layoutId}/${style}/${policy}`);
-        if (layoutId === "elk-layered" && policy === "with-layout" && style === "rounded") {
-          await page.screenshot({ path: test.info().outputPath("elk-layered-separated-corridors.png") });
-        }
-      }
-    }
-  }
-
-  await test.info().attach("painted-matrix.json", { body: JSON.stringify(sharedMaxima, null, 2), contentType: "application/json" });
-  expect(sharedMaxima).toHaveLength(126);
-  expect(sharedMaxima.filter((entry) => entry.case.endsWith("/with-layout"))).toHaveLength(21);
-  expect(sharedMaxima.filter((entry) => entry.case.includes("/smooth/"))).toHaveLength(42);
-  expect(sharedMaxima.filter((entry) => entry.max > SHARED_RUN_TOLERANCE)).toEqual([]);
-  expect(failures).toEqual([]);
-});
-
-test("C3-3b — three parents reaching one child keep three separate paths", async ({ page }) => {
+test("C3-3b — three parents reaching one child keep three separate ports", async ({ page }) => {
   await installStubs(page, {
     healthModelFails: false,
     model: {
@@ -1123,8 +752,6 @@ test("C3-3b — three parents reaching one child keep three separate paths", asy
   await page.goto("/");
   await page.waitForSelector(".react-flow__node .entity-node");
   await expect(page.locator(".react-flow__edge")).toHaveCount(5);
-
-  expect(await crossings(page)).toEqual([]);
 
   const arrivals = await page.evaluate(() => {
     const rect = (document.querySelector('.react-flow__node[data-id="svc-c"] .entity-node') as HTMLElement).getBoundingClientRect();
@@ -1163,17 +790,15 @@ test("C9-2 — With layout attaches layered engines on their flow axis", async (
     ).toEqual(
       Object.keys(EDGE_PAIRS).map((id) => `${layoutId}:${id}:${sourceSide}->${targetSide}`),
     );
-    expect([layoutId, ...(await crossings(page))]).toEqual([layoutId]);
   }
 });
 
-test("C9-3 and C9-4 — edge style and connection policy selectors redraw clear edges", async ({
+test("C11 controls retain their labels and choices", async ({
   page,
 }) => {
-  test.setTimeout(120_000);
   await boot(page);
 
-  await expect(page.getByLabel("Edge style")).toHaveValue("rounded");
+  await expect(page.getByLabel("Edge style")).toHaveValue("smooth");
   await expect(page.getByLabel("Connection points")).toHaveValue("with-layout");
   expect(
     await page.getByTestId("edge-style-picker").locator("option").evaluateAll((options) =>
@@ -1197,45 +822,88 @@ test("C9-3 and C9-4 — edge style and connection policy selectors redraw clear 
     ["bt", "Bottom to top"],
   ]);
 
-  const styleShapes: Record<string, readonly string[]> = {};
-  for (const style of ["rounded", "right-angle", "smooth"]) {
-    await page.getByTestId("edge-style-picker").selectOption(style);
-    await expect(page.getByTestId("graph-announcement")).toContainText("Edge style changed");
-    for (const layoutId of LAYOUT_IDS) {
-      await chooseLayout(page, layoutId);
-      expect([style, layoutId, ...(await crossings(page))]).toEqual([style, layoutId]);
-      await expect(page.locator(".react-flow__edge.route-clear")).toHaveCount(4);
-      await expect(page.locator(".react-flow__edge.route-blocked")).toHaveCount(0);
-    }
-    styleShapes[style] = await edgePathShapes(page);
-  }
-  expect(styleShapes.rounded.some((path) => path.includes(" Q "))).toBe(true);
-  expect(styleShapes["right-angle"].every((path) => !/[QC]/.test(path))).toBe(true);
-  expect(styleShapes.smooth.some((path) => path.includes(" C "))).toBe(true);
-  expect(new Set(Object.values(styleShapes).map((paths) => paths.join("|"))).size).toBe(3);
-
-  const fixed: Readonly<Record<string, readonly [string, string]>> = {
-    lr: ["right", "left"],
-    rl: ["left", "right"],
-    tb: ["bottom", "top"],
-    bt: ["top", "bottom"],
-  };
-  for (const policy of ["with-layout", "free", "lr", "rl", "tb", "bt"]) {
-    await page.getByTestId("connection-policy-picker").selectOption(policy);
-    await expect(page.getByTestId("graph-announcement")).toContainText("Connection points changed");
-    for (const layoutId of LAYOUT_IDS) {
-      await chooseLayout(page, layoutId);
-      const ends = await edgeEnds(page);
-      const expected = fixed[policy];
-      if (expected) {
-        expect(ends.map((end) => `${policy}:${layoutId}:${end.sourceSide}->${end.targetSide}`)).toEqual(
-          Object.keys(EDGE_PAIRS).map((id) => `${policy}:${layoutId}:${expected[0]}->${expected[1]}`),
-        );
-      }
-      expect([policy, layoutId, ...(await crossings(page))]).toEqual([policy, layoutId]);
-    }
-  }
+  expect(await page.getByTestId("layout-picker").locator("option").evaluateAll(
+    (options) => options.map((option) => (option as HTMLOptionElement).value),
+  )).toEqual(LAYOUT_IDS);
 });
+
+for (const style of ["smooth", "rounded", "right-angle"] as const) {
+  test(`C11 native ${style} paths and labels match the installed helper on offset Ask LR edges`, async ({ page }) => {
+    const model = realAnbomovModel();
+    await installStubs(page, { healthModelFails: false, model });
+    await page.goto("/");
+    await expect(page.locator(".react-flow__edge")).toHaveCount(24);
+    await expect(page.getByLabel("Edge style")).toHaveValue("smooth");
+    await chooseLayout(page, "dagre-lr");
+    await page.getByLabel("Edge style").selectOption(style);
+    await expect(page.getByTestId("graph-announcement")).toContainText("Edge style changed");
+
+    const askEdges = model.relationships.filter((edge) => edge.parentEntityName === "flow-ask-copilot");
+    const ends = (await edgeEnds(page)).filter((end) => askEdges.some((edge) => edge.name === end.id));
+    expect(ends).toHaveLength(3);
+    expect(new Set(ends.map((end) => end.startY)).size).toBe(3);
+    expect(ends.some((end) => Math.abs(end.startY - end.endY) > 100)).toBe(true);
+    for (const end of ends) {
+      const relationship = askEdges.find((edge) => edge.name === end.id)!;
+      expect([end.source, end.target, end.sourceSide, end.targetSide]).toEqual([
+        relationship.parentEntityName, relationship.childEntityName, "right", "left",
+      ]);
+      expect(Math.max(end.sourceGap, end.targetGap)).toBeLessThanOrEqual(1);
+    }
+
+    const painted = await page.locator(".react-flow__edge").evaluateAll((edges, ids) =>
+      edges.filter((edge) => ids.includes(edge.getAttribute("data-id") ?? "")).map((edge) => {
+        const path = edge.querySelector(".react-flow__edge-path") as SVGPathElement;
+        const from = path.getPointAtLength(0);
+        const to = path.getPointAtLength(path.getTotalLength());
+        const label = edge.querySelector(".react-flow__edge-textwrapper") as SVGGElement;
+        const matrix = label.transform.baseVal.consolidate()!.matrix;
+        const bounds = (label.querySelector("text") as SVGTextElement).getBBox();
+        return { id: edge.getAttribute("data-id"), d: path.getAttribute("d"),
+          sourceX: from.x, sourceY: from.y, targetX: to.x, targetY: to.y,
+          labelX: matrix.e + bounds.width / 2, labelY: matrix.f + bounds.height / 2 };
+      }), askEdges.map((edge) => edge.name));
+
+    for (const edge of painted) {
+      const params = { ...edge, sourcePosition: Position.Right, targetPosition: Position.Left };
+      const [path, labelX, labelY] = style === "smooth" ? getBezierPath(params)
+        : getSmoothStepPath(style === "right-angle" ? { ...params, borderRadius: 0 } : params);
+      expect(edge.d, edge.id ?? "").toBe(path);
+      expect(edge.labelX).toBeCloseTo(labelX, 3);
+      expect(edge.labelY).toBeCloseTo(labelY, 3);
+      if (style === "smooth") expect(edge.d?.match(/[A-Za-z]/g)).toEqual(["M", "C"]);
+    }
+    await test.info().attach(`native-${style}.json`, {
+      body: JSON.stringify(painted, null, 2), contentType: "application/json",
+    });
+  });
+}
+
+for (const [layout, policy, sourceSide, targetSide] of [
+  ["dagre-lr", "with-layout", "right", "left"],
+  ["dagre-lr", "free", null, null],
+  ["d3-force", "lr", "right", "left"],
+  ["dagre-tb", "rl", "left", "right"],
+  ["dagre-lr", "tb", "bottom", "top"],
+  ["dagre-lr", "bt", "top", "bottom"],
+  ["d3-force", "with-layout", null, null],
+  ["d3-force", "free", null, null],
+] as const) {
+  test(`C11 ${policy} on ${layout} preserves owned boundary ports`, async ({ page }) => {
+    await boot(page);
+    await chooseLayout(page, layout);
+    await page.getByLabel("Connection points").selectOption(policy);
+    await expect(page.getByTestId("graph-announcement")).toContainText("Connection points changed");
+    const ends = await edgeEnds(page);
+    expect(ends).toHaveLength(4);
+    for (const end of ends) {
+      expect([end.source, end.target]).toEqual(EDGE_PAIRS[end.id]);
+      expect(Math.max(end.sourceGap, end.targetGap)).toBeLessThanOrEqual(1);
+      if (sourceSide) expect([end.sourceSide, end.targetSide]).toEqual([sourceSide, targetSide]);
+      else expect(facesPartner(end)).toEqual([]);
+    }
+  });
+}
 
 test("C9-5 and C9-6 — dropdown changes preserve graph state and remain usable when narrow", async ({
   page,
@@ -1243,32 +911,43 @@ test("C9-5 and C9-6 — dropdown changes preserve graph state and remain usable 
   await page.setViewportSize({ width: 460, height: 720 });
   await boot(page);
   await chooseLayout(page, "dagre-lr");
+  await page.getByLabel("Edge style").selectOption("rounded");
+  await page.locator('.react-flow__node[data-id="svc-b"] [data-testid="collapse-toggle"]').click();
   await page.locator('.react-flow__node[data-id="svc-a"] .entity-node__name').click();
   await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await openSearch(page);
+  await page.getByTestId("search-input").fill("Queue");
 
-  const beforeNodes = await nodeTransforms(page);
-  const beforeViewport = await viewportTransform(page);
-  const beforeStrokes = await page
-    .locator(".react-flow__edge path.react-flow__edge-path")
-    .evaluateAll((paths) => paths.map((path) => getComputedStyle(path).stroke));
+  const snapshot = () => page.evaluate(() => ({
+    nodes: [...document.querySelectorAll(".react-flow__node")].map((node) => node.outerHTML),
+    viewport: (document.querySelector(".react-flow__viewport") as HTMLElement).style.transform,
+    panel: document.querySelector('[data-testid="entity-panel"]')?.textContent,
+    search: document.querySelector('[data-testid="search-overlay"]')?.textContent,
+    query: (document.querySelector('[data-testid="search-input"]') as HTMLInputElement).value,
+    edges: [...document.querySelectorAll(".react-flow__edge")].map((edge) => ({
+      id: edge.getAttribute("data-id"),
+      stroke: getComputedStyle(edge.querySelector(".react-flow__edge-path")!).stroke,
+      label: edge.querySelector(".react-flow__edge-text")?.textContent,
+    })),
+  }));
+  const before = await snapshot();
+
   const beforePaths = await edgePathShapes(page);
 
   await page.getByTestId("edge-style-picker").selectOption("smooth");
+  await expect(page.getByTestId("graph-announcement")).toContainText("Edge style changed to Smooth curves");
+  await expect(page.getByLabel("Connection points")).toHaveValue("with-layout");
   await expect(page.getByTestId("entity-panel")).toBeVisible();
-  expect(await nodeTransforms(page)).toEqual(beforeNodes);
-  expect(await viewportTransform(page)).toBe(beforeViewport);
   expect(await edgePathShapes(page)).not.toEqual(beforePaths);
+  expect(await snapshot()).toEqual(before);
 
   const smoothPaths = await edgePathShapes(page);
   await page.getByTestId("connection-policy-picker").selectOption("tb");
-  expect(await nodeTransforms(page)).toEqual(beforeNodes);
-  expect(await viewportTransform(page)).toBe(beforeViewport);
+  await expect(page.getByTestId("graph-announcement")).toContainText("Connection points changed to Top to bottom");
+  await expect(page.getByLabel("Edge style")).toHaveValue("smooth");
   expect(await edgePathShapes(page)).not.toEqual(smoothPaths);
-  expect(
-    await page
-      .locator(".react-flow__edge path.react-flow__edge-path")
-      .evaluateAll((paths) => paths.map((path) => getComputedStyle(path).stroke)),
-  ).toEqual(beforeStrokes);
+  expect(await snapshot()).toEqual(before);
+  await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Search…" })).toBeVisible();
 });
 

@@ -1,12 +1,6 @@
 import type { Entity, HealthModel, Relationship } from "../src/model/types";
 
-/**
- * Deterministic generated models used to prove edge routing on graphs denser than the six-node
- * repository fixture. The independent inspection found its counterexample with a generated
- * 12-node / 18-edge acyclic model rendered through `d3-force`; that model was not published, so
- * this generator reconstructs an equivalent family from a fixed seed. Nothing here is random at
- * run time: `mulberry32` is a pure integer hash, so graph `k` is byte-identical on every machine.
- */
+/** Deterministic models with varied card sizes for rendered topology checks. */
 function mulberry32(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
@@ -111,23 +105,7 @@ export function denseModel(seed: number, nodes = 12, edges = 18): HealthModel {
   };
 }
 
-/**
- * The seed whose `d3-force` layout reproduces the independent inspection's counterexample. The
- * inspection published only the shape of its own generated case (12 nodes, 18 edges, one route
- * blocked through third-party card `n0`) and not the model itself, so this is the deterministic
- * equivalent this repository records: relationship `g6e12`, `n5 -> n9`, whose corridor has to pass
- * card `n0`. Before the bounded lane search it returned `clear:false` and painted straight through
- * `n0`; the rendered regression in `graph-ux.spec.ts` and the module sweep in `edgeRouting.test.ts`
- * both pin it.
- */
 export const DENSE_SEED = 6;
-export const DENSE_BLOCKED_EDGE = "g6e12";
-export const DENSE_CROSSED_CARD = "n0";
-
-export const REAL_SHARED_RUN_PAIRS: readonly (readonly [string, string])[] = [
-  ["8da6b1cd-61e8-4206-9663-3cf7f6800221", "r-app-hosting-aks"],
-  ["r-ask-copilot-ai-inference", "r-ask-copilot-app-hosting"],
-];
 
 const REAL_ENTITIES: readonly (readonly [string, string, number])[] = [
   ["hm-anbomov", "Movie Request Experience", 0],

@@ -34,7 +34,7 @@ const initialState: UiState = {
   layoutId: DEFAULT_LAYOUT_ID,
   sortKey: "name",
   sortReversed: false,
-  edgeStyle: "rounded",
+  edgeStyle: "smooth",
   connectionPolicy: "with-layout",
   collapsed: [],
   searchOpen: false,

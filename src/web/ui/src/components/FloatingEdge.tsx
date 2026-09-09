@@ -1,22 +1,20 @@
 import type { JSX } from "react";
-import { BaseEdge, useInternalNode } from "@xyflow/react";
-import type { Edge, EdgeProps, InternalNode, Node } from "@xyflow/react";
+import { BaseEdge, getBezierPath, getSmoothStepPath, useInternalNode } from "@xyflow/react";
+import type { Edge, EdgeProps, InternalNode, Node, Position } from "@xyflow/react";
 import {
   attachmentPoint,
-  midpointOf,
-  pathForStyle,
   type EdgeStyle,
   type Rect,
-  type Route,
+  type Side,
 } from "../model/edgeRouting";
 
 export interface FloatingEdgeData extends Record<string, unknown> {
-  readonly route: Route;
-  readonly lane: number;
-  readonly sourceLane?: number;
-  readonly targetLane?: number;
-  readonly sourceLaneCount?: number;
-  readonly targetLaneCount?: number;
+  readonly sourceSide: Side;
+  readonly targetSide: Side;
+  readonly sourceLane: number;
+  readonly targetLane: number;
+  readonly sourceLaneCount: number;
+  readonly targetLaneCount: number;
   readonly style?: EdgeStyle;
 }
 
@@ -35,21 +33,26 @@ function rectOf(node: InternalNode<Node>): Rect {
 export function FloatingEdge(props: EdgeProps<FloatingRfEdge>): JSX.Element | null {
   const source = useInternalNode(props.source);
   const target = useInternalNode(props.target);
-  const route = props.data?.route;
-  if (!source || !target || !route) return null;
+  const data = props.data;
+  if (!source || !target || !data) return null;
 
-  const from = attachmentPoint(rectOf(source), route.sourceSide, props.data?.sourceLane ?? props.data?.lane ?? 0, props.data?.sourceLaneCount ?? 0);
-  const to = attachmentPoint(rectOf(target), route.targetSide, props.data?.targetLane ?? props.data?.lane ?? 0, props.data?.targetLaneCount ?? 0);
-  const points = [from, ...route.waypoints, to];
-  const label = midpointOf(points);
+  const from = attachmentPoint(rectOf(source), data.sourceSide, data.sourceLane, data.sourceLaneCount);
+  const to = attachmentPoint(rectOf(target), data.targetSide, data.targetLane, data.targetLaneCount);
+  const ends = {
+    sourceX: from.x, sourceY: from.y, sourcePosition: data.sourceSide as Position,
+    targetX: to.x, targetY: to.y, targetPosition: data.targetSide as Position,
+  };
+  const [path, labelX, labelY] = (data.style ?? "smooth") === "smooth"
+    ? getBezierPath(ends)
+    : getSmoothStepPath(data.style === "right-angle" ? { ...ends, borderRadius: 0 } : ends);
 
   return (
     <BaseEdge
       id={props.id}
-      path={pathForStyle(props.data?.style ?? "rounded", points)}
+      path={path}
       style={props.style ?? {}}
-      labelX={label.x}
-      labelY={label.y}
+      labelX={labelX}
+      labelY={labelY}
       label={props.label}
       labelStyle={props.labelStyle ?? {}}
       labelShowBg={props.labelShowBg ?? false}
