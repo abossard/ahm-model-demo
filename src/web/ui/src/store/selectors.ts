@@ -9,6 +9,7 @@ import type {
   ModelRef,
 } from "../model/types";
 import type { LayoutId } from "../model/layout";
+import type { ConnectionPolicy, EdgeStyle } from "../model/edgeRouting";
 import type { SortKey } from "../model/ordering";
 
 export function selectModelCatalog(state: RootState): AsyncState<ModelCatalog> {
@@ -75,6 +76,14 @@ export function selectSortKey(state: RootState): SortKey {
 
 export function selectSortReversed(state: RootState): boolean {
   return state.ui.sortReversed;
+}
+
+export function selectEdgeStyle(state: RootState): EdgeStyle {
+  return state.ui.edgeStyle;
+}
+
+export function selectConnectionPolicy(state: RootState): ConnectionPolicy {
+  return state.ui.connectionPolicy;
 }
 
 export function selectCollapsed(state: RootState): readonly string[] {

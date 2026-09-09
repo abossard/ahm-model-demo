@@ -3,6 +3,7 @@ import type { PayloadAction } from "@reduxjs/toolkit";
 import { chooseModel } from "./catalogSlice";
 import { submitHealthReport } from "./reportSlice";
 import { DEFAULT_LAYOUT_ID, type LayoutId } from "../model/layout";
+import type { ConnectionPolicy, EdgeStyle } from "../model/edgeRouting";
 import type { SortKey } from "../model/ordering";
 
 export const REFRESH_COUNTDOWN_SECONDS = 10;
@@ -15,6 +16,8 @@ interface UiState {
   readonly layoutId: LayoutId;
   readonly sortKey: SortKey;
   readonly sortReversed: boolean;
+  readonly edgeStyle: EdgeStyle;
+  readonly connectionPolicy: ConnectionPolicy;
   readonly collapsed: readonly string[];
   readonly searchOpen: boolean;
   readonly highlightedName: string | null;
@@ -31,6 +34,8 @@ const initialState: UiState = {
   layoutId: DEFAULT_LAYOUT_ID,
   sortKey: "name",
   sortReversed: false,
+  edgeStyle: "rounded",
+  connectionPolicy: "with-layout",
   collapsed: [],
   searchOpen: false,
   highlightedName: null,
@@ -66,6 +71,12 @@ const uiSlice = createSlice({
     },
     toggleSortDirection: (state) => {
       state.sortReversed = !state.sortReversed;
+    },
+    setEdgeStyle: (state, action: PayloadAction<EdgeStyle>) => {
+      state.edgeStyle = action.payload;
+    },
+    setConnectionPolicy: (state, action: PayloadAction<ConnectionPolicy>) => {
+      state.connectionPolicy = action.payload;
     },
     toggleCollapse: (state, action: PayloadAction<string>) => {
       state.collapsed = state.collapsed.includes(action.payload)
@@ -116,6 +127,8 @@ export const {
   setLayout,
   setSortKey,
   toggleSortDirection,
+  setEdgeStyle,
+  setConnectionPolicy,
   toggleCollapse,
   expandMany,
   openSearch,

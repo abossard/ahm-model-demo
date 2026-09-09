@@ -2,6 +2,7 @@ import dagre from "@dagrejs/dagre";
 import type { Entity, Relationship } from "./types";
 import { elkLayout } from "./layoutElk";
 import { forceLayout } from "./layoutForce";
+import type { LayoutFlow } from "./edgeRouting";
 
 export interface NodeSize {
   readonly width: number;
@@ -21,8 +22,124 @@ export interface GraphLayout {
 
 export type SizeOf = (entity: Entity) => NodeSize;
 
+interface Placed extends Point, NodeSize {}
+
+/** Clearance left between an arriving node and the settled node it had to be pushed past. */
+const ANCHOR_GAP = 48;
+
+function boxOf(point: Point, size: NodeSize): Placed {
+  return { x: point.x, y: point.y, width: size.width, height: size.height };
+}
+
+function overlaps(left: Placed, right: Placed): boolean {
+  return (
+    left.x < right.x + right.width &&
+    left.x + left.width > right.x &&
+    left.y < right.y + right.height &&
+    left.y + left.height > right.y
+  );
+}
+
+/**
+ * The shortest move that lifts `box` off `blocker`, chosen from the four axis-aligned escapes. Ties
+ * fall to the first option in a fixed order, so the same collision always resolves the same way.
+ */
+function escape(box: Placed, blocker: Placed): Point {
+  const options: readonly Point[] = [
+    { x: blocker.x + blocker.width + ANCHOR_GAP - box.x, y: 0 },
+    { x: blocker.x - ANCHOR_GAP - (box.x + box.width), y: 0 },
+    { x: 0, y: blocker.y + blocker.height + ANCHOR_GAP - box.y },
+    { x: 0, y: blocker.y - ANCHOR_GAP - (box.y + box.height) },
+  ];
+  return options.reduce((best, option) =>
+    Math.hypot(option.x, option.y) < Math.hypot(best.x, best.y) ? option : best,
+  );
+}
+
+/*
+ * ponytail: each arriving node is nudged off the first box it lands on and re-tested, which is a
+ * linear sweep rather than a packing search. Swap in a real placement search when a dense pocket
+ * makes the nudge visibly wasteful.
+ */
+function placeClear(wanted: Placed, taken: readonly Placed[]): Point {
+  let box = wanted;
+  for (let pass = 0; pass <= taken.length; pass += 1) {
+    const blocker = taken.find((other) => overlaps(box, other));
+    if (!blocker) break;
+    const move = escape(box, blocker);
+    box = { ...box, x: box.x + move.x, y: box.y + move.y };
+  }
+  return { x: box.x, y: box.y };
+}
+
+/**
+ * Re-seats a freshly computed layout onto the positions the graph already occupies: every node the
+ * caller remembers keeps its exact coordinates, and only a node with no remembered position is
+ * placed, and only pushed when it would actually land on something. A node that does not collide
+ * therefore never moves.
+ */
+export function anchorLayout(
+  next: GraphLayout,
+  previous: ReadonlyMap<string, Point>,
+  sizes: ReadonlyMap<string, NodeSize>,
+): GraphLayout {
+  const positions = new Map<string, Point>();
+  const arriving: string[] = [];
+  for (const name of next.positions.keys()) {
+    const before = previous.get(name);
+    if (before) positions.set(name, before);
+    else arriving.push(name);
+  }
+  if (positions.size === 0) return next;
+  if (arriving.length === 0) return { positions, ...boundsOf(positions, sizes) };
+
+  // The fresh layout is slid so the settled node nearest the arrivals lines up with where it already
+  // sits, which keeps the arrivals in the relation the engine chose for them.
+  const zero = { x: 0, y: 0 };
+  const centre = arriving.reduce(
+    (sum, name) => {
+      const point = next.positions.get(name) ?? zero;
+      return { x: sum.x + point.x / arriving.length, y: sum.y + point.y / arriving.length };
+    },
+    { x: 0, y: 0 },
+  );
+  const anchor = [...positions.keys()].reduce((best, name) => {
+    const here = next.positions.get(name) ?? zero;
+    const there = next.positions.get(best) ?? zero;
+    return Math.hypot(here.x - centre.x, here.y - centre.y) <
+      Math.hypot(there.x - centre.x, there.y - centre.y)
+      ? name
+      : best;
+  });
+  const from = next.positions.get(anchor) ?? zero;
+  const to = positions.get(anchor) as Point;
+
+  const taken: Placed[] = [...positions].map(([name, point]) =>
+    boxOf(point, sizes.get(name) ?? { width: 0, height: 0 }),
+  );
+  for (const name of [...arriving].sort()) {
+    const point = next.positions.get(name) as Point;
+    const size = sizes.get(name) ?? { width: 0, height: 0 };
+    const wanted = boxOf({ x: point.x + (to.x - from.x), y: point.y + (to.y - from.y) }, size);
+    const placed = placeClear(wanted, taken);
+    positions.set(name, placed);
+    taken.push(boxOf(placed, size));
+  }
+
+  return { positions, ...boundsOf(positions, sizes) };
+}
+
 /** The axis along which same-rank nodes spread. `null` means the layout has no ranks. */
 export type RankAxis = "x" | "y" | null;
+
+/**
+ * Where an engine's edge geometry comes from. `computed` is the obstacle-aware router in
+ * `edgeRouting.ts`. Nothing declares `engine` today: `orderWithinRanks` re-seats same-rank nodes
+ * after the engine has run, so dagre's edge points and ELK's edge sections describe coordinates the
+ * cards no longer occupy, and radial and force emit no usable route at all. The declaration is
+ * asserted per layout id so wiring an engine route in, or losing one, cannot pass unnoticed.
+ */
+export type RouteSource = "computed" | "engine";
 
 export type LayoutId =
   | "dagre-tb"
@@ -37,6 +154,8 @@ export interface LayoutEngine {
   readonly id: LayoutId;
   readonly label: string;
   readonly rankAxis: RankAxis;
+  readonly flow: LayoutFlow;
+  readonly routeSource: RouteSource;
   readonly run: (
     entities: readonly Entity[],
     relationships: readonly Relationship[],
@@ -123,6 +242,8 @@ function dagreEngine(id: LayoutId, label: string, rankdir: RankDir): LayoutEngin
     id,
     label,
     rankAxis: rankdir === "TB" || rankdir === "BT" ? "x" : "y",
+    flow: rankdir.toLowerCase() as LayoutFlow,
+    routeSource: "computed",
     run: (entities, relationships, sizeOf) =>
       Promise.resolve(dagreLayout(entities, relationships, sizeOf, rankdir)),
   };
@@ -137,18 +258,24 @@ export const LAYOUT_CHOICES: readonly LayoutEngine[] = [
     id: "elk-layered",
     label: "ELK layered",
     rankAxis: "x",
+    flow: "tb",
+    routeSource: "computed",
     run: (entities, relationships, sizeOf) => elkLayout(entities, relationships, sizeOf, "layered"),
   },
   {
     id: "elk-radial",
     label: "ELK radial",
     rankAxis: null,
+    flow: "free",
+    routeSource: "computed",
     run: (entities, relationships, sizeOf) => elkLayout(entities, relationships, sizeOf, "radial"),
   },
   {
     id: "d3-force",
     label: "Force directed",
     rankAxis: null,
+    flow: "free",
+    routeSource: "computed",
     run: (entities, relationships, sizeOf) => forceLayout(entities, relationships, sizeOf),
   },
 ];

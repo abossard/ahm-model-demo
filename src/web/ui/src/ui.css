@@ -149,6 +149,15 @@ body {
   flex: 1;
   min-height: 0;
   position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The canvas owns the space the toolbar leaves, so no card can ever render under the toolbar. */
+.topology__canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
 }
 
 .topology .react-flow {
@@ -162,6 +171,8 @@ body {
 
 .entity-node {
   width: 260px;
+  height: 100%;
+  box-sizing: border-box;
   border-width: 2px;
   border-style: solid;
   border-radius: 10px;
@@ -182,6 +193,9 @@ body {
   align-items: center;
   gap: 8px;
   padding: 10px 8px 10px 6px;
+  /* Holds the header band at least 54px so the disclosure's 50px counter-scaled box at React
+     Flow's 0.5 zoom floor still paints inside it. `estimateNodeSize` mirrors this exact number. */
+  min-height: 54px;
 }
 
 .entity-node__icon {
@@ -194,6 +208,7 @@ body {
   flex: 1 1 auto;
   min-width: 0;
   font-size: 12.5px;
+  line-height: 17px;
   font-weight: 600;
   color: var(--ink);
   white-space: normal;
@@ -272,6 +287,12 @@ body {
 .entity-node__handle {
   opacity: 0;
   pointer-events: none;
+}
+
+/* A route no corridor could clear must never read as an ordinary edge. */
+.topology .react-flow__edge.route-blocked .react-flow__edge-path {
+  stroke-dasharray: 6 5;
+  opacity: 0.45;
 }
 
 .entity-panel {
@@ -589,18 +610,14 @@ body {
 }
 
 .graph-toolbar {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  z-index: 5;
+  flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid var(--pill-stroke);
-  border-radius: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--pill-stroke);
   background: var(--pill-fill);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
 }
 
 .graph-toolbar__field {
@@ -650,6 +667,7 @@ body {
 }
 
 .entity-node-shell {
+  height: 100%;
   pointer-events: none;
 }
 
@@ -657,32 +675,43 @@ body {
   box-shadow: 0 0 0 3px var(--signal);
 }
 
-.entity-node__collapse {
+.entity-node__toggle {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  width: 100%;
-  min-height: 24px;
-  margin-top: -2px;
-  padding: 1px 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  margin: -3px -2px -3px 0;
   box-sizing: border-box;
-  border-width: 2px;
-  border-style: solid;
-  border-top: 1px solid var(--hair);
-  border-radius: 0 0 10px 10px;
+  border: 1px solid transparent;
+  /* Nearly square: at the 25px rendered floor a 6px radius cut the corner samples of the required
+     24 by 24 pointer square out of the button's own hit area. */
+  border-radius: 2px;
+  background: transparent;
   color: var(--lane-label);
   cursor: pointer;
   pointer-events: all;
+  /* The counter-scale grows the box inward, away from the card's right edge; vertically the box
+     is centred in a header that is tall enough to contain it. */
+  transform-origin: right center;
 }
 
-.entity-node__collapse:focus-visible {
+.entity-node__toggle:hover {
+  border-color: var(--pill-stroke);
+  background: var(--pill-fill);
+}
+
+.entity-node__toggle:focus-visible {
   outline: 2px solid var(--signal);
-  outline-offset: -2px;
+  outline-offset: 1px;
 }
 
 .entity-node__chevron {
   display: inline-flex;
+  /* Decorative, so every point over the glyph resolves to the button itself. */
+  pointer-events: none;
   transition: transform 150ms ease;
 }
 
@@ -691,8 +720,32 @@ body {
 }
 
 .entity-node__hidden {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 6px;
+  border-top: 1px solid var(--hair);
   font-size: 11px;
+  color: var(--lane-label);
+}
+
+.entity-node__hidden-count {
   font-weight: 600;
+  color: var(--ink);
+}
+
+.entity-node__hidden-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  border: 1px solid var(--pill-stroke);
+  border-radius: 8px;
+  background: var(--pill-fill);
+}
+
+.entity-node__hidden-chip-count {
+  font-size: 10.5px;
   color: var(--ink);
 }
 
