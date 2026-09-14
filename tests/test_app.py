@@ -1,3 +1,4 @@
+import copy
 import importlib
 import json
 import logging
@@ -102,7 +103,260 @@ def relationship(name, parent, child, display_name):
     )
 
 
+SHOP_ROOT = "parameters('modelName')"
+
+SHOP_PARAMETER_SOURCES = {
+    "containerAppId": ("container-app-web", "containerAppId"),
+    "aksClusterId": ("aks", "clusterId"),
+    "postgresId": ("foundation", "postgresId"),
+    "storageId": ("storage", "storageId"),
+    "workspaceId": ("foundation", "workspaceId"),
+}
+
+SHOP_LEAF_BINDINGS = {
+    "azure-web": ("storefront", "containerAppId", "Microsoft.App/containerApps"),
+    "azure-aks": ("products", "aksClusterId", "Microsoft.ContainerService/managedClusters"),
+    "azure-postgres": ("ordersDatabase", "postgresId", "Microsoft.DBforPostgreSQL/flexibleServers"),
+    "azure-storage": ("storage", "storageId", "Microsoft.Storage/storageAccounts"),
+    "azure-queue": ("orderQueue", "storageId", "Microsoft.Storage/storageAccounts/queueServices"),
+    "azure-workspace": ("logAnalyticsWorkspace", "workspaceId", "Microsoft.OperationalInsights/workspaces"),
+}
+
+# C2 target: an independent, hand-declared standard shop. Not derived from any export or from the
+# module under test, so a wrong module cannot make this oracle agree with it.
+SHOP_AGGREGATORS = (
+    SHOP_ROOT,
+    "shopping",
+    "checkout",
+    "orders",
+    "payment",
+    "shopping-cart",
+    "product-catalog",
+    "inventory",
+    "order-processing",
+    "analytics",
+)
+SHOP_PROVIDERS = ("provider-stripe", "provider-paypal")
+SHOP_GROUPS = SHOP_AGGREGATORS
+
+SHOP_DISPLAY_NAMES = {
+    SHOP_ROOT: "Contoso Shop",
+    "shopping": "Shopping",
+    "checkout": "Checkout",
+    "orders": "Orders",
+    "payment": "Payments",
+    "shopping-cart": "Shopping Cart",
+    "product-catalog": "Product Catalog",
+    "inventory": "Inventory",
+    "order-processing": "Order Processing",
+    "analytics": "Analytics",
+}
+
+SHOP_EDGES = {
+    "r-shop-root-shopping": (SHOP_ROOT, "shopping"),
+    "r-shop-root-checkout": (SHOP_ROOT, "checkout"),
+    "r-shop-root-orders": (SHOP_ROOT, "orders"),
+    "r-shop-shopping-product-catalog": ("shopping", "product-catalog"),
+    "r-shop-shopping-shopping-cart": ("shopping", "shopping-cart"),
+    "r-shop-checkout-shopping-cart": ("checkout", "shopping-cart"),
+    "r-shop-checkout-payment": ("checkout", "payment"),
+    "r-shop-orders-order-processing": ("orders", "order-processing"),
+    "r-shop-orders-inventory": ("orders", "inventory"),
+    "r-shop-orders-analytics": ("orders", "analytics"),
+    "r-shop-product-catalog-azure-web": ("product-catalog", "azure-web"),
+    "r-shop-product-catalog-azure-postgres": ("product-catalog", "azure-postgres"),
+    "r-shop-shopping-cart-azure-aks": ("shopping-cart", "azure-aks"),
+    "r-shop-shopping-cart-azure-storage": ("shopping-cart", "azure-storage"),
+    "r-shop-inventory-azure-postgres": ("inventory", "azure-postgres"),
+    "r-shop-order-processing-azure-web": ("order-processing", "azure-web"),
+    "r-shop-order-processing-azure-queue": ("order-processing", "azure-queue"),
+    "r-shop-payment-provider-stripe": ("payment", "provider-stripe"),
+    "r-shop-payment-provider-paypal": ("payment", "provider-paypal"),
+    "r-shop-payment-azure-aks": ("payment", "azure-aks"),
+    "r-shop-analytics-azure-workspace": ("analytics", "azure-workspace"),
+}
+
+# Saved Designer coordinates, with resources below the shop flows and services.
+SHOP_POSITIONS = {
+    SHOP_ROOT: (1270, 0),
+    "checkout": (1780, 193),
+    "shopping": (1260, 193),
+    "orders": (750, 193),
+    "payment": (1780, 386),
+    "shopping-cart": (1385, 386),
+    "product-catalog": (375, 386),
+    "inventory": (750, 386),
+    "order-processing": (125, 386),
+    "analytics": (1135, 386),
+    "provider-stripe": (1655, 597),
+    "provider-paypal": (1905, 597),
+    "azure-postgres": (625, 579),
+    "azure-aks": (1405, 589),
+    "azure-web": (0, 589),
+    "azure-queue": (250, 579),
+    "azure-storage": (885, 589),
+    "azure-workspace": (1135, 589),
+}
+
+
+def shop_entity_name(expression):
+    inner = expression.removeprefix(
+        "[format('{0}/{1}', parameters('modelName'), "
+    ).removesuffix(")]")
+    return inner if inner == SHOP_ROOT else inner.strip("'")
+
+
+def shop_edge_endpoint(expression):
+    return (
+        SHOP_ROOT if expression == f"[{SHOP_ROOT}]" else expression
+    )
+
+
 class SourceLayoutContractTests(unittest.TestCase):
+    def assert_shop_health_model_contract(self, template):
+        resources = template["resources"]
+        entity_list = [r for r in resources if r["type"].endswith("/entities")]
+        edge_list = [r for r in resources if r["type"].endswith("/relationships")]
+        self.assertEqual(len(entity_list), 18)
+        self.assertEqual(len(edge_list), 21)
+        entities = {shop_entity_name(r["name"]): r for r in entity_list}
+        self.assertEqual(set(entities), {*SHOP_GROUPS, *SHOP_PROVIDERS, *SHOP_LEAF_BINDINGS})
+        self.assertEqual(len(SHOP_EDGES), 21)
+        self.assertEqual(len(set(SHOP_EDGES.values())), 21)
+        expected_pairs = set(SHOP_EDGES.values())
+        expected_edges = dict(SHOP_EDGES)
+        self.assertEqual(
+            {
+                shop_entity_name(r["name"]): (
+                    shop_edge_endpoint(r["properties"]["parentEntityName"]),
+                    shop_edge_endpoint(r["properties"]["childEntityName"]),
+                )
+                for r in edge_list
+            },
+            expected_edges,
+        )
+        self.assertEqual(
+            {shop_edge_endpoint(v) for v in template["outputs"]["entityNames"]["value"]},
+            set(entities),
+        )
+        self.assertEqual(len(template["outputs"]["entityNames"]["value"]), 18)
+        self.assertEqual(
+            set(entities) - {c for _, c in expected_pairs}, {SHOP_ROOT}
+        )
+        self.assertEqual(
+            set(SHOP_GROUPS), {p for p, _ in expected_pairs}
+        )
+        self.assertFalse(any(r["type"].endswith("/discoveryrules") for r in resources))
+        self.assertNotIn("/subscriptions/", json.dumps(template))
+        access = next(r for r in resources if r["name"] == "shop-health-model-access")
+        monitored = access["properties"]["parameters"]["monitoredResources"]["value"]
+        access_id = "[resourceId('Microsoft.Resources/deployments', 'shop-health-model-access')]"
+        auth_id = (
+            "[resourceId('Microsoft.CloudHealth/healthmodels/authenticationsettings', "
+            "parameters('modelName'), variables('authenticationName'))]"
+        )
+        access_ref = (
+            "reference(resourceId('Microsoft.Resources/deployments', "
+            "'shop-health-model-access'), '2025-04-01').outputs.monitoredResources.value"
+        )
+        self.assertEqual(
+            template["variables"]["orderQueueServiceId"],
+            "[format('{0}/queueServices/default', parameters('storageId'))]",
+        )
+        self.assertEqual(
+            monitored,
+            {
+                binding: (
+                    "[variables('orderQueueServiceId')]"
+                    if name == "azure-queue" else f"[parameters('{parameter}')]"
+                )
+                for name, (binding, parameter, _) in SHOP_LEAF_BINDINGS.items()
+            },
+        )
+        self.assertEqual(
+            access["properties"]["parameters"]["modelPrincipalId"]["value"],
+            "[reference(resourceId('Microsoft.CloudHealth/healthmodels', parameters('modelName')), "
+            "'2026-05-01-preview', 'full').identity.principalId]",
+        )
+        bindings = []
+        positions = {}
+        for name, resource in entities.items():
+            with self.subTest(entity=name):
+                self.assertEqual(resource["apiVersion"], "2026-05-01-preview")
+                properties = resource["properties"]
+                groups = properties["signalGroups"]
+                positions[name] = {
+                    axis: json.loads(value[7:-3]) if isinstance(value, str) else value
+                    for axis, value in properties["canvasPosition"].items()
+                }
+                self.assertEqual(set(positions[name]), {"x", "y"})
+                self.assertTrue(all(type(v) in (int, float) for v in positions[name].values()))
+                self.assertEqual(
+                    positions[name],
+                    dict(zip(("x", "y"), SHOP_POSITIONS[name])),
+                )
+                if name in SHOP_GROUPS:
+                    self.assertEqual(properties["displayName"], SHOP_DISPLAY_NAMES[name])
+                    self.assertEqual(
+                        groups,
+                        {"dependencies": {"aggregationType": "WorstOf", "ignoreUnknown": False}},
+                    )
+                    continue
+                self.assertIn(access_id, resource["dependsOn"])
+                self.assertIn(auth_id, resource["dependsOn"])
+                self.assertEqual(
+                    groups["azureLogAnalytics"],
+                    {
+                        "authenticationSetting": "[variables('authenticationName')]",
+                        "logAnalyticsWorkspaceResourceId": f"[{access_ref}.logAnalyticsWorkspace]",
+                        "signals": "[variables('syntheticDemoSignals')]",
+                    },
+                )
+                if name in SHOP_PROVIDERS:
+                    self.assertEqual(set(groups), {"azureLogAnalytics"})
+                    self.assertIn("simulated external", properties["displayName"].lower())
+                    continue
+                binding, _, resource_type = SHOP_LEAF_BINDINGS[name]
+                azure = groups["azureResource"]
+                self.assertEqual(set(groups), {"azureResource", "azureLogAnalytics"})
+                self.assertEqual(azure["azureResourceId"], f"[{access_ref}.{binding}]")
+                self.assertEqual(azure["authenticationSetting"], "[variables('authenticationName')]")
+                self.assertEqual(azure["resourceHealth"], {"enabled": "Disabled"})
+                self.assertNotIn("signals", azure)
+                self.assertIn(resource_type, properties["displayName"])
+                bindings.append(azure["azureResourceId"].lower())
+        self.assertEqual(len(set(bindings)), 6)
+        self.assertGreater(
+            min(positions[name]["y"] for name in SHOP_LEAF_BINDINGS),
+            max(positions[name]["y"] for name in SHOP_GROUPS),
+        )
+        self.assertEqual(len({(p["x"], p["y"]) for p in positions.values()}), 18)
+        for resource in edge_list:
+            for endpoint in ("parentEntityName", "childEntityName"):
+                name = shop_edge_endpoint(resource["properties"][endpoint])
+                argument = SHOP_ROOT if name == SHOP_ROOT else f"'{name}'"
+                self.assertIn(
+                    "[resourceId('Microsoft.CloudHealth/healthmodels/entities', "
+                    f"parameters('modelName'), {argument})]",
+                    resource["dependsOn"],
+                )
+        self.assertEqual(
+            template["variables"]["syntheticDemoSignals"],
+            [{
+                "name": "synthetic-demo-health",
+                "displayName": "Synthetic demo health (constant 100)",
+                "signalKind": "LogAnalyticsQuery",
+                "queryText": "print Value = 100",
+                "valueColumnName": "Value",
+                "dataUnit": "Count",
+                "timeGrain": "PT5M",
+                "refreshInterval": "PT5M",
+                "evaluationRules": {
+                    "unhealthyRule": {"operator": "GreaterThan", "threshold": 100}
+                },
+            }],
+        )
+
     def test_authored_sources_have_one_final_layout(self):
         root = Path(__file__).parents[1]
         expected = {
@@ -148,6 +402,157 @@ class SourceLayoutContractTests(unittest.TestCase):
             {path.name for path in (root / "tests").glob("test_*.py")},
             {"test_app.py", "test_streaming_proxy.py"},
         )
+
+    def test_shop_health_model_binds_project_resources_to_synthetic_health(self):
+        root = Path(__file__).parents[1]
+        compiled = json.loads(
+            subprocess.run(
+                [
+                    "az",
+                    "bicep",
+                    "build",
+                    "--file",
+                    str(root / "infra" / "main.bicep"),
+                    "--stdout",
+                    "--only-show-errors",
+                    "--subscription",
+                    SUBSCRIPTION_ID,
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+
+        self.assertEqual(
+            [
+                name
+                for name in ("SHOP_HEALTH_MODEL_NAME", "SHOP_HEALTH_MODEL_ID")
+                if name not in compiled["outputs"]
+            ],
+            [],
+        )
+        self.assertEqual(
+            [
+                name
+                for name in ("HEALTH_MODEL_ID", "HEALTH_MODEL_NAME", "AZURE_HEALTH_MODEL_NAME")
+                if name not in compiled["outputs"]
+            ],
+            [],
+        )
+
+        module = next(
+            resource
+            for resource in compiled["resources"]
+            if resource.get("name") == "shop-health-model"
+        )
+        for name, (deployment, output) in SHOP_PARAMETER_SOURCES.items():
+            with self.subTest(parameter=name):
+                value = module["properties"]["parameters"][name]["value"]
+                self.assertEqual(
+                    value,
+                    "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', "
+                    "subscription().subscriptionId, format('rg-{0}', parameters('environmentName'))), "
+                    f"'Microsoft.Resources/deployments', '{deployment}'), '2025-04-01')"
+                    f".outputs.{output}.value]",
+                )
+
+        template = module["properties"]["template"]
+        self.assert_shop_health_model_contract(template)
+        for output, deployment in (
+            ("AZURE_HEALTH_MODEL_NAME", "health-model"),
+            ("HEALTH_MODEL_NAME", "health-model"),
+            ("SHOP_HEALTH_MODEL_NAME", "shop-health-model"),
+        ):
+            with self.subTest(output=output):
+                self.assertEqual(
+                    compiled["outputs"][output]["value"],
+                    "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', "
+                    "subscription().subscriptionId, format('rg-{0}', parameters('environmentName'))), "
+                    f"'Microsoft.Resources/deployments', '{deployment}'), '2025-04-01').outputs.modelName.value]",
+                )
+
+        # Mutate the compiled boundary, not source text, to exercise plausible schema-valid regressions.
+        for defect in (
+            "drop-role", "merge-role", "reverse-pair", "replace-pair", "extra-edge",
+            "remove-provider", "disconnect-provider", "second-inventory",
+            "duplicate-binding-case", "swap-postgres", "provider-binding",
+            "foreign-binding", "threshold", "missing-signal", "missing-ordering",
+            "resource-layer", "restore-c0-position", "restore-c1-position",
+            "retained-edge-endpoint",
+        ):
+            with self.subTest(defect=defect):
+                damaged = copy.deepcopy(template)
+                entities = {
+                    shop_entity_name(r["name"]): r
+                    for r in damaged["resources"] if r["type"].endswith("/entities")
+                }
+                edges = [r for r in damaged["resources"] if r["type"].endswith("/relationships")]
+                if defect in ("drop-role", "remove-provider"):
+                    name = "inventory" if defect == "drop-role" else "provider-paypal"
+                    damaged["resources"].remove(entities[name])
+                elif defect == "merge-role":
+                    entities["inventory"]["name"] = entities["analytics"]["name"]
+                elif defect == "reverse-pair":
+                    p = edges[0]["properties"]
+                    p["parentEntityName"], p["childEntityName"] = p["childEntityName"], p["parentEntityName"]
+                elif defect in ("replace-pair", "disconnect-provider"):
+                    edge = edges[0] if defect == "replace-pair" else next(
+                        r for r in edges if r["properties"]["childEntityName"] == "provider-paypal"
+                    )
+                    edge["properties"]["childEntityName"] = "azure-web"
+                elif defect == "extra-edge":
+                    damaged["resources"].append(copy.deepcopy(edges[0]))
+                elif defect == "second-inventory":
+                    entities["inventory"]["name"] = entities["inventory"]["name"].replace(
+                        "inventory", "inventory-domain"
+                    )
+                elif defect in ("duplicate-binding-case", "swap-postgres", "foreign-binding"):
+                    groups = entities["azure-postgres"]["properties"]["signalGroups"]
+                    groups["azureResource"]["azureResourceId"] = (
+                        "/subscriptions/foreign/providers/Microsoft.App/containerApps/foreign"
+                        if defect == "foreign-binding" else
+                        entities["azure-web"]["properties"]["signalGroups"]["azureResource"]["azureResourceId"]
+                    )
+                    if defect == "duplicate-binding-case":
+                        groups["azureResource"]["azureResourceId"] = groups["azureResource"]["azureResourceId"].upper()
+                elif defect == "provider-binding":
+                    entities["provider-stripe"]["properties"]["signalGroups"]["azureResource"] = copy.deepcopy(
+                        entities["azure-web"]["properties"]["signalGroups"]["azureResource"]
+                    )
+                elif defect == "threshold":
+                    damaged["variables"]["syntheticDemoSignals"][0]["evaluationRules"]["unhealthyRule"]["operator"] = "GreaterThanOrEqual"
+                elif defect == "missing-signal":
+                    entities["provider-stripe"]["properties"]["signalGroups"]["azureLogAnalytics"]["signals"] = []
+                elif defect == "missing-ordering":
+                    entities["azure-workspace"]["dependsOn"] = []
+                elif defect == "resource-layer":
+                    entities["azure-storage"]["properties"]["canvasPosition"]["y"] = 0
+                elif defect == "restore-c0-position":
+                    entities[SHOP_ROOT]["properties"]["canvasPosition"] = {"x": 560, "y": 40}
+                elif defect == "restore-c1-position":
+                    entities[SHOP_ROOT]["properties"]["canvasPosition"] = {"x": 500, "y": 0}
+                elif defect == "retained-edge-endpoint":
+                    next(
+                        r for r in edges
+                        if shop_entity_name(r["name"]) == "r-shop-shopping-product-catalog"
+                    )["properties"]["childEntityName"] = "azure-web"
+                # A separate TestCase lets subTest assertions propagate to this negative control.
+                validator = SourceLayoutContractTests()
+                with self.assertRaises(AssertionError):
+                    validator.assert_shop_health_model_contract(damaged)
+
+        fractional = copy.deepcopy(template)
+        root_position = next(
+            r["properties"]["canvasPosition"] for r in fractional["resources"]
+            if r["type"].endswith("/entities") and shop_entity_name(r["name"]) == SHOP_ROOT
+        )
+        root_position["x"] = "[json('900.125')]"
+        with mock.patch.dict(SHOP_POSITIONS, {SHOP_ROOT: (900.125, 0)}):
+            self.assert_shop_health_model_contract(fractional)
+            root_position["x"] = 900
+            with self.assertRaises(AssertionError):
+                SourceLayoutContractTests().assert_shop_health_model_contract(fractional)
 
 
 SCENE_SHOT_COUNTS = {

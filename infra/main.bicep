@@ -51,6 +51,7 @@ var webAppName = 'ca-${namePrefix}-web'
 var agentWebAppName = 'ca-${namePrefix}-agent-web'
 var agentAppName = 'ca-${namePrefix}-agent-app'
 var healthModelName = 'hm-${namePrefix}'
+var shopHealthModelName = 'hm-${namePrefix}-shop'
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-11-01' = {
   name: 'rg-${environmentName}'
@@ -403,6 +404,21 @@ module healthModelDiscovery 'modules/health-model-discovery.bicep' = {
   }
 }
 
+module shopHealthModel 'modules/shop-health-model.bicep' = {
+  scope: rg
+  name: 'shop-health-model'
+  params: {
+    modelName: shopHealthModelName
+    healthModelLocation: healthModelLocation
+    containerAppId: web.outputs.containerAppId
+    aksClusterId: aks.outputs.clusterId
+    postgresId: foundation.outputs.postgresId
+    storageId: storage.outputs.storageId
+    workspaceId: foundation.outputs.workspaceId
+    tags: tags
+  }
+}
+
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = aksAccess.outputs.registryLoginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = foundation.outputs.registryName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = foundation.outputs.environmentId
@@ -434,3 +450,5 @@ output HEALTH_MODEL_RELATIONSHIP_COUNT int = healthModelRelationships.outputs.de
 output HEALTH_MODEL_DISCOVERY_RULE_ID string = healthModelDiscovery.outputs.discoveryRuleId
 output AVAILABILITY_TEST_NAME string = availabilityTests.outputs.availabilityTestName
 output AVAILABILITY_TEST_URL string = availabilityTests.outputs.availabilityTestUrl
+output SHOP_HEALTH_MODEL_NAME string = shopHealthModel.outputs.modelName
+output SHOP_HEALTH_MODEL_ID string = shopHealthModel.outputs.modelId
