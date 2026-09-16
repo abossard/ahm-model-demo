@@ -1,7 +1,8 @@
 # Azure Health Model demo
 
-Browse Azure health models, inspect signals and dependencies, submit health reports, and ask the
-embedded copilot about model health.
+A web application, API, and AI agent for viewing and modifying Azure health models.
+The website and agent can inspect models and submit health reports.
+The deployment also includes a separate shop demo health model.
 
 ## Get started from scratch
 
@@ -13,7 +14,7 @@ azd up
 
 Follow the prompts to sign in and choose an environment, subscription, and region.
 `azd up` creates the Azure resources, sets up the database, and deploys the applications.
-Open the **web** endpoint printed at the end.
+At the end, it prints links to the web application, AI assistant, API, and shop demo.
 
 See [prerequisites](docs/development.md#prerequisites) for the required tools and permissions.
 Deployment creates billable Azure resources.
@@ -40,9 +41,11 @@ The shop uses synthetic signals. A green shop node does not prove that its Azure
 
 ## Documentation
 
+- [Azure Developer CLI documentation](https://learn.microsoft.com/azure/developer/azure-developer-cli/).
 - [Development](docs/development.md): local commands, tests, and limits.
 - [Demo guide](docs/demo.md): models, health reports, and the request journey.
 - [Infrastructure](infra/README.md): deployment, resource bindings, and saving Designer layouts.
+- [Agent guide](AGENTS.md): setup and project context for coding agents.
 
 ## Code
 

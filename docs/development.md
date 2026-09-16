@@ -50,6 +50,7 @@ Use the web app to reach the embedded copilot. Press Ctrl+C to stop the services
 | `make deps` | Install Python and frontend dependencies. |
 | `make ui` | Rebuild the React UI. |
 | `make env` | Print the selected environment's runtime configuration. |
+| `azd hooks run postup` | Print website links again after `azd up`. |
 
 Keep `.azure/` and printed connection settings out of commits.
 

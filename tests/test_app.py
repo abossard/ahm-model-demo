@@ -365,6 +365,7 @@ class SourceLayoutContractTests(unittest.TestCase):
             "infra/main.parameters.json",
             "scripts/hooks/preprovision.sh",
             "scripts/hooks/postprovision.sh",
+            "scripts/hooks/postup.sh",
             "src/web/Dockerfile",
             "src/web/requirements.txt",
             "src/web/app/main.py",
@@ -394,6 +395,7 @@ class SourceLayoutContractTests(unittest.TestCase):
             [
                 "scripts/demo-failure.sh",
                 "scripts/hooks/postprovision.sh",
+                "scripts/hooks/postup.sh",
                 "scripts/hooks/preprovision.sh",
                 "scripts/local-env.sh",
             ],
@@ -402,6 +404,70 @@ class SourceLayoutContractTests(unittest.TestCase):
             {path.name for path in (root / "tests").glob("test_*.py")},
             {"test_app.py", "test_streaming_proxy.py"},
         )
+
+    def test_postup_prints_deployed_website_links(self):
+        root = Path(__file__).parents[1]
+        command = ["bash", "./scripts/hooks/postup.sh"]
+        self.assertIn(
+            "  postup:\n    shell: sh\n    interactive: true\n"
+            "    run: bash ./scripts/hooks/postup.sh",
+            (root / "azure.yaml").read_text(),
+        )
+        cases = (
+            (
+                {
+                    "SERVICE_WEB_FQDN": "web-alpha.example.test",
+                    "AZURE_RESOURCE_GROUP": "rg-alpha",
+                    "SHOP_HEALTH_MODEL_NAME": "hm-alpha-shop",
+                },
+                [
+                    "https://web-alpha.example.test/",
+                    "https://web-alpha.example.test/agent",
+                    "https://web-alpha.example.test/api/health-model",
+                    "https://web-alpha.example.test/?model=hm-alpha-shop&resourceGroup=rg-alpha",
+                ],
+            ),
+            (
+                {
+                    "SERVICE_WEB_FQDN": "web-beta.example.test",
+                    "AZURE_RESOURCE_GROUP": "rg-beta",
+                    "SHOP_HEALTH_MODEL_NAME": "hm-beta-shop",
+                },
+                [
+                    "https://web-beta.example.test/",
+                    "https://web-beta.example.test/agent",
+                    "https://web-beta.example.test/api/health-model",
+                    "https://web-beta.example.test/?model=hm-beta-shop&resourceGroup=rg-beta",
+                ],
+            ),
+        )
+        for environment, expected_urls in cases:
+            with self.subTest(environment=environment):
+                result = subprocess.run(
+                    command,
+                    cwd=root,
+                    env={**os.environ, **environment},
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                self.assertEqual(re.findall(r"https://\S+", result.stdout), expected_urls)
+                self.assertEqual(result.stderr, "")
+
+        for name in cases[0][0]:
+            for value in (None, ""):
+                with self.subTest(missing=name, value=value):
+                    environment = {**os.environ, **cases[0][0]}
+                    if value is None:
+                        environment.pop(name, None)
+                    else:
+                        environment[name] = value
+                    result = subprocess.run(
+                        command, cwd=root, env=environment, capture_output=True, text=True
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(name, result.stderr)
+                    self.assertEqual(result.stdout, "")
 
     def test_shop_health_model_binds_project_resources_to_synthetic_health(self):
         root = Path(__file__).parents[1]

@@ -73,3 +73,7 @@ hooks:
     shell: sh
     interactive: true
     run: bash ./scripts/hooks/postprovision.sh
+  postup:
+    shell: sh
+    interactive: true
+    run: bash ./scripts/hooks/postup.sh
