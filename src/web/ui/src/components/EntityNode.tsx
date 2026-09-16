@@ -1,14 +1,19 @@
 import { memo, useCallback } from "react";
 import type { JSX, KeyboardEvent } from "react";
-import { Handle, Position } from "@xyflow/react";
+import { Handle, Position, useStore } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
 import type { Entity, HealthState, SignalValue } from "../model/types";
 import { cardTokens, tokensFor } from "../model/palette";
+import { HEALTH_SORT_ORDER } from "../model/ordering";
 import { useAppDispatch } from "../store/store";
 import { selectEntity } from "../store/entitySlice";
 import { announce, openPanel, toggleCollapse } from "../store/uiSlice";
 
 export const CARD_WIDTH = 260;
+/** Authored disclosure box, its required rendered minimum, and the header band that contains it. */
+const TOGGLE_BOX = 26;
+const TOGGLE_MIN_RENDERED = 25;
+const HEADER_MIN = 54;
 
 const STROKE = `fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"`;
 
@@ -88,6 +93,7 @@ export interface EntityNodeData extends Record<string, unknown> {
   readonly hasChildren: boolean;
   readonly collapsed: boolean;
   readonly hiddenCount: number;
+  readonly hiddenStates: ReadonlyMap<HealthState, number>;
 }
 
 const CHEVRON = `<path d="M4 6.5 8 10.5 12 6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`;
@@ -102,28 +108,47 @@ function CollapseToggle({
   readonly hiddenCount: number;
 }): JSX.Element {
   const dispatch = useAppDispatch();
-  const token = tokensFor(entity.healthState);
   const name = entity.displayName || entity.name;
-  const label = collapsed
-    ? `Expand ${name}, ${hiddenCount} hidden`
-    : `Collapse ${name}`;
+  const label = collapsed ? `Expand ${name}, ${hiddenCount} hidden` : `Collapse ${name}`;
+  // The card lives inside the React Flow viewport transform, so the authored 26px box renders at
+  // 26 * zoom CSS pixels: a fitted 22-node graph took it to ~13px and the pointer target with it.
+  // Counter-scaling holds the rendered target at its 25px minimum, capped at the largest box the
+  // 54px header band still contains, so the target can never grow out of its own card. A transform
+  // never reflows, so header, card, `measured` and edge geometry stay exactly as laid out.
+  // Selecting `transform[2]` alone keeps panning out of this subscription; only a zoom change
+  // re-renders a toggle.
+  const zoom = useStore((state) => state.transform[2]);
+  const scale =
+    zoom > 0 && zoom * TOGGLE_BOX < TOGGLE_MIN_RENDERED
+      ? Math.min(TOGGLE_MIN_RENDERED / (TOGGLE_BOX * zoom), (HEADER_MIN - 4) / TOGGLE_BOX)
+      : 1;
+
+  const toggle = (): void => {
+    dispatch(toggleCollapse(entity.name));
+    dispatch(
+      announce(collapsed ? `${name} expanded.` : `${name} collapsed, ${hiddenCount} nodes hidden.`),
+    );
+  };
 
   return (
     <button
       type="button"
-      className="entity-node__collapse"
+      className="entity-node__toggle"
       data-testid="collapse-toggle"
-      style={{ borderColor: token.border, backgroundColor: token.fill }}
+      style={scale === 1 ? undefined : { transform: `scale(${scale})` }}
       aria-expanded={!collapsed}
       aria-label={label}
       onClick={(event) => {
         event.stopPropagation();
-        dispatch(toggleCollapse(entity.name));
-        dispatch(
-          announce(
-            collapsed ? `${name} expanded.` : `${name} collapsed, ${hiddenCount} nodes hidden.`,
-          ),
-        );
+        toggle();
+      }}
+      // The chevron sits inside the card's own `role="button"` region, so its keyboard activation
+      // must not bubble up and open the detail panel as well.
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        toggle();
       }}
     >
       <span
@@ -133,19 +158,48 @@ function CollapseToggle({
           __html: `<svg viewBox="0 0 16 16" width="16" height="16">${CHEVRON}</svg>`,
         }}
       />
-      {collapsed ? (
-        <span className="entity-node__hidden" data-testid="hidden-count">
-          {hiddenCount}
-        </span>
-      ) : null}
     </button>
+  );
+}
+
+/** Plain counts of what a collapsed card currently hides, grouped by health state. */
+function HiddenSummary({
+  hiddenCount,
+  hiddenStates,
+}: {
+  readonly hiddenCount: number;
+  readonly hiddenStates: ReadonlyMap<HealthState, number>;
+}): JSX.Element {
+  const buckets = HEALTH_SORT_ORDER.filter((state) => (hiddenStates.get(state) ?? 0) > 0).map(
+    (state) => [state, hiddenStates.get(state) as number] as const,
+  );
+  const spoken = buckets.map(([state, count]) => `${count} ${state}`).join(", ");
+
+  return (
+    <div
+      className="entity-node__hidden"
+      data-testid="hidden-summary"
+      role="group"
+      aria-label={`${hiddenCount} hidden${spoken ? `: ${spoken}` : ""}`}
+    >
+      <span className="entity-node__hidden-count" data-testid="hidden-count">
+        {hiddenCount}
+      </span>
+      <span className="entity-node__hidden-word">hidden</span>
+      {buckets.map(([state, count]) => (
+        <span className="entity-node__hidden-chip" key={state} data-state={state}>
+          <StateDot state={state} />
+          <span className="entity-node__hidden-chip-count">{count}</span>
+        </span>
+      ))}
+    </div>
   );
 }
 
 export type EntityRfNode = Node<EntityNodeData, "entity">;
 
 function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
-  const { entity, selected, highlighted, hasChildren, collapsed, hiddenCount } = data;
+  const { entity, selected, highlighted, hasChildren, collapsed, hiddenCount, hiddenStates } = data;
   const token = tokensFor(entity.healthState);
   const dispatch = useAppDispatch();
   const name = entity.displayName || entity.name;
@@ -198,6 +252,9 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
           <StateDot state={entity.healthState} />
           <span className="entity-node__pill-word">{token.word}</span>
         </span>
+        {hasChildren ? (
+          <CollapseToggle entity={entity} collapsed={collapsed} hiddenCount={hiddenCount} />
+        ) : null}
       </div>
       {entity.signals.length > 0 ? (
         <>
@@ -226,10 +283,10 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
           </ul>
         </>
       ) : null}
-      </div>
-      {hasChildren ? (
-        <CollapseToggle entity={entity} collapsed={collapsed} hiddenCount={hiddenCount} />
+      {collapsed && hiddenCount > 0 ? (
+        <HiddenSummary hiddenCount={hiddenCount} hiddenStates={hiddenStates} />
       ) : null}
+      </div>
       <Handle type="source" position={Position.Bottom} className="entity-node__handle" />
     </div>
   );
@@ -239,13 +296,18 @@ export const EntityNode = memo(EntityNodeImpl);
 
 export function estimateNodeSize(
   entity: Entity,
-  hasChildren = false,
+  showsHiddenSummary = false,
 ): { readonly width: number; readonly height: number } {
   const name = entity.displayName || entity.name;
   const pillWidth = 34 + tokensFor(entity.healthState).word.length * 6.6;
-  const nameAvail = Math.max(80, CARD_WIDTH - 34 - pillWidth - 12);
+  const nameAvail = Math.max(80, CARD_WIDTH - 34 - pillWidth - 12 - 26);
   const nameLines = Math.max(1, Math.ceil((name.length * 6.9) / nameAvail));
-  const headerHeight = 24 + Math.max(20, nameLines * 17, 18);
+  // Mirrors the rendered header exactly: `min-height: 54px`, else 10px padding twice plus the
+  // wrapped name at its 17px line box.
+  const headerHeight = Math.max(HEADER_MIN, 20 + nameLines * 17);
   const rowsHeight = entity.signals.length > 0 ? 16 + entity.signals.length * 22 : 0;
-  return { width: CARD_WIDTH, height: headerHeight + rowsHeight + (hasChildren ? 26 : 0) };
+  return {
+    width: CARD_WIDTH,
+    height: headerHeight + rowsHeight + (showsHiddenSummary ? 28 : 0),
+  };
 }
