@@ -8,9 +8,12 @@ import {
   selectModel,
   selectPanelOpen,
   selectSelectedModel,
+  selectThemeExplicit,
+  selectTheme,
 } from "../store/selectors";
 import { searchFromSelection } from "../model/selection";
-import { toggleChat } from "../store/uiSlice";
+import { applyTheme, persistTheme } from "../model/theme";
+import { initializeTheme } from "../store/uiSlice";
 import { StatusBar } from "./StatusBar";
 import { Topology } from "./Topology";
 import { EntityPanel } from "./EntityPanel";
@@ -23,6 +26,8 @@ export function App(): JSX.Element {
   const selected = useAppSelector(selectSelectedModel);
   const panelOpen = useAppSelector(selectPanelOpen);
   const chatOpen = useAppSelector(selectChatOpen);
+  const theme = useAppSelector(selectTheme);
+  const themeExplicit = useAppSelector(selectThemeExplicit);
 
   useEffect(() => {
     void dispatch(loadModelCatalog());
@@ -33,6 +38,16 @@ export function App(): JSX.Element {
     window.history.replaceState(null, "", searchFromSelection(selected));
     void dispatch(loadHealthModel());
   }, [dispatch, selected]);
+
+  useEffect(() => {
+    const detected = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+    dispatch(initializeTheme(detected));
+  }, [dispatch]);
+
+  useEffect(() => {
+    applyTheme(theme, document);
+    if (themeExplicit) persistTheme(theme, window);
+  }, [theme, themeExplicit]);
 
   return (
     <div className="app-shell">
@@ -54,15 +69,6 @@ export function App(): JSX.Element {
         ) : null}
         {chatOpen ? <ChatPanel /> : null}
       </div>
-      <button
-        type="button"
-        className="chat-toggle"
-        aria-pressed={chatOpen}
-        onClick={() => dispatch(toggleChat())}
-        data-testid="chat-toggle"
-      >
-        {chatOpen ? "Close copilot" : "Open copilot"}
-      </button>
     </div>
   );
 }

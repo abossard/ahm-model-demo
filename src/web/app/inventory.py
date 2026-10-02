@@ -51,8 +51,8 @@ def sort_refs(refs):
     return sorted(
         refs,
         key=lambda item: (
-            (item["resourceGroup"] or "").casefold(),
             (item["name"] or "").casefold(),
+            (item["resourceGroup"] or "").casefold(),
         ),
     )
 

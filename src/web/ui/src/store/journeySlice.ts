@@ -41,6 +41,7 @@ const journeySlice = createSlice({
           message: action.error.message ?? "The request journey failed.",
           retryable: true,
           operationId: null,
+          requestId: null,
         };
         state.result = { kind: "failure", error };
       });

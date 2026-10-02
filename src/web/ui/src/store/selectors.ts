@@ -11,6 +11,7 @@ import type {
 import type { LayoutId } from "../model/layout";
 import type { ConnectionPolicy, EdgeStyle } from "../model/edgeRouting";
 import type { SortKey } from "../model/ordering";
+import type { ThemeName } from "../model/theme";
 
 export function selectModelCatalog(state: RootState): AsyncState<ModelCatalog> {
   return state.catalog.data;
@@ -18,6 +19,10 @@ export function selectModelCatalog(state: RootState): AsyncState<ModelCatalog> {
 
 export function selectSelectedModel(state: RootState): ModelRef | null {
   return state.catalog.selected;
+}
+
+export function selectUnavailableSelection(state: RootState): ModelRef | null {
+  return state.catalog.unavailableSelection;
 }
 
 export function selectModel(state: RootState): AsyncState<HealthModel> {
@@ -52,6 +57,14 @@ export function selectPanelOpen(state: RootState): boolean {
 
 export function selectChatOpen(state: RootState): boolean {
   return state.ui.chatOpen;
+}
+
+export function selectTheme(state: RootState): ThemeName {
+  return state.ui.theme;
+}
+
+export function selectThemeExplicit(state: RootState): boolean {
+  return state.ui.themeExplicit;
 }
 
 export function selectModelRefreshing(state: RootState): boolean {

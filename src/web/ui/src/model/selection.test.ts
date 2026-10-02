@@ -20,7 +20,7 @@ const CASES: readonly (readonly [string, string])[] = [
 
 describe("model selection", () => {
   it.each(CASES)("resolves %s to %s", (search, expected) => {
-    expect(selectionFromSearch(search, CATALOG)?.name).toBe(expected);
+    expect(selectionFromSearch(search, CATALOG).selected?.name).toBe(expected);
   });
 
   it("falls back to the first model when the default is absent from the catalog", () => {
@@ -28,16 +28,32 @@ describe("model selection", () => {
       models: CATALOG.models.slice(1),
       default: CATALOG.default,
     };
-    expect(selectionFromSearch("", orphaned)?.name).toBe("hm-b");
+    expect(selectionFromSearch("", orphaned).selected?.name).toBe("hm-b");
   });
 
   it("returns null when the catalog is empty", () => {
-    expect(selectionFromSearch("?model=hm-a&resourceGroup=rg-a", { models: [], default: CATALOG.default })).toBeNull();
+    expect(
+      selectionFromSearch("?model=hm-a&resourceGroup=rg-a", {
+        models: [],
+        default: CATALOG.default,
+      }).selected,
+    ).toBeNull();
   });
 
   it("round-trips a selection through the search string", () => {
     const selection = CATALOG.models[1]!;
     expect(searchFromSelection(selection)).toBe("?model=hm-b&resourceGroup=rg-b");
-    expect(selectionFromSearch(searchFromSelection(selection), CATALOG)).toEqual(selection);
+    expect(selectionFromSearch(searchFromSelection(selection), CATALOG).selected).toEqual(
+      selection,
+    );
+  });
+
+  it("captures an unavailable requested pair while selecting a safe fallback", () => {
+    const resolved = selectionFromSearch("?model=ghost&resourceGroup=rg-z", CATALOG);
+    expect(resolved.selected).toEqual(CATALOG.models[0]);
+    expect(resolved.unavailable).toMatchObject({
+      name: "ghost",
+      resourceGroup: "rg-z",
+    });
   });
 });

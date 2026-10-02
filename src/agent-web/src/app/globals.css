@@ -1,4 +1,19 @@
 :root {
+  color-scheme: light;
+  --ink: #f8fafc;
+  --ink-deep: #ffffff;
+  --surface: #e2e8f0;
+  --surface-raised: #f1f5f9;
+  --border: #cbd5e1;
+  --border-quiet: #e2e8f0;
+  --text: #0f172a;
+  --muted: #334155;
+  --azure: #2563eb;
+  --azure-hover: #1d4ed8;
+  --healthy: #166534;
+}
+
+:root[data-theme="dark"] {
   color-scheme: dark;
   --ink: #111827;
   --ink-deep: #080c14;
@@ -148,6 +163,29 @@ h2 {
   font-weight: 800;
 }
 
+.starter-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-block: 0 1rem;
+}
+
+.starter-button {
+  min-height: 36px;
+  padding: 0.45rem 0.75rem;
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.starter-button:hover {
+  border-color: var(--azure);
+}
+
 .chat-guide {
   padding: 1.25rem;
   background: var(--surface);
@@ -281,11 +319,28 @@ h2 {
   }
 }
 
-/* Embedded CopilotKit v2 chat: map its shadcn tokens onto Health Pulse values.
-   Scoped to `.dark [data-copilotkit]` to match the shipped stylesheet's
-   specificity; globals.css loads after it, so equal-specificity rules win. */
-.dark [data-copilotkit],
-[data-copilotkit].dark {
+:root[data-theme="light"] [data-copilotkit] {
+  --background: #ffffff;
+  --foreground: #0f172a;
+  --card: #f8fafc;
+  --card-foreground: #0f172a;
+  --popover: #f8fafc;
+  --popover-foreground: #0f172a;
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --secondary: #f8fafc;
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #475569;
+  --accent: #f1f5f9;
+  --accent-foreground: #0f172a;
+  --border: #cbd5e1;
+  --input: #cbd5e1;
+  --ring: #2563eb;
+  --radius: 12px;
+}
+
+:root[data-theme="dark"] [data-copilotkit] {
   --background: #111827;
   --foreground: #f9fafb;
   --card: #1f2937;
@@ -316,6 +371,10 @@ h2 {
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: none;
+}
+
+[data-copilotkit] textarea::placeholder {
+  color: var(--muted-foreground);
 }
 
 [data-copilotkit][data-slot="suggestion-pill"] {

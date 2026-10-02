@@ -180,7 +180,18 @@ export const reportResponse: HealthReportResult = {
 
 export const journeyResponse: JourneyResult = {
   request_id: "req-abc-123",
-  queue_head: { request_id: "req-old-000" },
+  just_enqueued: {
+    request_id: "req-abc-123",
+    message_id: "msg-enqueued-123",
+    created_at: "2026-07-30T16:06:00Z",
+  },
+  queue_head: {
+    label: "oldest visible / best-effort FIFO",
+    message_id: "msg-old-000",
+    request_id: "req-old-000",
+    created_at: "2026-07-30T16:00:00Z",
+    dequeue_count: 0,
+  },
   row_count: 4217,
 };
 

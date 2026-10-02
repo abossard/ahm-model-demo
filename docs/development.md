@@ -65,6 +65,22 @@ npm --prefix src/web/ui test
 The Python suite includes two storyboard checks for the absent `docs/scenes` directory. Those checks
 currently fail.
 
+## Live Playwright checks
+
+Use the explicit live config in `src/web/ui/playwright.live.config.ts` for deployed read-only
+verification:
+
+```bash
+LIVE_BASE_URL=https://<deployed-web-app-url> \
+npm --prefix src/web/ui run e2e -- --config playwright.live.config.ts
+```
+
+- Default selection runs only `@live-readonly` tests.
+- Live mutation tests are opt-in and gated behind `LIVE_INCLUDE_MUTATION=1`.
+- `LIVE_BASE_URL` is required. The live config has no baked-in deployment fallback.
+- The default local Playwright config excludes `tests/live-experience.spec.ts`.
+- The local suite does not substitute fixtures on successful live paths.
+
 ## Local limits
 
 - The request journey needs the private Storage Queue endpoint. Run it through the deployed app.
