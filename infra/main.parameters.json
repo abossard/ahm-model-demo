@@ -31,6 +31,9 @@
     },
     "agentAppImage": {
       "value": "${SERVICE_AGENT_APP_IMAGE_NAME}"
+    },
+    "surveyImage": {
+      "value": "${SERVICE_SURVEY_IMAGE_NAME}"
     }
   }
 }

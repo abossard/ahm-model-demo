@@ -37,6 +37,9 @@ param agentWebImage string = ''
 @description('Image published by "azd deploy agent-app". Empty until the first deploy.')
 param agentAppImage string = ''
 
+@description('Image published by "azd deploy survey". Empty until the first deploy.')
+param surveyImage string = ''
+
 @description('Filming-only availability test that writes through the full request journey.')
 param journeyAvailabilityTestEnabled bool = false
 
@@ -52,6 +55,7 @@ var agentWebAppName = 'ca-${namePrefix}-agent-web'
 var agentAppName = 'ca-${namePrefix}-agent-app'
 var healthModelName = 'hm-${namePrefix}'
 var shopHealthModelName = 'hm-${namePrefix}-shop'
+var surveyHealthModelName = 'hm-${namePrefix}-survey'
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-11-01' = {
   name: 'rg-${environmentName}'
@@ -327,6 +331,40 @@ module agentApp 'modules/container-app.bicep' = {
   }
 }
 
+module survey 'modules/survey-platform.bicep' = {
+  scope: rg
+  name: 'survey-platform'
+  params: {
+    name: 'ca-${namePrefix}-survey'
+    location: location
+    environmentId: foundation.outputs.environmentId
+    identityId: foundation.outputs.identityId
+    identityClientId: foundation.outputs.identityClientId
+    identityName: foundation.outputs.identityName
+    registryLoginServer: rbac.outputs.registryLoginServer
+    image: surveyImage
+    placeholderImage: placeholderImage
+    postgresHost: foundation.outputs.postgresHost
+    postgresDatabase: foundation.outputs.postgresDatabase
+    applicationInsightsConnectionString: rbac.outputs.applicationInsightsConnectionString
+    tags: tags
+  }
+}
+
+module surveyHealthModel 'modules/survey-health-model.bicep' = {
+  scope: rg
+  name: 'survey-health-model'
+  params: {
+    modelName: surveyHealthModelName
+    healthModelLocation: healthModelLocation
+    containerAppId: survey.outputs.containerAppId
+    postgresId: foundation.outputs.postgresId
+    workspaceId: foundation.outputs.workspaceId
+    applicationInsightsId: foundation.outputs.applicationInsightsId
+    tags: tags
+  }
+}
+
 module availabilityTests 'modules/availability-tests.bicep' = {
   scope: rg
   name: 'availability-tests'
@@ -452,3 +490,8 @@ output AVAILABILITY_TEST_NAME string = availabilityTests.outputs.availabilityTes
 output AVAILABILITY_TEST_URL string = availabilityTests.outputs.availabilityTestUrl
 output SHOP_HEALTH_MODEL_NAME string = shopHealthModel.outputs.modelName
 output SHOP_HEALTH_MODEL_ID string = shopHealthModel.outputs.modelId
+output SERVICE_SURVEY_NAME string = survey.outputs.containerAppName
+output SERVICE_SURVEY_ID string = survey.outputs.containerAppId
+output SERVICE_SURVEY_FQDN string = survey.outputs.fqdn
+output SURVEY_HEALTH_MODEL_NAME string = surveyHealthModel.outputs.modelName
+output SURVEY_HEALTH_MODEL_ID string = surveyHealthModel.outputs.modelId

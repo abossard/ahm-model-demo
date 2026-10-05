@@ -1,16 +1,93 @@
 # Infrastructure
 
 `main.bicep` provisions the whole demo at subscription scope: the resource group, the workload, and
-two Azure Health Models.
+three Azure Health Models.
 
-## The two health models
+## The health models
 
 | Model | Module | What it describes |
 |-------|--------|-------------------|
 | `hm-<env>` | `modules/health-model.bicep` + `health-model-entities.bicep` + `health-model-relationships.bicep` + `health-model-discovery.bicep` | The real application: 19 authored entities over live metrics, log queries, availability tests, submitted health reports, and an Application Insights discovery rule. This is the model the web app selects by default. |
 | `hm-<env>-shop` | `modules/shop-health-model.bicep` | A fictional shop with 18 entities, 21 relationships, and no discovery. |
+| `hm-<env>-survey` | `modules/survey-health-model.bicep` | Survey authoring, joining/answering, and public results over real resources; no discovery or constant-healthy signals. |
 
-Both live in the same resource group, and `azd provision` creates both.
+All live in the same resource group, and `azd provision` creates them together.
+
+## Survey ownership
+
+The survey adds its own `survey` Container App and survey health model. It reuses the unchanged
+`container-app.bicep`, existing environment, ACR, user-assigned workload identity, PostgreSQL
+`demo` database, Application Insights, and workspace. No additional AI, database server, standalone
+identity, telemetry component, availability-test resource, or survey AKS service is provisioned.
+The new Container App and model evaluations can incur cost. Template changes are not deployment
+permission; inspect current images, layouts and grants before an authorized provision.
+
+The azd image input is `SERVICE_SURVEY_IMAGE_NAME`. Outputs provide `SERVICE_SURVEY_NAME`,
+`SERVICE_SURVEY_ID`, `SERVICE_SURVEY_FQDN`, `SURVEY_HEALTH_MODEL_NAME` and
+`SURVEY_HEALTH_MODEL_ID`. URLs and resource leaves derive from these outputs.
+
+The existing postprovision hook applies `src/survey/migrations/001_initial.sql` as the PostgreSQL
+administrator. Its transaction and advisory lock record version 1 in `survey.schema_migrations`;
+repeat/concurrent runs are safe and failure rolls back. Runtime requests never execute DDL.
+For survey-only administrator maintenance, `scripts/hooks/postprovision.sh --survey-only` uses
+the operator's `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, TLS/credential environment, and
+`AZURE_IDENTITY_NAME`. It never runs the old demo bootstrap or Azure CLI. It adds schema USAGE,
+table DML, and migration-version SELECT without changing old data or grants. Future migrations
+need new numbered versions; do not edit an already-applied migration to upgrade a deployment.
+
+The reused identity retains old Queue and `public.request_events` permissions. Schema-qualified,
+bound survey SQL confines application effects; this is not privilege isolation. There is no queue
+or health-report client in the survey process.
+
+Survey telemetry uses the stable role `ahm-survey` and allowlisted operation/status/duration
+metadata only. HTTP/SQL/credential auto-instrumentation and access logging are disabled. No bodies,
+answers, capabilities, query strings, client IPs, or SQL parameters are exported. Four legacy
+workspace log queries exclude `AppRoleName == "ahm-survey"` while retaining all other or missing
+roles. Classic Application Insights equivalents use `cloud_RoleName`; old producers are not retagged.
+Shared physical-resource metrics and outages are still shared. Existing resource-level Insights
+discovery cannot be partitioned by a role filter and remains an unverified, deferred limitation.
+
+Survey logical nodes roll up `WorstOf` with `ignoreUnknown: false`. Operation success queries
+require recent samples; empty/stale traffic yields no healthy row. The model's system identity
+receives the existing access-module read grants before resource-bound entities are created.
+Five signal-only operation-evidence leaves carry the author, join, ballot, results and readiness
+queries. Their system flows depend on those leaves as well as the real resources. Keeping the
+operation query separate prevents resource health from masking its Unknown input inside the
+same entity. It does not by itself prove that the native dependency aggregator propagates
+Unknown to a mixed Healthy/Unknown parent. The survey graph has 18 entities and 25 relationships; no extra Azure platform
+resource or permission is required. Verify native propagation rather than inferring root health
+from the query result or compiled settings.
+The model/authentication, access grants, and `survey-health-entities.bicep` child deployment are
+separate ARM validation boundaries. CloudHealth validates signal-bearing children only after
+the new model and its read grants exist. Native provider validation is still required: a successful
+Bicep compilation does not validate signal names or KQL functions.
+`GET /api/ready` checks `SELECT 1` and migration version without writes. No continuous write probe
+or automatic survey discovery is added. Actual evaluator timestamps and Azure ingestion still
+require authorized deployed read-back. Use Designer initially; existing catalog permissions do
+not guarantee survey visibility, and no subscription permission is broadened.
+
+### Scoped survey deployment
+
+For an existing environment, use the resource-group-scoped
+`modules/survey-deployment.bicep`, not a full-stack provision. It takes the existing environment,
+identity, registry, PostgreSQL, Insights and workspace names as parameters and derives IDs and
+settings from those existing resources. It adds only the survey Container App, health model,
+children and model read grants. Pass a previously built and locally verified linux/amd64 image
+by immutable registry digest. Run property-level `az deployment group what-if` against the
+intended subscription and resource group before `az deployment group create`.
+
+Snapshot current app images/revisions, authored model properties, grants and demo data first.
+If live legacy queries or layouts differ from source, update only the four approved operational
+query clauses in their actual live entity. Do not redeploy the old entity from the source template
+or reconcile missing models. Apply the administrator's survey-only migration, never the old demo
+bootstrap. Keep authentication tokens and telemetry settings out of command output and files.
+
+The readiness endpoint is GET-only. A deployed smoke survey is a separate authorized data write;
+use one dedicated survey, keep capabilities only in process/browser memory, and clear its answers
+through its response API afterward. Do not delete it with SQL or exercise old report/journey
+mutation endpoints. Verify the actual active digest/revision, public flows, telemetry role and
+native evaluator timestamps. Initial model read grants can need an evaluation interval to
+propagate; Unknown or a query error is not proof of Healthy.
 
 ## The shop model
 
@@ -66,7 +143,7 @@ queries after the read grants.
 For a first deployment, follow [Get started from scratch](../README.md#get-started-from-scratch).
 Use `azd up` to provision resources and deploy application images.
 
-For infrastructure changes in a configured environment, `azd provision` provisions both models but
+For infrastructure changes in a configured environment, `azd provision` provisions all models but
 does not deploy application images:
 
 ```bash
@@ -175,7 +252,7 @@ Use API version `2026-05-01-preview` and follow `nextLink`.
 ```bash
 BASE="https://management.azure.com/subscriptions/<sub>/resourceGroups/rg-<env>/providers/Microsoft.CloudHealth/healthmodels"
 
-az rest --subscription <sub> --method get --url "$BASE?api-version=2026-05-01-preview" # two models
+az rest --subscription <sub> --method get --url "$BASE?api-version=2026-05-01-preview" # three models
 az rest --subscription <sub> --method get --url "$BASE/hm-<env>-shop/entities?api-version=2026-05-01-preview" # 18 entities
 az rest --subscription <sub> --method get --url "$BASE/hm-<env>-shop/relationships?api-version=2026-05-01-preview" # 21 edges
 ```

@@ -10,6 +10,13 @@ infra:
   module: main
 
 services:
+  survey:
+    project: ./src/survey
+    language: py
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      remoteBuild: true
   web:
     project: ./src/web
     language: py

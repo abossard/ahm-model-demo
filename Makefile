@@ -9,8 +9,18 @@ WEB_PYTHON ?= $(WEB_VENV)/bin/python
 # Must match the base image in src/web/Dockerfile and src/agent-app/Dockerfile so local runs
 # on the same interpreter as the containers.
 PYTHON_VERSION ?= 3.14
+SURVEY_PORT ?= 8081
 
 .PHONY: help env deps ui dev gate
+.PHONY: survey-ui survey-dev
+
+survey-ui:
+	@npm --prefix src/survey/ui run build
+
+survey-dev: survey-ui
+	@set -e; vars="$$(scripts/local-env.sh --survey)"; eval "$$vars"; \
+	$(WEB_PYTHON) -m uvicorn --app-dir src/survey --host 127.0.0.1 \
+	  --port $(SURVEY_PORT) --no-access-log app.main:app
 
 gate:
 	@scripts/local-env.sh > /dev/null

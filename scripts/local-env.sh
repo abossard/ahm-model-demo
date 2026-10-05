@@ -42,8 +42,20 @@ MAPPING=(
   "AZURE_OPENAI_CHAT_DEPLOYMENT_NAME=AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"
 )
 
+if [[ "${1:-}" == '--survey' ]]; then
+  MAPPING=(
+    "POSTGRES_HOST=AZURE_POSTGRES_HOST"
+    "POSTGRES_DATABASE=AZURE_POSTGRES_DATABASE"
+    "POSTGRES_USER=AZURE_IDENTITY_NAME"
+    "AZURE_CLIENT_ID=AZURE_IDENTITY_CLIENT_ID"
+    "APPLICATIONINSIGHTS_CONNECTION_STRING=APPLICATIONINSIGHTS_CONNECTION_STRING"
+  )
+  exports=("export OTEL_SERVICE_NAME=ahm-survey")
+else
+  exports=()
+fi
+
 missing=()
-exports=()
 for pair in "${MAPPING[@]}"; do
   app_var=${pair%%=*}
   azd_key=${pair#*=}

@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == '--survey-only' ]]; then
+  : "${PGHOST:?}"
+  : "${PGDATABASE:?}"
+  : "${PGUSER:?}"
+  : "${AZURE_IDENTITY_NAME:?}"
+  psql -X --set=ON_ERROR_STOP=1 --set=uami_name="$AZURE_IDENTITY_NAME" \
+    --file="$(dirname "$0")/../../src/survey/migrations/001_initial.sql"
+  printf 'SURVEY_MIGRATION_OK version=1\n'
+  exit 0
+fi
+
 # PostgreSQL data-plane bootstrap. Maps the workload's user-assigned identity to a database
 # role and creates the request_events table the public API writes to. Neither is expressible
 # in ARM, so it runs as the azd postprovision hook.
@@ -80,6 +91,11 @@ SQL
 
 printf 'BOOTSTRAP_OK server=%s database=%s principal=%s oid=%s grants=CONNECT,USAGE,SELECT,INSERT\n' \
   "$AZURE_POSTGRES_HOST" "$AZURE_POSTGRES_DATABASE" "$UAMI_NAME" "$UAMI_OBJECT_ID"
+
+PGDATABASE="$AZURE_POSTGRES_DATABASE" psql -X --set=ON_ERROR_STOP=1 \
+  --set=uami_name="$UAMI_NAME" \
+  --file="$(dirname "$0")/../../src/survey/migrations/001_initial.sql"
+printf 'SURVEY_MIGRATION_OK version=1\n'
 
 # The workload identity is only granted on the demo's own health model, so the frontend lists and
 # reports on just that one. Reaching every model in the subscription needs subscription-scoped

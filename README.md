@@ -3,6 +3,8 @@
 A web application, API, and AI agent for viewing and modifying Azure health models.
 The website and agent can inspect models and submit health reports.
 The deployment also includes a separate shop demo health model.
+The standalone survey app lets visitors create statement surveys, answer with agreement sliders,
+and read public aggregates without an account.
 
 ## Get started from scratch
 
@@ -36,6 +38,7 @@ Open [localhost:8080](http://localhost:8080). Local development still uses your 
 |-------|---------|
 | `hm-<env>` | Application health from metrics, logs, availability tests, and health reports. |
 | `hm-<env>-shop` | An 18-node shop with two simulated payment providers and six real Azure-resource links. |
+| `hm-<env>-survey` | Author Survey, Join and Answer, and View Results over the survey Container App and shared persistence/telemetry. |
 
 The shop uses synthetic signals. A green shop node does not prove that its Azure resource is healthy.
 
@@ -52,4 +55,5 @@ The shop uses synthetic signals. A green shop node does not prove that its Azure
 - `src/web`: FastAPI server and React UI.
 - `src/agent-web`: Next.js and CopilotKit frontend.
 - `src/agent-app`: Python agent and health-model tools.
+- `src/survey`: same-origin FastAPI/React survey app, versioned PostgreSQL schema, and local checks.
 - `infra`: Bicep templates. `azure.yaml` defines Container Apps and AKS hosting.
