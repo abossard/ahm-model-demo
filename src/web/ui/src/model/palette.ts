@@ -4,16 +4,64 @@ export interface StateTokens {
   readonly border: string;
   readonly fill: string;
   readonly dot: string;
+  readonly actionFill: string;
+  readonly actionInk: string;
+  readonly label: string;
   readonly word: string;
   readonly dashed: boolean;
 }
 
 export const stateTokens: Record<HealthState, StateTokens> = {
-  Healthy: { border: "#a0d8a0", fill: "#f2f8f2", dot: "#4c9a2a", word: "Healthy", dashed: false },
-  Degraded: { border: "#db7500", fill: "#fbf2e7", dot: "#c26a00", word: "Degraded", dashed: false },
-  Unhealthy: { border: "#ba0d16", fill: "#faeceb", dot: "#c50f18", word: "Unhealthy", dashed: false },
-  Unknown: { border: "#c8c6c4", fill: "#f6f6f5", dot: "#8a8886", word: "Unknown", dashed: true },
-  Deleted: { border: "#8661c5", fill: "#f4f0fb", dot: "#8661c5", word: "Standby", dashed: false },
+  Healthy: {
+    border: "var(--healthy-border)",
+    fill: "var(--healthy-fill)",
+    dot: "var(--healthy-dot)",
+    actionFill: "var(--healthy-action-bg)",
+    actionInk: "var(--healthy-action-ink)",
+    label: "var(--healthy-label)",
+    word: "Healthy",
+    dashed: false,
+  },
+  Degraded: {
+    border: "var(--degraded-border)",
+    fill: "var(--degraded-fill)",
+    dot: "var(--degraded-dot)",
+    actionFill: "var(--degraded-action-bg)",
+    actionInk: "var(--degraded-action-ink)",
+    label: "var(--degraded-label)",
+    word: "Degraded",
+    dashed: false,
+  },
+  Unhealthy: {
+    border: "var(--unhealthy-border)",
+    fill: "var(--unhealthy-fill)",
+    dot: "var(--unhealthy-dot)",
+    actionFill: "var(--unhealthy-action-bg)",
+    actionInk: "var(--unhealthy-action-ink)",
+    label: "var(--unhealthy-label)",
+    word: "Unhealthy",
+    dashed: false,
+  },
+  Unknown: {
+    border: "var(--unknown-border)",
+    fill: "var(--unknown-fill)",
+    dot: "var(--unknown-dot)",
+    actionFill: "var(--unknown-action-bg)",
+    actionInk: "var(--unknown-action-ink)",
+    label: "var(--unknown-label)",
+    word: "Unknown",
+    dashed: true,
+  },
+  Deleted: {
+    border: "var(--deleted-border)",
+    fill: "var(--deleted-fill)",
+    dot: "var(--deleted-border)",
+    actionFill: "var(--deleted-action-bg)",
+    actionInk: "var(--deleted-action-ink)",
+    label: "var(--deleted-label)",
+    word: "Standby",
+    dashed: false,
+  },
 };
 
 export function tokensFor(state: string): StateTokens {
@@ -21,10 +69,10 @@ export function tokensFor(state: string): StateTokens {
 }
 
 export const cardTokens = {
-  ink: "#242424",
-  muted: "#605e5c",
-  hair: "#e6e4e2",
-  pillFill: "#ffffff",
-  pillStroke: "#d8d6d4",
-  metricBars: ["#8661c5", "#0078D4", "#3fb0ac"],
+  ink: "var(--ink)",
+  muted: "var(--muted)",
+  hair: "var(--hair)",
+  pillFill: "var(--pill-fill)",
+  pillStroke: "var(--pill-stroke)",
+  metricBars: ["var(--deleted-border)", "var(--signal)", "var(--healthy-dot)"],
 } as const;

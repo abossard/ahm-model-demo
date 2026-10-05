@@ -7,21 +7,32 @@ import * as api from "./api";
 interface CatalogState {
   readonly data: AsyncState<ModelCatalog>;
   readonly selected: ModelRef | null;
+  readonly unavailableSelection: ModelRef | null;
 }
 
 const initialState: CatalogState = {
   data: { kind: "idle" },
   selected: null,
+  unavailableSelection: null,
 };
 
 export const loadModelCatalog = createAsyncThunk<
-  { readonly catalog: ModelCatalog; readonly selected: ModelRef | null },
+  {
+    readonly catalog: ModelCatalog;
+    readonly selected: ModelRef | null;
+    readonly unavailableSelection: ModelRef | null;
+  },
   void,
   { rejectValue: ApiError }
 >("catalog/load", async (_arg, { rejectWithValue }) => {
   try {
     const catalog = await api.fetchModelCatalog();
-    return { catalog, selected: selectionFromSearch(window.location.search, catalog) };
+    const resolution = selectionFromSearch(window.location.search, catalog);
+    return {
+      catalog,
+      selected: resolution.selected,
+      unavailableSelection: resolution.unavailable,
+    };
   } catch (error) {
     return rejectWithValue(error as ApiError);
   }
@@ -33,6 +44,7 @@ const catalogSlice = createSlice({
   reducers: {
     chooseModel: (state, action: { payload: ModelRef }) => {
       state.selected = action.payload as Draft<ModelRef>;
+      state.unavailableSelection = null;
     },
   },
   extraReducers: (builder) => {
@@ -43,6 +55,7 @@ const catalogSlice = createSlice({
       .addCase(loadModelCatalog.fulfilled, (state, action) => {
         state.data = { kind: "success", value: action.payload.catalog as Draft<ModelCatalog> };
         state.selected = action.payload.selected as Draft<ModelRef> | null;
+        state.unavailableSelection = action.payload.unavailableSelection as Draft<ModelRef> | null;
       })
       .addCase(loadModelCatalog.rejected, (state, action) => {
         const error: ApiError = action.payload ?? {
@@ -52,6 +65,7 @@ const catalogSlice = createSlice({
           operationId: null,
         };
         state.data = { kind: "failure", error };
+        state.unavailableSelection = null;
       });
   },
 });

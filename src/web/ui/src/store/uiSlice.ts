@@ -5,12 +5,15 @@ import { submitHealthReport } from "./reportSlice";
 import { DEFAULT_LAYOUT_ID, type LayoutId } from "../model/layout";
 import type { ConnectionPolicy, EdgeStyle } from "../model/edgeRouting";
 import type { SortKey } from "../model/ordering";
+import type { ThemeName } from "../model/theme";
 
 export const REFRESH_COUNTDOWN_SECONDS = 10;
 
 interface UiState {
   readonly panelOpen: boolean;
   readonly chatOpen: boolean;
+  readonly theme: ThemeName;
+  readonly themeExplicit: boolean;
   readonly autoRefreshMs: number;
   readonly refreshCountdown: number;
   readonly layoutId: LayoutId;
@@ -29,6 +32,8 @@ interface UiState {
 const initialState: UiState = {
   panelOpen: false,
   chatOpen: false,
+  theme: "light",
+  themeExplicit: false,
   autoRefreshMs: 0,
   refreshCountdown: 0,
   layoutId: DEFAULT_LAYOUT_ID,
@@ -56,6 +61,17 @@ const uiSlice = createSlice({
     },
     toggleChat: (state) => {
       state.chatOpen = !state.chatOpen;
+    },
+    closeChat: (state) => {
+      state.chatOpen = false;
+    },
+    initializeTheme: (state, action: PayloadAction<ThemeName>) => {
+      state.theme = action.payload;
+      state.themeExplicit = false;
+    },
+    setTheme: (state, action: PayloadAction<ThemeName>) => {
+      state.theme = action.payload;
+      state.themeExplicit = true;
     },
     setAutoRefresh: (state, action: PayloadAction<number>) => {
       state.autoRefreshMs = action.payload;
@@ -122,6 +138,9 @@ export const {
   openPanel,
   closePanel,
   toggleChat,
+  closeChat,
+  initializeTheme,
+  setTheme,
   setAutoRefresh,
   tickRefreshCountdown,
   setLayout,

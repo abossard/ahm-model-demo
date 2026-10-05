@@ -78,7 +78,10 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
             type="button"
             className="quick-send__button"
             data-testid={`quick-send-${state}`}
-            style={{ backgroundColor: tokensFor(state).dot }}
+            style={{
+              backgroundColor: tokensFor(state).actionFill,
+              color: tokensFor(state).actionInk,
+            }}
             onClick={() => send(state)}
           >
             {state}

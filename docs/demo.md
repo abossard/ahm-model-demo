@@ -19,7 +19,18 @@ without changing the monitored Azure resource.
 
 ## Run the request journey
 
-The application's request-journey action writes to PostgreSQL and sends a Storage Queue message.
+The application's request-journey action enqueues first, then writes PostgreSQL, then peeks the
+oldest visible queue message.
+
+The database is Azure Database for PostgreSQL Flexible Server. It is separate from the Container App
+that runs the web application.
+
+The journey always targets the configured application workload, even when another model is selected
+in the graph.
+
+If a journey request fails, treat the error as partial by default. The queue enqueue and/or database
+insert might have completed before the failure response.
+
 Use the deployed app: the queue's private endpoint is not reachable from a typical local setup.
 
 ## Keep a Designer layout

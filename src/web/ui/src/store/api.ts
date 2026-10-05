@@ -11,19 +11,50 @@ import type {
 import { searchFromSelection } from "../model/selection";
 
 function fallbackError(message: string): ApiError {
-  return { code: "network_error", message, retryable: true, operationId: null };
+  return {
+    code: "network_error",
+    message,
+    retryable: true,
+    operationId: null,
+    requestId: null,
+  };
 }
 
 async function readError(response: Response): Promise<ApiError> {
   try {
-    const body = (await response.json()) as { error?: Partial<ApiError> };
+    const body = (await response.json()) as {
+      error?: Partial<ApiError> | string;
+      request_id?: unknown;
+      operation_id?: unknown;
+      status?: unknown;
+    };
+    const requestIdHeader = response.headers.get("x-request-id");
+    const operationIdHeader = response.headers.get("x-operation-id");
     const error = body.error;
-    if (error && typeof error.message === "string") {
+    if (error && typeof error === "object" && typeof error.message === "string") {
       return {
         code: error.code ?? "error",
         message: error.message,
         retryable: error.retryable ?? false,
-        operationId: error.operationId ?? null,
+        operationId: error.operationId ?? operationIdHeader ?? null,
+        requestId: error.requestId ?? requestIdHeader ?? null,
+      };
+    }
+    const operationId =
+      typeof body.operation_id === "string"
+        ? body.operation_id
+        : operationIdHeader;
+    const requestId =
+      typeof body.request_id === "string"
+        ? body.request_id
+        : requestIdHeader;
+    if (body.status === "failed" && (operationId || requestId)) {
+      return {
+        code: "journey_failed",
+        message: `Request failed with status ${response.status}.`,
+        retryable: response.status >= 500,
+        operationId: operationId ?? null,
+        requestId: requestId ?? null,
       };
     }
   } catch {
@@ -33,7 +64,8 @@ async function readError(response: Response): Promise<ApiError> {
     code: "http_error",
     message: `Request failed with status ${response.status}.`,
     retryable: response.status >= 500,
-    operationId: null,
+    operationId: response.headers.get("x-operation-id"),
+    requestId: response.headers.get("x-request-id"),
   };
 }
 

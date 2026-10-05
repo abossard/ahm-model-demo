@@ -272,7 +272,7 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
                     className="entity-node__row-value"
                     style={{
                       fontWeight: healthy ? 400 : 600,
-                      color: healthy ? cardTokens.muted : tokensFor(signal.healthState).dot,
+                      color: healthy ? cardTokens.muted : tokensFor(signal.healthState).label,
                     }}
                   >
                     {value}

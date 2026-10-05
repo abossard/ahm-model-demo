@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import importlib
 import json
@@ -6,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from datetime import datetime, timezone
@@ -1412,6 +1414,155 @@ class HealthReportUiTests(unittest.TestCase):
         self.assertTrue(payload["error"]["retryable"])
         self.assertRegex(payload["error"]["operationId"], r"^[0-9a-f]{32}$")
 
+    def test_agent_proxy_static_asset_waits_for_temporarily_busy_slot(self):
+        slots = threading.BoundedSemaphore(1)
+        self.assertTrue(slots.acquire(blocking=False))
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    200,
+                    headers={"content-type": "application/javascript"},
+                    stream=httpx.ByteStream(b"console.log('ok');"),
+                )
+            )
+        )
+        released = threading.Event()
+
+        def release_slot():
+            slots.release()
+            released.set()
+
+        timer = threading.Timer(0.05, release_slot)
+        timer.start()
+        started = time.monotonic()
+        try:
+            with (
+                mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
+                mock.patch.object(self.module, "_agent_proxy_slots", slots),
+                mock.patch.object(
+                    self.module,
+                    "_agent_client_factory",
+                    return_value=client,
+                ),
+            ):
+                response = self.client.get("/agent/_next/static/chunks/demo.js")
+        finally:
+            timer.cancel()
+            if not released.is_set():
+                slots.release()
+        waited = time.monotonic() - started
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"console.log('ok');")
+        self.assertGreaterEqual(waited, 0.04)
+
+    def test_agent_proxy_static_asset_returns_saturation_after_wait_timeout(self):
+        slots = threading.BoundedSemaphore(1)
+        self.assertTrue(slots.acquire(blocking=False))
+        started = time.monotonic()
+        try:
+            with (
+                mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
+                mock.patch.object(self.module, "_agent_proxy_slots", slots),
+                mock.patch.object(
+                    self.module,
+                    "_AGENT_STATIC_SLOT_WAIT_SECONDS",
+                    0.05,
+                ),
+                mock.patch.object(
+                    self.module,
+                    "_AGENT_STATIC_SLOT_POLL_SECONDS",
+                    0.005,
+                ),
+                mock.patch.object(
+                    self.module,
+                    "_agent_client_factory",
+                    side_effect=AssertionError("upstream must not be reached"),
+                ),
+            ):
+                response = self.client.get("/agent/_next/static/chunks/demo.js")
+        finally:
+            slots.release()
+        waited = time.monotonic() - started
+        payload = response.json()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(payload["error"]["code"], "agent_proxy_saturated")
+        self.assertGreaterEqual(waited, 0.05)
+
+    def test_agent_proxy_runtime_post_still_fails_fast_when_slots_are_busy(self):
+        slots = mock.Mock()
+        slots.acquire.return_value = False
+        with (
+            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
+            mock.patch.object(self.module, "_agent_proxy_slots", slots),
+            mock.patch.object(
+                self.module,
+                "_agent_client_factory",
+                side_effect=AssertionError("upstream must not be reached"),
+            ),
+        ):
+            response = self.client.post(
+                "/agent/api/copilotkit/default/run",
+                json={"messages": []},
+            )
+        payload = response.json()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(payload["error"]["code"], "agent_proxy_saturated")
+        slots.acquire.assert_called_once_with(blocking=False)
+
+    def test_agent_proxy_static_asset_head_still_fails_fast_when_slots_are_busy(self):
+        slots = mock.Mock()
+        slots.acquire.return_value = False
+        with (
+            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
+            mock.patch.object(self.module, "_agent_proxy_slots", slots),
+            mock.patch.object(
+                self.module,
+                "_agent_client_factory",
+                side_effect=AssertionError("upstream must not be reached"),
+            ),
+        ):
+            response = self.client.head("/agent/_next/static/chunks/demo.js")
+        self.assertEqual(response.status_code, 503)
+        slots.acquire.assert_called_once_with(blocking=False)
+
+    def test_agent_proxy_static_slot_wait_remains_cooperative(self):
+        calls = 0
+        slots = mock.Mock()
+        pending = True
+
+        def acquire(*, blocking=False):
+            nonlocal calls
+            calls += 1
+            return calls >= 40
+
+        slots.acquire.side_effect = acquire
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while pending:
+                await asyncio.sleep(0.001)
+                ticks += 1
+
+        async def run_probe():
+            nonlocal pending
+            with (
+                mock.patch.object(self.module, "_agent_proxy_slots", slots),
+                mock.patch.object(self.module, "_AGENT_STATIC_SLOT_WAIT_SECONDS", 0.12),
+                mock.patch.object(self.module, "_AGENT_STATIC_SLOT_POLL_SECONDS", 0.002),
+            ):
+                acquired = await self.module._acquire_agent_slot(
+                    "asset", "GET", "_next/static/chunks/demo.js"
+                )
+            self.assertTrue(acquired)
+            pending = False
+
+        async def main():
+            await asyncio.gather(run_probe(), ticker())
+
+        asyncio.run(main())
+        self.assertGreaterEqual(ticks, 15)
+
     def test_agent_proxy_sanitizes_redirects_and_bounds_upstream_failure(self):
         cases = [
             (
@@ -1895,6 +2046,26 @@ class HealthReportUiTests(unittest.TestCase):
                 self.peek_mock.assert_called_once()
                 self.assert_security_headers(response)
 
+    def test_demo_request_failure_after_enqueue_keeps_request_and_operation_ids(self):
+        self.enqueue_mock.reset_mock()
+        self.insert_mock.reset_mock()
+        self.peek_mock.reset_mock()
+        self.insert_mock.side_effect = RuntimeError("database offline")
+
+        response = self.client.post("/api/demo-request")
+
+        self.assertEqual(response.status_code, 503)
+        payload = response.json()
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["error"], "RuntimeError")
+        self.assertRegex(payload["request_id"], r"^[0-9a-f-]{36}$")
+        self.assertRegex(payload["operation_id"], r"^[0-9a-f]{32}$")
+        self.assertEqual(response.headers["X-Request-ID"], payload["request_id"])
+        self.assertEqual(response.headers["X-Operation-ID"], payload["operation_id"])
+        self.enqueue_mock.assert_called_once()
+        self.insert_mock.assert_called_once()
+        self.peek_mock.assert_not_called()
+
     def test_sdk_errors_are_mapped_without_azure_details(self):
         from azure.core.exceptions import HttpResponseError
 
@@ -2017,16 +2188,17 @@ class HealthReportUiTests(unittest.TestCase):
             [(item["resourceGroup"], item["name"]) for item in payload["models"]],
             [
                 (RESOURCE_GROUP, MODEL_NAME),
-                (RESOURCE_GROUP, "hm-zulu"),
                 ("rg-other", "hm-alpha"),
+                (RESOURCE_GROUP, "hm-zulu"),
             ],
         )
         self.assertEqual(
             set(payload["models"][0]),
             {"id", "name", "resourceGroup", "location", "provisioningState"},
         )
-        self.assertEqual(payload["models"][2]["location"], "westeurope")
-        self.assertEqual(payload["models"][2]["provisioningState"], "Creating")
+        alpha = next(item for item in payload["models"] if item["name"] == "hm-alpha")
+        self.assertEqual(alpha["location"], "westeurope")
+        self.assertEqual(alpha["provisioningState"], "Creating")
 
     def test_unreadable_or_empty_catalog_degrades_to_the_configured_model(self):
         from azure.core.exceptions import HttpResponseError

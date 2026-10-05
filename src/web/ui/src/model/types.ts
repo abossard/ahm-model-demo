@@ -89,11 +89,22 @@ export interface HealthReportResult {
 }
 
 export interface JourneyQueueHead {
+  readonly label: string;
+  readonly message_id: string | null;
   readonly request_id: string | null;
+  readonly created_at: string | null;
+  readonly dequeue_count: number | null;
+}
+
+export interface JourneyEnqueued {
+  readonly request_id: string;
+  readonly message_id: string;
+  readonly created_at: string;
 }
 
 export interface JourneyResult {
   readonly request_id: string;
+  readonly just_enqueued: JourneyEnqueued;
   readonly queue_head: JourneyQueueHead | null;
   readonly row_count: number;
 }
@@ -167,6 +178,7 @@ export interface ApiError {
   readonly message: string;
   readonly retryable: boolean;
   readonly operationId: string | null;
+  readonly requestId?: string | null;
 }
 
 export interface ApiErrorEnvelope {

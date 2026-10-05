@@ -1,7 +1,9 @@
+import asyncio
 import json
 import logging
 import os
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -82,6 +84,8 @@ health_client = CloudHealthMgmtClient(
     api_version=CLOUDHEALTH_API_VERSION,
 )
 _agent_proxy_slots = threading.BoundedSemaphore(AGENT_PROXY_CONCURRENCY)
+_AGENT_STATIC_SLOT_WAIT_SECONDS = 5.0
+_AGENT_STATIC_SLOT_POLL_SECONDS = 0.01
 
 _AGENT_METHODS = ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"]
 
@@ -96,6 +100,32 @@ def _agent_client_factory():
         follow_redirects=False,
         trust_env=False,
     )
+
+
+def _is_static_agent_asset(
+    method: str,
+    kind: str | None,
+    agent_path: str,
+) -> bool:
+    normalized = (agent_path or "").strip("/")
+    return (
+        method == "GET"
+        and kind == "asset"
+        and normalized.startswith("_next/static/")
+    )
+
+
+async def _acquire_agent_slot(kind: str | None, method: str, agent_path: str) -> bool:
+    if not _is_static_agent_asset(method, kind, agent_path):
+        return _agent_proxy_slots.acquire(blocking=False)
+
+    deadline = time.monotonic() + _AGENT_STATIC_SLOT_WAIT_SECONDS
+    while True:
+        if _agent_proxy_slots.acquire(blocking=False):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(_AGENT_STATIC_SLOT_POLL_SECONDS)
 
 
 def enqueue_event(event):
@@ -298,7 +328,7 @@ async def _proxy_agent(request, agent_path):
 
     body = await request.body() if has_body else None
 
-    if not _agent_proxy_slots.acquire(blocking=False):
+    if not await _acquire_agent_slot(kind, request.method, agent_path):
         return agent_error(503, "agent_proxy_saturated", True)
 
     suffix = f"/{agent_path}" if agent_path else ""
