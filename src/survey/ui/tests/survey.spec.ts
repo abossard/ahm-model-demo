@@ -91,6 +91,18 @@ test("untouched midpoint, intentional 50, keyboard endpoints, reset and public a
   await expect(page.getByText("0 answered", { exact: true })).toHaveCount(1);
   await expect(page.getByText("1 answered", { exact: true })).toHaveCount(1);
   await expect(page.getByText("Mean agreement: 100.0 / 100")).toBeVisible();
+  for (const reload of [false, true]) {
+    if (reload) await page.reload();
+    const emptyCard = page.locator("section.card").first();
+    await expect(emptyCard.getByText("No answers yet")).toBeVisible();
+    await expect(emptyCard.locator("svg")).toHaveCount(0);
+    await expect(emptyCard.getByText(/Mean agreement/)).toHaveCount(0);
+    const emptyRow = page.getByRole("region", { name: "Comparison across questions" }).getByRole("listitem")
+      .filter({ hasText: "No answers: n = 0" });
+    await expect(emptyRow).toHaveCount(1);
+    await expect(emptyRow.locator("rect")).toHaveCount(0);
+    await expect(page.locator("main")).not.toContainText(/NaN|Infinity/);
+  }
   await publicContext.close();
 });
 

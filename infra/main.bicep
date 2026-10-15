@@ -18,6 +18,28 @@ param adminUpn string
 @description('Single IPv4 address allowed to reach PostgreSQL for the postprovision bootstrap.')
 param adminIpAddress string
 
+@description('Compute SKU for PostgreSQL.')
+param postgresSkuName string = 'Standard_B1ms'
+
+@description('Compute tier for PostgreSQL.')
+param postgresSkuTier string = 'Burstable'
+
+@allowed([
+  'ConsumptionOnly'
+  'WorkloadProfiles'
+])
+@description('Container Apps environment type. WorkloadProfiles uses only the Consumption profile.')
+param containerAppsEnvironmentMode string = 'ConsumptionOnly'
+
+@description('Existing Container Apps subnet NSG resource ID. Empty leaves the subnet unattached.')
+param containerAppsSubnetNsgId string = ''
+
+@description('Existing private endpoint subnet NSG resource ID. Empty leaves the subnet unattached.')
+param privateEndpointSubnetNsgId string = ''
+
+@description('Existing AKS subnet NSG resource ID. Empty leaves the subnet unattached.')
+param aksSubnetNsgId string = ''
+
 @description('Region hosting the Azure Health Model.')
 param healthModelLocation string = location
 
@@ -73,6 +95,12 @@ module foundation 'modules/foundation.bicep' = {
     adminObjectId: principalId
     adminUpn: adminUpn
     adminIpAddress: adminIpAddress
+    postgresSkuName: postgresSkuName
+    postgresSkuTier: postgresSkuTier
+    containerAppsEnvironmentMode: containerAppsEnvironmentMode
+    containerAppsSubnetNsgId: containerAppsSubnetNsgId
+    privateEndpointSubnetNsgId: privateEndpointSubnetNsgId
+    aksSubnetNsgId: aksSubnetNsgId
     tags: tags
   }
 }

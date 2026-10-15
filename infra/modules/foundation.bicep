@@ -18,6 +18,28 @@ param adminUpn string
 @description('Single IPv4 address allowed to bootstrap PostgreSQL.')
 param adminIpAddress string
 
+@description('Compute SKU for PostgreSQL.')
+param postgresSkuName string = 'Standard_B1ms'
+
+@description('Compute tier for PostgreSQL.')
+param postgresSkuTier string = 'Burstable'
+
+@allowed([
+  'ConsumptionOnly'
+  'WorkloadProfiles'
+])
+@description('Container Apps environment type. WorkloadProfiles uses only the Consumption profile.')
+param containerAppsEnvironmentMode string = 'ConsumptionOnly'
+
+@description('Existing Container Apps subnet NSG resource ID. Empty leaves the subnet unattached.')
+param containerAppsSubnetNsgId string = ''
+
+@description('Existing private endpoint subnet NSG resource ID. Empty leaves the subnet unattached.')
+param privateEndpointSubnetNsgId string = ''
+
+@description('Existing AKS subnet NSG resource ID. Empty leaves the subnet unattached.')
+param aksSubnetNsgId string = ''
+
 @description('Tags applied to all taggable resources.')
 param tags object
 
@@ -38,25 +60,44 @@ resource vnet 'Microsoft.Network/virtualNetworks@2025-07-01' = {
     subnets: [
       {
         name: infrastructureSubnetName
-        properties: {
+        properties: union({
           addressPrefix: '10.42.0.0/23'
-          delegations: []
-        }
+          delegations: containerAppsEnvironmentMode == 'WorkloadProfiles' ? [
+            {
+              name: 'container-apps'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ] : []
+        }, empty(containerAppsSubnetNsgId) ? {} : {
+          networkSecurityGroup: {
+            id: containerAppsSubnetNsgId
+          }
+        })
       }
       {
         name: privateEndpointSubnetName
-        properties: {
+        properties: union({
           addressPrefix: '10.42.2.0/29'
           delegations: []
           privateEndpointNetworkPolicies: 'Disabled'
-        }
+        }, empty(privateEndpointSubnetNsgId) ? {} : {
+          networkSecurityGroup: {
+            id: privateEndpointSubnetNsgId
+          }
+        })
       }
       {
         name: aksSubnetName
-        properties: {
+        properties: union({
           addressPrefix: '10.42.3.0/24'
           delegations: []
-        }
+        }, empty(aksSubnetNsgId) ? {} : {
+          networkSecurityGroup: {
+            id: aksSubnetNsgId
+          }
+        })
       }
     ]
   }
@@ -140,8 +181,8 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   location: location
   tags: tags
   sku: {
-    name: 'Standard_B1ms'
-    tier: 'Burstable'
+    name: postgresSkuName
+    tier: postgresSkuTier
   }
   properties: {
     version: '16'
@@ -241,7 +282,14 @@ resource containerEnvironment 'Microsoft.App/managedEnvironments@2025-10-02-prev
       internal: false
     }
     zoneRedundant: false
-  }, {
+  }, containerAppsEnvironmentMode == 'WorkloadProfiles' ? {
+    workloadProfiles: [
+      {
+        name: 'Consumption'
+        workloadProfileType: 'Consumption'
+      }
+    ]
+  } : {
     environmentMode: 'ConsumptionOnly'
   })
 }

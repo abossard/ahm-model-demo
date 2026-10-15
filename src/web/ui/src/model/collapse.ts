@@ -1,5 +1,8 @@
 import type { Entity, HealthState, Relationship } from "./types";
 
+type HealthFilterState = Exclude<HealthState, "Deleted">;
+type ExcludedEntityMode = "hide" | "dot";
+
 /** Only relationships between two distinct entities that are both in the model can hide anything. */
 function realEdges(
   entities: readonly Entity[],
@@ -17,10 +20,27 @@ function realEdges(
 export interface VisibleGraph {
   readonly entities: readonly Entity[];
   readonly relationships: readonly Relationship[];
+  readonly dotNames: ReadonlySet<string>;
   /** Hidden descendant count, keyed by the visible collapsed node that hides them. */
   readonly hiddenCounts: ReadonlyMap<string, number>;
   /** How the hidden descendants of each collapsed node split across health states. */
   readonly hiddenStates: ReadonlyMap<string, ReadonlyMap<HealthState, number>>;
+}
+
+export interface CollapseControl {
+  readonly hiddenCount: number;
+}
+
+interface VisibilityOptions {
+  readonly selectedHealth?: ReadonlySet<HealthFilterState>;
+  readonly excludedEntityMode?: ExcludedEntityMode;
+}
+
+export function healthBucket(state: string): HealthState {
+  if (state === "Healthy" || state === "Degraded" || state === "Unhealthy" || state === "Deleted") {
+    return state;
+  }
+  return "Unknown";
 }
 
 function childIndex(relationships: readonly Relationship[]): ReadonlyMap<string, string[]> {
@@ -68,9 +88,33 @@ export function visibleGraph(
   entities: readonly Entity[],
   relationships: readonly Relationship[],
   collapsed: ReadonlySet<string>,
+  options?: VisibilityOptions,
 ): VisibleGraph {
+  const mode = options?.excludedEntityMode ?? "hide";
+  const selectedHealth =
+    options?.selectedHealth ?? new Set<HealthFilterState>(["Healthy", "Degraded", "Unhealthy", "Unknown"]);
+  const isVisibleByHealth = (entity: Entity): boolean =>
+    healthBucket(entity.healthState) === "Deleted" ||
+    selectedHealth.has(healthBucket(entity.healthState) as HealthFilterState);
+
   if (collapsed.size === 0) {
-    return { entities, relationships, hiddenCounts: new Map(), hiddenStates: new Map() };
+    const hiddenCounts = new Map<string, number>();
+    const hiddenStates = new Map<string, ReadonlyMap<HealthState, number>>();
+    const dotNames = new Set<string>();
+    const projected =
+      mode === "hide"
+        ? entities.filter((entity) => isVisibleByHealth(entity))
+        : entities.map((entity) => {
+            if (!isVisibleByHealth(entity)) dotNames.add(entity.name);
+            return entity;
+          });
+    const projectedNames = new Set(projected.map((entity) => entity.name));
+    const projectedRelationships = relationships.filter(
+      (item) =>
+        projectedNames.has(item.parentEntityName) &&
+        projectedNames.has(item.childEntityName),
+    );
+    return { entities: projected, relationships: projectedRelationships, dotNames, hiddenCounts, hiddenStates };
   }
 
   const present = new Set(entities.map((item) => item.name));
@@ -102,6 +146,8 @@ export function visibleGraph(
 
   const hidden = new Set([...candidates].filter((name) => !reached.has(name)));
   const byName = new Map(entities.map((item) => [item.name, item] as const));
+  const visibleBeforeHealth = entities.filter((item) => !hidden.has(item.name));
+  const dotNames = new Set<string>();
   const hiddenCounts = new Map<string, number>();
   const hiddenStates = new Map<string, ReadonlyMap<HealthState, number>>();
 
@@ -109,25 +155,46 @@ export function visibleGraph(
     if (hidden.has(name)) continue;
     const mine = [...(branchOf.get(name) ?? [])].filter((item) => hidden.has(item));
     if (mine.length === 0) continue;
+    const countable =
+      mode === "hide"
+        ? mine.filter((item) => {
+            const entity = byName.get(item);
+            return entity ? isVisibleByHealth(entity) : false;
+          })
+        : mine;
+    if (countable.length === 0) continue;
     const states = new Map<HealthState, number>();
-    for (const item of mine) {
+    for (const item of countable) {
       const state = byName.get(item)?.healthState;
-      if (state) states.set(state, (states.get(state) ?? 0) + 1);
+      if (state) {
+        const normalized = healthBucket(state);
+        states.set(normalized, (states.get(normalized) ?? 0) + 1);
+      }
     }
-    hiddenCounts.set(name, mine.length);
+    hiddenCounts.set(name, countable.length);
     hiddenStates.set(name, states);
   }
 
+  const projectedEntities =
+    mode === "hide"
+      ? visibleBeforeHealth.filter((entity) => isVisibleByHealth(entity))
+      : visibleBeforeHealth.map((entity) => {
+          if (!isVisibleByHealth(entity)) dotNames.add(entity.name);
+          return entity;
+        });
+  const projectedNames = new Set(projectedEntities.map((item) => item.name));
+
   return {
-    entities: entities.filter((item) => !hidden.has(item.name)),
+    entities: projectedEntities,
     // Two visible endpoints alone are not enough: a collapsed source keeps its own branch edge off
     // the canvas even when the shared child stays visible through another expanded parent.
     relationships: relationships.filter(
       (item) =>
-        !hidden.has(item.parentEntityName) &&
-        !hidden.has(item.childEntityName) &&
+        projectedNames.has(item.parentEntityName) &&
+        projectedNames.has(item.childEntityName) &&
         !collapsed.has(item.parentEntityName),
     ),
+    dotNames,
     hiddenCounts,
     hiddenStates,
   };
@@ -144,4 +211,36 @@ export function ancestorsToExpand(
   return [...collapsed].filter(
     (name) => name !== target && descendantsOf(name, children).has(target),
   );
+}
+
+/**
+ * Collapse-toggle ownership stays here with the visibility projection so expanded nodes only get a
+ * control when collapsing would either hide at least one effective descendant or cut at least one
+ * currently visible branch edge. Collapsed nodes always keep an Expand control.
+ */
+export function collapseControls(
+  entities: readonly Entity[],
+  relationships: readonly Relationship[],
+  collapsed: ReadonlySet<string>,
+  options?: VisibilityOptions,
+): ReadonlyMap<string, CollapseControl> {
+  const controls = new Map<string, CollapseControl>();
+  const branches = descendantCounts(entities, relationships);
+  const baseline = visibleGraph(entities, relationships, collapsed, options);
+
+  for (const name of branches.keys()) {
+    if (collapsed.has(name)) {
+      controls.set(name, { hiddenCount: baseline.hiddenCounts.get(name) ?? 0 });
+      continue;
+    }
+    const next = visibleGraph(entities, relationships, new Set([...collapsed, name]), options);
+    const hiddenCount = next.hiddenCounts.get(name) ?? 0;
+    const currentBranches = baseline.relationships.filter((item) => item.parentEntityName === name).length;
+    const nextBranches = next.relationships.filter((item) => item.parentEntityName === name).length;
+    if (hiddenCount > 0 || nextBranches < currentBranches) {
+      controls.set(name, { hiddenCount });
+    }
+  }
+
+  return controls;
 }

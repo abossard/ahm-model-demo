@@ -12,6 +12,7 @@ import type { LayoutId } from "../model/layout";
 import type { ConnectionPolicy, EdgeStyle } from "../model/edgeRouting";
 import type { SortKey } from "../model/ordering";
 import type { ThemeName } from "../model/theme";
+import type { ExcludedEntityMode, HealthFilterState } from "./uiSlice";
 
 export function selectModelCatalog(state: RootState): AsyncState<ModelCatalog> {
   return state.catalog.data;
@@ -121,4 +122,12 @@ export function selectFocusSeq(state: RootState): number {
 
 export function selectAnnouncement(state: RootState): string {
   return state.ui.announcement;
+}
+
+export function selectSelectedHealth(state: RootState): readonly HealthFilterState[] {
+  return state.ui.selectedHealth;
+}
+
+export function selectExcludedEntityMode(state: RootState): ExcludedEntityMode {
+  return state.ui.excludedEntityMode;
 }

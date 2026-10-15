@@ -1,7 +1,7 @@
 import dagre from "@dagrejs/dagre";
 import type { Entity, Relationship } from "./types";
 import { elkLayout } from "./layoutElk";
-import { forceLayout } from "./layoutForce";
+import { createForceLayoutSession, forceLayout } from "./layoutForce";
 import type { LayoutFlow } from "./edgeRouting";
 
 export interface NodeSize {
@@ -69,14 +69,16 @@ function placeClear(wanted: Placed, taken: readonly Placed[]): Point {
     const move = escape(box, blocker);
     box = { ...box, x: box.x + move.x, y: box.y + move.y };
   }
+  if (taken.some((other) => overlaps(box, other))) {
+    box = { ...box, x: Math.max(...taken.map((other) => other.x + other.width)) + ANCHOR_GAP };
+  }
   return { x: box.x, y: box.y };
 }
 
 /**
  * Re-seats a freshly computed layout onto the positions the graph already occupies: every node the
- * caller remembers keeps its exact coordinates, and only a node with no remembered position is
- * placed, and only pushed when it would actually land on something. A node that does not collide
- * therefore never moves.
+ * caller remembers keeps its coordinates unless content growth now makes it collide. A node
+ * that does not collide never moves.
  */
 export function anchorLayout(
   next: GraphLayout,
@@ -84,10 +86,16 @@ export function anchorLayout(
   sizes: ReadonlyMap<string, NodeSize>,
 ): GraphLayout {
   const positions = new Map<string, Point>();
+  const retained: Placed[] = [];
   const arriving: string[] = [];
   for (const name of next.positions.keys()) {
     const before = previous.get(name);
-    if (before) positions.set(name, before);
+    if (before) {
+      const size = sizes.get(name) ?? { width: 0, height: 0 };
+      const point = placeClear(boxOf(before, size), retained);
+      positions.set(name, point);
+      retained.push(boxOf(point, size));
+    }
     else arriving.push(name);
   }
   if (positions.size === 0) return next;
@@ -139,7 +147,20 @@ export type LayoutId =
   | "dagre-rl"
   | "elk-layered"
   | "elk-radial"
-  | "d3-force";
+  | "d3-force"
+  | "d3-force-adaptive";
+
+export interface LiveLayoutSession {
+  update: (
+    entities: readonly Entity[],
+    relationships: readonly Relationship[],
+    sizeOf: SizeOf,
+    remembered: ReadonlyMap<string, Point>,
+  ) => void;
+  setDrag: (name: string, position: Point | null) => void;
+  settle: () => void;
+  dispose: () => void;
+}
 
 export interface LayoutEngine {
   readonly id: LayoutId;
@@ -151,6 +172,11 @@ export interface LayoutEngine {
     relationships: readonly Relationship[],
     sizeOf: SizeOf,
   ) => Promise<GraphLayout>;
+  readonly startLive?: (callbacks: {
+    readonly onFrame: (layout: GraphLayout) => void;
+    readonly onError: (error: Error) => void;
+    readonly reducedMotion: boolean;
+  }) => LiveLayoutSession;
 }
 
 export const DEFAULT_LAYOUT_ID: LayoutId = "dagre-tb";
@@ -263,6 +289,15 @@ export const LAYOUT_CHOICES: readonly LayoutEngine[] = [
     rankAxis: null,
     flow: "free",
     run: (entities, relationships, sizeOf) => forceLayout(entities, relationships, sizeOf),
+  },
+  {
+    id: "d3-force-adaptive",
+    label: "Live force directed",
+    rankAxis: null,
+    flow: "free",
+    run: (entities, relationships, sizeOf) => forceLayout(entities, relationships, sizeOf),
+    startLive: ({ onFrame, onError, reducedMotion }) =>
+      createForceLayoutSession({ onFrame, onError, reducedMotion }),
   },
 ];
 

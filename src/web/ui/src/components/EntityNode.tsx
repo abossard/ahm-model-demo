@@ -10,6 +10,7 @@ import { selectEntity } from "../store/entitySlice";
 import { announce, openPanel, toggleCollapse } from "../store/uiSlice";
 
 export const CARD_WIDTH = 260;
+export const DOT_SIZE = 12;
 /** Authored disclosure box, its required rendered minimum, and the header band that contains it. */
 const TOGGLE_BOX = 26;
 const TOGGLE_MIN_RENDERED = 25;
@@ -88,6 +89,7 @@ function formatValue(value: SignalValue): string {
 
 export interface EntityNodeData extends Record<string, unknown> {
   readonly entity: Entity;
+  readonly displayRole: "card" | "dot";
   readonly selected: boolean;
   readonly highlighted: boolean;
   readonly hasChildren: boolean;
@@ -199,7 +201,7 @@ function HiddenSummary({
 export type EntityRfNode = Node<EntityNodeData, "entity">;
 
 function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
-  const { entity, selected, highlighted, hasChildren, collapsed, hiddenCount, hiddenStates } = data;
+  const { entity, displayRole, selected, highlighted, hasChildren, collapsed, hiddenCount, hiddenStates } = data;
   const token = tokensFor(entity.healthState);
   const dispatch = useAppDispatch();
   const name = entity.displayName || entity.name;
@@ -220,72 +222,83 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
   );
 
   return (
-    <div className="entity-node-shell" style={{ width: CARD_WIDTH }}>
+    <div className="entity-node-shell" style={{ width: displayRole === "dot" ? DOT_SIZE : CARD_WIDTH }}>
       <Handle type="target" position={Position.Top} className="entity-node__handle" />
       <div
-        className={`entity-node${selected ? " is-selected" : ""}${highlighted ? " is-highlighted" : ""}`}
+        className={`entity-node${displayRole === "dot" ? " entity-node--dot" : ""}${selected ? " is-selected" : ""}${highlighted ? " is-highlighted" : ""}`}
         data-entity={entity.name}
+        data-role={displayRole}
         data-highlighted={highlighted ? "true" : undefined}
         role="button"
         tabIndex={0}
-        aria-label={`${name} — ${entity.healthState}`}
+        aria-label={`${name} — ${entity.healthState}${displayRole === "dot" ? ", filtered" : ""}`}
         style={{
-          width: CARD_WIDTH,
-          borderStyle: token.dashed ? "dashed" : "solid",
-          borderColor: token.border,
-          backgroundColor: token.fill,
+          width: displayRole === "dot" ? DOT_SIZE : CARD_WIDTH,
+          height: displayRole === "dot" ? DOT_SIZE : undefined,
+          borderStyle: displayRole === "dot" ? "solid" : token.dashed ? "dashed" : "solid",
+          borderColor: displayRole === "dot" ? "var(--unknown-border)" : token.border,
+          borderRadius: displayRole === "dot" ? "999px" : undefined,
+          backgroundColor: displayRole === "dot" ? "var(--unknown-dot)" : token.fill,
         }}
         onClick={activate}
         onKeyDown={onKeyDown}
       >
-      <div className="entity-node__header">
-        <span
-          className="entity-node__icon"
-          style={{ color: cardTokens.muted }}
-          aria-hidden="true"
-          dangerouslySetInnerHTML={{
-            __html: `<svg viewBox="0 0 24 24" width="20" height="20">${ICONS[pickIcon(name)] ?? ICONS.cube}</svg>`,
-          }}
-        />
-        <span className="entity-node__name">{name}</span>
-        <span className="entity-node__pill" style={{ borderColor: token.border }}>
-          <StateDot state={entity.healthState} />
-          <span className="entity-node__pill-word">{token.word}</span>
-        </span>
-        {hasChildren ? (
-          <CollapseToggle entity={entity} collapsed={collapsed} hiddenCount={hiddenCount} />
-        ) : null}
-      </div>
-      {entity.signals.length > 0 ? (
+      {displayRole === "dot" ? (
+        <span className="entity-node__dot-only" aria-hidden="true" />
+      ) : (
         <>
-          <div className="entity-node__divider" />
-          <ul className="entity-node__rows">
-            {entity.signals.map((signal) => {
-              const healthy = signal.healthState === "Healthy";
-              const value = formatValue(signal.value);
-              return (
-                <li className="entity-node__row" key={signal.name}>
-                  <StateDot state={signal.healthState} />
-                  <MetricGlyph />
-                  <span className="entity-node__row-name">{signal.displayName || signal.name}</span>
-                  <span
-                    className="entity-node__row-value"
-                    style={{
-                      fontWeight: healthy ? 400 : 600,
-                      color: healthy ? cardTokens.muted : tokensFor(signal.healthState).label,
-                    }}
-                  >
-                    {value}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+          <div className="entity-node__header">
+            <span
+              className="entity-node__icon"
+              style={{ color: cardTokens.muted }}
+              aria-hidden="true"
+              dangerouslySetInnerHTML={{
+                __html: `<svg viewBox="0 0 24 24" width="20" height="20">${ICONS[pickIcon(name)] ?? ICONS.cube}</svg>`,
+              }}
+            />
+            <span className="entity-node__name">{name}</span>
+            <span className="entity-node__pill" style={{ borderColor: token.border }}>
+              <StateDot state={entity.healthState} />
+              <span className="entity-node__pill-word">{token.word}</span>
+            </span>
+            {hasChildren ? (
+              <CollapseToggle entity={entity} collapsed={collapsed} hiddenCount={hiddenCount} />
+            ) : null}
+          </div>
+          {entity.signals.length > 0 ? (
+            <>
+              <div className="entity-node__divider" />
+              <ul className="entity-node__rows">
+                {entity.signals.map((signal) => {
+                  const healthy = signal.healthState === "Healthy";
+                  const value = formatValue(signal.value);
+                  return (
+                    <li className="entity-node__row" key={signal.name}>
+                      <StateDot state={signal.healthState} />
+                      <MetricGlyph />
+                      <span className="entity-node__row-name" title={signal.displayName || signal.name}>
+                        {signal.displayName || signal.name}
+                      </span>
+                      <span
+                        className="entity-node__row-value"
+                        style={{
+                          fontWeight: healthy ? 400 : 600,
+                          color: healthy ? cardTokens.muted : tokensFor(signal.healthState).label,
+                        }}
+                      >
+                        {value}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          ) : null}
+          {collapsed && hiddenCount > 0 ? (
+            <HiddenSummary hiddenCount={hiddenCount} hiddenStates={hiddenStates} />
+          ) : null}
         </>
-      ) : null}
-      {collapsed && hiddenCount > 0 ? (
-        <HiddenSummary hiddenCount={hiddenCount} hiddenStates={hiddenStates} />
-      ) : null}
+      )}
       </div>
       <Handle type="source" position={Position.Bottom} className="entity-node__handle" />
     </div>
@@ -297,7 +310,11 @@ export const EntityNode = memo(EntityNodeImpl);
 export function estimateNodeSize(
   entity: Entity,
   showsHiddenSummary = false,
+  displayRole: "card" | "dot" = "card",
 ): { readonly width: number; readonly height: number } {
+  if (displayRole === "dot") {
+    return { width: DOT_SIZE, height: DOT_SIZE };
+  }
   const name = entity.displayName || entity.name;
   const pillWidth = 34 + tokensFor(entity.healthState).word.length * 6.6;
   const nameAvail = Math.max(80, CARD_WIDTH - 34 - pillWidth - 12 - 26);

@@ -1,4 +1,4 @@
-import type { ChangeEvent, JSX } from "react";
+import { useEffect, useId, useRef, useState, type ChangeEvent, type JSX } from "react";
 import {
   CONNECTION_POLICY_CHOICES,
   EDGE_STYLE_CHOICES,
@@ -11,20 +11,27 @@ import { useAppDispatch, useAppSelector } from "../store/store";
 import {
   selectAnnouncement,
   selectConnectionPolicy,
+  selectExcludedEntityMode,
   selectEdgeStyle,
   selectLayoutId,
+  selectSelectedHealth,
   selectSortKey,
   selectSortReversed,
 } from "../store/selectors";
 import {
   announce,
   openSearch,
+  setExcludedEntityMode,
   setConnectionPolicy,
   setEdgeStyle,
   setLayout,
+  toggleSelectedHealth,
   setSortKey,
   toggleSortDirection,
 } from "../store/uiSlice";
+import type { HealthState } from "../model/types";
+import type { ExcludedEntityMode, HealthFilterState } from "../store/uiSlice";
+import { tokensFor } from "../model/palette";
 
 interface GraphToolbarProps {
   readonly visibleCount: number;
@@ -38,6 +45,12 @@ export function GraphToolbar({ visibleCount }: GraphToolbarProps): JSX.Element {
   const edgeStyle = useAppSelector(selectEdgeStyle);
   const connectionPolicy = useAppSelector(selectConnectionPolicy);
   const announcement = useAppSelector(selectAnnouncement);
+  const selectedHealth = useAppSelector(selectSelectedHealth);
+  const excludedEntityMode = useAppSelector(selectExcludedEntityMode);
+  const [healthOpen, setHealthOpen] = useState(false);
+  const popupId = useId();
+  const popupRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
 
   const onLayout = (event: ChangeEvent<HTMLSelectElement>): void => {
     const next = event.target.value as LayoutId;
@@ -69,6 +82,49 @@ export function GraphToolbar({ visibleCount }: GraphToolbarProps): JSX.Element {
       ),
     );
   };
+
+  useEffect(() => {
+    if (!healthOpen) return;
+    const onWindow = (event: MouseEvent): void => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (popupRef.current?.contains(target)) return;
+      if (buttonRef.current?.contains(target)) return;
+      setHealthOpen(false);
+    };
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      setHealthOpen(false);
+      buttonRef.current?.focus();
+    };
+    window.addEventListener("mousedown", onWindow);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onWindow);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [healthOpen]);
+
+  const healthStates: readonly HealthFilterState[] = ["Healthy", "Degraded", "Unhealthy", "Unknown"];
+
+  const toggleHealth = (state: HealthFilterState): void => {
+    dispatch(toggleSelectedHealth(state));
+    const nextSelected = selectedHealth.includes(state)
+      ? selectedHealth.filter((item) => item !== state)
+      : [...selectedHealth, state];
+    dispatch(
+      announce(
+        `Health filter updated: ${nextSelected.length > 0 ? nextSelected.join(", ") : "none selected"}.`,
+      ),
+    );
+  };
+
+  const onMode = (mode: ExcludedEntityMode): void => {
+    dispatch(setExcludedEntityMode(mode));
+    dispatch(announce(mode === "hide" ? "Excluded health states are hidden." : "Excluded health states are gray dots."));
+  };
+
+  const optionLabel = (state: HealthState): string => tokensFor(state).word;
 
   return (
     <div className="graph-toolbar" data-testid="graph-toolbar">
@@ -138,6 +194,67 @@ export function GraphToolbar({ visibleCount }: GraphToolbarProps): JSX.Element {
       >
         Search…
       </button>
+      <div className="graph-toolbar__field graph-toolbar__field--health">
+        <button
+          type="button"
+          ref={buttonRef}
+          className="graph-toolbar__health"
+          data-testid="health-filter-toggle"
+          aria-expanded={healthOpen}
+          aria-controls={popupId}
+          onClick={() => setHealthOpen((open) => !open)}
+        >
+          Health
+        </button>
+        {healthOpen ? (
+          <div
+            id={popupId}
+            ref={popupRef}
+            className="graph-toolbar__health-popup"
+            data-testid="health-filter-popup"
+          >
+            <fieldset className="graph-toolbar__health-list">
+              <legend className="graph-toolbar__health-legend">Health state</legend>
+              {healthStates.map((state) => (
+                <label key={state} className="graph-toolbar__health-option">
+                  <input
+                    type="checkbox"
+                    checked={selectedHealth.includes(state)}
+                    onChange={() => toggleHealth(state)}
+                  />
+                  <span
+                    className="graph-toolbar__health-swatch"
+                    style={{ background: tokensFor(state).dot }}
+                    aria-hidden="true"
+                  />
+                  <span>{optionLabel(state)}</span>
+                </label>
+              ))}
+            </fieldset>
+            <fieldset className="graph-toolbar__health-list">
+              <legend className="graph-toolbar__health-legend">Not selected entities</legend>
+              <label className="graph-toolbar__health-option">
+                <input
+                  type="radio"
+                  name="excluded-mode"
+                  checked={excludedEntityMode === "hide"}
+                  onChange={() => onMode("hide")}
+                />
+                <span>Hide with edges</span>
+              </label>
+              <label className="graph-toolbar__health-option">
+                <input
+                  type="radio"
+                  name="excluded-mode"
+                  checked={excludedEntityMode === "dot"}
+                  onChange={() => onMode("dot")}
+                />
+                <span>Gray dot</span>
+              </label>
+            </fieldset>
+          </div>
+        ) : null}
+      </div>
       <span
         className="graph-toolbar__status"
         data-testid="graph-announcement"

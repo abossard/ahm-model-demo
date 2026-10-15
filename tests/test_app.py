@@ -17,6 +17,7 @@ from unittest import mock
 
 import httpx
 from fastapi.testclient import TestClient
+from starlette.requests import ClientDisconnect
 
 
 def mimetype(response):
@@ -406,6 +407,139 @@ class SourceLayoutContractTests(unittest.TestCase):
             {path.name for path in (root / "tests").glob("test_*.py")},
             {"test_app.py", "test_streaming_proxy.py"},
         )
+
+    def test_preprovision_uses_selected_subscription_identity(self):
+        root = Path(__file__).parents[1]
+        command = [
+            "bash",
+            "-c",
+            """
+az() {
+  if [[ "$1 $2" == "ad signed-in-user" ]]; then
+    [[ -n "$DEFAULT_UPN" ]] || return 1
+    printf '%s\\n' "$DEFAULT_UPN"
+    return
+  fi
+  [[ "$1" == rest && " $* " == *" --subscription $AZURE_SUBSCRIPTION_ID "* ]] || return 1
+  [[ " $* " == *' https://graph.microsoft.com/v1.0/me?$select=userPrincipalName '* ]] || return 1
+  printf '%s\\n' "$EXPECTED_UPN"
+}
+curl() { printf '203.0.113.7'; }
+azd() { printf '%s\\n' "$*"; }
+source ./scripts/hooks/preprovision.sh
+""",
+        ]
+        cases = (
+            ("same-tenant", "operator@example.test", "operator@example.test"),
+            ("different-tenant", "default@example.test", "guest@target.example.test"),
+            ("expired-default", "", "operator@example.test"),
+        )
+        for name, default_upn, expected_upn in cases:
+            with self.subTest(case=name):
+                result = subprocess.run(
+                    command,
+                    cwd=root,
+                    env={
+                        **os.environ,
+                        "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION_ID,
+                        "DEFAULT_UPN": default_upn,
+                        "EXPECTED_UPN": expected_upn,
+                    },
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"env set ADMIN_UPN {expected_upn}\n", result.stdout)
+                self.assertIn("env set ADMIN_IP_ADDRESS 203.0.113.7\n", result.stdout)
+                self.assertEqual(result.stderr, "")
+
+        for value in (None, ""):
+            with self.subTest(subscription=value):
+                environment = {
+                    **os.environ,
+                    "DEFAULT_UPN": "operator@example.test",
+                    "EXPECTED_UPN": "operator@example.test",
+                }
+                if value is not None:
+                    environment["AZURE_SUBSCRIPTION_ID"] = value
+                else:
+                    environment.pop("AZURE_SUBSCRIPTION_ID", None)
+                result = subprocess.run(
+                    command, cwd=root, env=environment, capture_output=True, text=True
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("AZURE_SUBSCRIPTION_ID", result.stderr)
+                self.assertEqual(result.stdout, "")
+
+    def test_postprovision_scopes_catalog_lookups_and_propagates_errors(self):
+        root = Path(__file__).parents[1]
+        command = [
+            "bash",
+            "-c",
+            """
+az() {
+  [[ " $* " == *" --subscription $AZURE_SUBSCRIPTION_ID "* ]] || {
+    printf 'MISSING_SELECTED_SUBSCRIPTION\\n' >&2
+    return 1
+  }
+  if [[ "$1 $2" == "account get-access-token" ]]; then
+    printf 'eyJ.test.token\\n'
+  elif [[ "$1 $2 $3" == "role assignment list" ]]; then
+    [[ " $* " == *" --fill-principal-name false "* ]] || return 1
+    [[ " $* " != *" --assignee "* ]] || {
+      printf 'GRAPH_ASSIGNEE_LOOKUP\\n' >&2
+      return 1
+    }
+    [[ " $* " == *"principalId=='$AZURE_IDENTITY_PRINCIPAL_ID'"* ]] || return 1
+    [[ "$CATALOG_LOOKUP_FAIL" == 0 ]] || {
+      printf 'ROLE_LOOKUP_FAILED\\n' >&2
+      return 1
+    }
+    printf '%s\\n' "$CATALOG_ASSIGNMENTS"
+  else
+    return 1
+  fi
+}
+psql() {
+  if [[ " $* " == *" --tuples-only "* ]]; then printf '1\\n'; fi
+}
+source ./scripts/hooks/postprovision.sh
+""",
+        ]
+        cases = (
+            ("present", "1", "0", "subscription"),
+            ("missing", "0", "0", "single-model"),
+            ("lookup-error", "0", "1", None),
+        )
+        for name, assignments, lookup_fail, expected_scope in cases:
+            with self.subTest(case=name):
+                result = subprocess.run(
+                    command,
+                    cwd=root,
+                    env={
+                        **os.environ,
+                        "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION_ID,
+                        "AZURE_POSTGRES_HOST": "pg.example.test",
+                        "AZURE_POSTGRES_DATABASE": "demo",
+                        "AZURE_IDENTITY_NAME": "demo-app",
+                        "AZURE_IDENTITY_PRINCIPAL_ID": "22222222-2222-2222-2222-222222222222",
+                        "AZURE_HEALTH_MODEL_NAME": "hm-demo",
+                        "HEALTH_REPORT_ROLE_NAME": "AHM Demo Health Report Operator",
+                        "ADMIN_UPN": "operator@example.test",
+                        "CATALOG_ASSIGNMENTS": assignments,
+                        "CATALOG_LOOKUP_FAIL": lookup_fail,
+                    },
+                    capture_output=True,
+                    text=True,
+                )
+                if expected_scope is None:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("ROLE_LOOKUP_FAILED", result.stderr)
+                    self.assertNotIn("CATALOG_SCOPE", result.stdout)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(f"CATALOG_SCOPE {expected_scope}", result.stdout)
+                    self.assertEqual(result.stderr, "")
 
     def test_postup_prints_deployed_website_links(self):
         root = Path(__file__).parents[1]
@@ -1343,6 +1477,90 @@ class HealthReportUiTests(unittest.TestCase):
                 self.assertIn(b"RUN_STARTED", next(iterator))
 
         self.assertTrue(stream.closed)
+
+    def test_agent_proxy_asgi_disconnect_releases_upstream_and_slot(self):
+        for agent_path in (
+            "",
+            "_next/static/chunks/demo.js",
+            "api/copilotkit/default/run",
+        ):
+            for spec_version in ("2.3", "2.4"):
+                for disconnect_at in (
+                    "http.response.start",
+                    "http.response.body",
+                    None,
+                ):
+                    with self.subTest(
+                        path=agent_path,
+                        spec=spec_version,
+                        disconnect_at=disconnect_at,
+                    ):
+                        upstream = httpx.Response(
+                            200,
+                            headers={"Content-Type": "text/plain"},
+                            stream=httpx.ByteStream(b"first chunk"),
+                        )
+                        client = httpx.Client(
+                            transport=httpx.MockTransport(lambda _request: upstream)
+                        )
+                        slots = threading.BoundedSemaphore(1)
+
+                        async def exercise():
+                            path = f"/agent/{agent_path}" if agent_path else "/agent"
+                            scope = {
+                                "type": "http",
+                                "asgi": {"spec_version": spec_version},
+                                "method": "GET",
+                                "scheme": "http",
+                                "path": path,
+                                "raw_path": path.encode(),
+                                "query_string": b"",
+                                "headers": [(b"host", b"testserver")],
+                            }
+                            response = await self.module._proxy_agent(
+                                self.module.Request(scope), agent_path
+                            )
+                            reached = asyncio.Event()
+
+                            async def receive():
+                                await reached.wait()
+                                return {"type": "http.disconnect"}
+
+                            async def send(message):
+                                if message["type"] == disconnect_at:
+                                    reached.set()
+                                    if spec_version == "2.4":
+                                        raise OSError("client disconnected")
+                                    await asyncio.Future()
+
+                            try:
+                                if spec_version == "2.4" and disconnect_at is not None:
+                                    with self.assertRaises(ClientDisconnect):
+                                        await response(scope, receive, send)
+                                else:
+                                    await response(scope, receive, send)
+                                self.assertTrue(upstream.is_closed)
+                                self.assertTrue(client.is_closed)
+                                self.assertTrue(slots.acquire(blocking=False))
+                                self.assertFalse(slots.acquire(blocking=False))
+                                slots.release()
+                            finally:
+                                await response.body_iterator.aclose()
+
+                        with (
+                            mock.patch.dict(
+                                os.environ, {"HEALTH_COPILOT_ENABLED": "true"}
+                            ),
+                            mock.patch.object(self.module, "_agent_proxy_slots", slots),
+                            mock.patch.object(
+                                self.module, "_agent_client_factory", return_value=client
+                            ),
+                        ):
+                            try:
+                                asyncio.run(exercise())
+                            finally:
+                                upstream.close()
+                                client.close()
 
     def test_agent_proxy_rejects_unapproved_inputs_before_upstream(self):
         upstream = mock.Mock(

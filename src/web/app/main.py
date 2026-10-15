@@ -5,6 +5,8 @@ import os
 import threading
 import time
 import uuid
+from collections.abc import Iterable
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -20,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from starlette.datastructures import MutableHeaders
+from starlette.types import Receive, Scope, Send
 
 import agent_proxy
 import inventory
@@ -88,6 +91,26 @@ _AGENT_STATIC_SLOT_WAIT_SECONDS = 5.0
 _AGENT_STATIC_SLOT_POLL_SECONDS = 0.01
 
 _AGENT_METHODS = ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"]
+
+
+class _AgentStreamingResponse(StreamingResponse):
+    def __init__(
+        self,
+        content: Iterable[bytes],
+        upstream: httpx.Response,
+        client: httpx.Client,
+    ):
+        super().__init__(content, status_code=upstream.status_code)
+        self._cleanup = ExitStack()
+        self._cleanup.callback(_agent_proxy_slots.release)
+        self._cleanup.callback(client.close)
+        self._cleanup.callback(upstream.close)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._cleanup.close()
 
 
 def _agent_client_factory():
@@ -398,14 +421,11 @@ async def _proxy_agent(request, agent_path):
                     yield chunk
         except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError):
             logger.warning("agent proxy stream ended before completion")
-        finally:
-            upstream.close()
-            client.close()
-            _agent_proxy_slots.release()
 
-    response = StreamingResponse(
+    response = _AgentStreamingResponse(
         stream_upstream(),
-        status_code=upstream.status_code,
+        upstream,
+        client,
     )
     response.raw_headers = [
         (name.encode("latin-1"), value.encode("latin-1"))

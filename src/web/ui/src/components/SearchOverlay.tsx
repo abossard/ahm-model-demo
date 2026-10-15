@@ -2,10 +2,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { JSX, KeyboardEvent } from "react";
 import type { Entity, Relationship } from "../model/types";
 import { GROUP_LABELS, searchGraph, type SearchGroup, type SearchHit } from "../model/search";
-import { ancestorsToExpand } from "../model/collapse";
+import { ancestorsToExpand, healthBucket } from "../model/collapse";
 import { useAppDispatch, useAppSelector } from "../store/store";
-import { selectCollapsed, selectSearchOpen } from "../store/selectors";
-import { announce, closeSearch, expandMany, focusEntities, openSearch } from "../store/uiSlice";
+import { selectCollapsed, selectSearchOpen, selectSelectedHealth } from "../store/selectors";
+import {
+  announce,
+  closeSearch,
+  expandMany,
+  focusEntities,
+  openSearch,
+  setSelectedHealth,
+} from "../store/uiSlice";
 
 interface SearchOverlayProps {
   readonly entities: readonly Entity[];
@@ -31,6 +38,7 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
   const dispatch = useAppDispatch();
   const open = useAppSelector(selectSearchOpen);
   const collapsed = useAppSelector(selectCollapsed);
+  const selectedHealth = useAppSelector(selectSelectedHealth);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -75,6 +83,17 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
 
   const choose = (hit: SearchHit | undefined): void => {
     if (!hit) return;
+    const byName = new Map(entities.map((item) => [item.name, item] as const));
+    const required = new Set(selectedHealth);
+    for (const name of hit.focusEntities) {
+      const state = byName.get(name)?.healthState;
+      if (!state) continue;
+      const bucket = healthBucket(state);
+      if (bucket !== "Deleted") required.add(bucket);
+    }
+    if (required.size !== selectedHealth.length) {
+      dispatch(setSelectedHealth([...required]));
+    }
     const blocked = new Set<string>();
     for (const name of hit.focusEntities) {
       for (const ancestor of ancestorsToExpand(name, entities, relationships, new Set(collapsed))) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ancestorsToExpand, descendantCounts, visibleGraph } from "./collapse";
+import { ancestorsToExpand, collapseControls, descendantCounts, visibleGraph } from "./collapse";
 import type { Entity, HealthState, Relationship } from "./types";
 
 function entity(name: string, healthState: HealthState = "Healthy"): Entity {
@@ -103,6 +103,36 @@ describe("visibleGraph", () => {
   it("ignores a collapsed name that is not in the model", () => {
     expect(visibleNames(["ghost"])).toEqual(["a", "b", "c", "d", "orphan", "b1", "b2"]);
   });
+
+  it("keeps Standby visible even when all four selectable health states are deselected", () => {
+    const graph = visibleGraph(
+      [...ENTITIES, entity("standby", "Deleted")],
+      RELATIONSHIPS,
+      new Set(),
+      { selectedHealth: new Set(), excludedEntityMode: "hide" },
+    );
+    expect(graph.entities.map((item) => item.name)).toEqual(["standby"]);
+  });
+
+  it("keeps shared-parent reachability while applying health projection after collapse", () => {
+    const graph = visibleGraph(
+      ENTITIES,
+      RELATIONSHIPS,
+      new Set(["b"]),
+      { selectedHealth: new Set(["Healthy"]), excludedEntityMode: "hide" },
+    );
+    expect(graph.entities.map((item) => item.name)).toEqual(["a", "b", "c", "d", "orphan"]);
+    expect(graph.relationships.map((item) => item.name)).toEqual(["a->b", "a->d", "d->c"]);
+  });
+
+  it("marks excluded entities as dots in dot mode instead of removing them", () => {
+    const graph = visibleGraph(ENTITIES, RELATIONSHIPS, new Set(), {
+      selectedHealth: new Set(["Healthy"]),
+      excludedEntityMode: "dot",
+    });
+    expect(graph.entities).toHaveLength(ENTITIES.length);
+    expect([...graph.dotNames].sort()).toEqual(["b1", "b2"]);
+  });
 });
 
 describe("descendantCounts", () => {
@@ -164,5 +194,33 @@ describe("ancestorsToExpand", () => {
   it("returns nothing when the target is already visible", () => {
     expect(ancestorsToExpand("c", ENTITIES, RELATIONSHIPS, new Set())).toEqual([]);
     expect(ancestorsToExpand("a", ENTITIES, RELATIONSHIPS, new Set(["a"]))).toEqual([]);
+  });
+});
+
+describe("collapseControls", () => {
+  it("keeps branch-edge-only collapse controls when hidden descendants are zero", () => {
+    const controls = collapseControls(ENTITIES, RELATIONSHIPS, new Set(), {
+      selectedHealth: new Set(["Healthy"]),
+      excludedEntityMode: "hide",
+    });
+    expect(controls.get("d")?.hiddenCount ?? -1).toBe(0);
+  });
+
+  it("omits collapse controls when all effective descendants and branch edges are filtered out", () => {
+    const entities = [entity("root", "Healthy"), entity("leaf", "Degraded")];
+    const relationships = [rel("root", "leaf")];
+    const controls = collapseControls(entities, relationships, new Set(), {
+      selectedHealth: new Set(["Healthy"]),
+      excludedEntityMode: "hide",
+    });
+    expect(controls.has("root")).toBe(false);
+  });
+
+  it("always keeps expand controls for already-collapsed parents", () => {
+    const controls = collapseControls(ENTITIES, RELATIONSHIPS, new Set(["d"]), {
+      selectedHealth: new Set(["Healthy"]),
+      excludedEntityMode: "hide",
+    });
+    expect(controls.get("d")?.hiddenCount ?? -1).toBeGreaterThanOrEqual(0);
   });
 });

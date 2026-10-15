@@ -5,7 +5,14 @@ set -euo pipefail
 # administrator, and the single public IP allowed through the PostgreSQL firewall to run the
 # postprovision bootstrap.
 
-admin_upn=$(az ad signed-in-user show --query userPrincipalName --output tsv)
+: "${AZURE_SUBSCRIPTION_ID:?}"
+
+admin_upn=$(az rest \
+  --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --method get \
+  --url 'https://graph.microsoft.com/v1.0/me?$select=userPrincipalName' \
+  --query userPrincipalName \
+  --output tsv)
 [[ -n "$admin_upn" ]] || {
   printf 'PREPROVISION_FAIL could not resolve the signed-in user UPN\n' >&2
   exit 1

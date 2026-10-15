@@ -4,6 +4,7 @@ import QRCode from "qrcode";
 import { authors, captureAuthor, joinUrl, privateUrl, rememberAuthor } from "../browser";
 import type { Results, Survey } from "../model";
 import { parseResults, parseSurvey } from "../model";
+import { Comparison, Dots, Histogram } from "./ResultCharts";
 import { request } from "../store/api";
 import { actions, createEditor, flushAnswers, openResponse, responseValues, saveEditor } from "../store";
 import type { AppDispatch, AppState } from "../store";
@@ -256,17 +257,15 @@ function ResultPage({ code }: { code: string }) {
   return <><h1>Results {results?.code}</h1>
     {error && <><p role="alert">{error}</p><JoinForm /></>}
     {!results && !error && <p role="status">Loading results...</p>}
+    {results && <Comparison rows={results.questions} />}
     {results?.questions.map(question => <section className="card" key={question.id}>
       <h2>{question.statement}</h2>
       <p>{question.count} answered</p>
       {question.mean === null ? <p>No answers yet</p> : <>
         <p>Mean agreement: {question.mean.toFixed(1)} / {results.scale.max}</p>
-        <svg className="distribution" viewBox="0 0 101 60" role="img"
-          aria-label={`Answer distribution for ${question.statement}`}>
-          {question.distribution.map((count, value) =>
-            <rect key={value} x={value} y={60 - count / question.count * 60}
-              width="0.9" height={count / question.count * 60}><title>{value}: {count} answers</title></rect>)}
-        </svg>
+        {question.count > 10
+          ? <Histogram statement={question.statement} mean={question.mean} distribution={question.distribution} />
+          : <Dots mean={question.mean} distribution={question.distribution} />}
         <div className="endpoints"><span>Strongly disagree</span><span>Strongly agree</span></div>
       </>}
     </section>)}

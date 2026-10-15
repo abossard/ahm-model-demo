@@ -17,6 +17,24 @@
     "adminIpAddress": {
       "value": "${ADMIN_IP_ADDRESS}"
     },
+    "postgresSkuName": {
+      "value": "${AZURE_POSTGRES_SKU_NAME:-Standard_B1ms}"
+    },
+    "postgresSkuTier": {
+      "value": "${AZURE_POSTGRES_SKU_TIER:-Burstable}"
+    },
+    "containerAppsEnvironmentMode": {
+      "value": "${AZURE_CONTAINER_APPS_ENVIRONMENT_MODE:-ConsumptionOnly}"
+    },
+    "containerAppsSubnetNsgId": {
+      "value": "${AZURE_CONTAINER_APPS_SUBNET_NSG_ID:-}"
+    },
+    "privateEndpointSubnetNsgId": {
+      "value": "${AZURE_PRIVATE_ENDPOINT_SUBNET_NSG_ID:-}"
+    },
+    "aksSubnetNsgId": {
+      "value": "${AZURE_AKS_SUBNET_NSG_ID:-}"
+    },
     "healthModelLocation": {
       "value": "${HEALTH_MODEL_LOCATION:-northeurope}"
     },

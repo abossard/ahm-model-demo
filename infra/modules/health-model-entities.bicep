@@ -385,10 +385,10 @@ resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
             name: 'availability-test'
             displayName: 'Synthetic availability'
             signalKind: 'LogAnalyticsQuery'
-            // The trailing isnotnan filter drops the row when no probe has reported, so the
+            // The trailing NaN filter drops the row when no probe has reported, so the
             // signal reads Unknown instead of claiming a healthy zero. See the empty-input
             // gotcha for count-style KQL signals.
-            queryText: 'AppAvailabilityResults | where TimeGenerated > ago(15m) | where Name == "${availabilityTestName}" | summarize Value = round(100.0 * countif(Success) / count(), 2) | where isnotnan(Value)'
+            queryText: 'AppAvailabilityResults | where TimeGenerated > ago(15m) | where Name == "${availabilityTestName}" | summarize Value = round(100.0 * countif(Success) / count(), 2) | where not(isnan(Value))'
             valueColumnName: 'Value'
             dataUnit: 'Percent'
             timeGrain: 'PT5M'

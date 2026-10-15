@@ -9,10 +9,16 @@ describe("uiReducer edge controls", () => {
       layoutId: initial.layoutId,
       edgeStyle: initial.edgeStyle,
       connectionPolicy: initial.connectionPolicy,
+      selectedHealth: (initial as unknown as { readonly selectedHealth?: readonly string[] })
+        .selectedHealth,
+      excludedEntityMode: (initial as unknown as { readonly excludedEntityMode?: string })
+        .excludedEntityMode,
     }).toEqual({
       layoutId: "dagre-tb",
       edgeStyle: "smooth",
       connectionPolicy: "with-layout",
+      selectedHealth: ["Healthy", "Degraded", "Unhealthy", "Unknown"],
+      excludedEntityMode: "hide",
     });
   });
 

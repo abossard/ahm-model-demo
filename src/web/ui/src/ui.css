@@ -42,6 +42,24 @@
   --deleted-action-ink: #ffffff;
 }
 
+.entity-node--dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 12px;
+  min-height: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--unknown-border);
+  box-shadow: none;
+}
+
+.entity-node__dot-only {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--unknown-fill);
+}
+
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #0f172a;
@@ -331,7 +349,8 @@ body {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  overflow: auto;
+  overflow: hidden;
+  scrollbar-gutter: stable;
 }
 
 .topology {
@@ -369,7 +388,7 @@ body {
 
 .entity-node {
   width: 260px;
-  height: 100%;
+  height: auto;
   box-sizing: border-box;
   border-width: 2px;
   border-style: solid;
@@ -391,8 +410,7 @@ body {
   align-items: center;
   gap: 8px;
   padding: 10px 8px 10px 6px;
-  /* Holds the header band at least 54px so the disclosure's 50px counter-scaled box at React
-     Flow's 0.5 zoom floor still paints inside it. `estimateNodeSize` mirrors this exact number. */
+  /* Contains the disclosure's 50px counter-scaled box at React Flow's 0.5 zoom floor. */
   min-height: 54px;
 }
 
@@ -478,7 +496,11 @@ body {
 }
 
 .entity-node__row-value {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 55%;
+  overflow-wrap: anywhere;
+  text-align: right;
   font-size: 10.5px;
   color: var(--ink);
   font-weight: 600;
@@ -740,6 +762,7 @@ body {
 }
 
 .journey {
+  flex-shrink: 0;
   border-top: 1px solid var(--hair);
   background: var(--band);
   padding: 14px 20px;
@@ -747,6 +770,7 @@ body {
 
 .journey-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -829,6 +853,10 @@ body {
 }
 
 @media (max-width: 720px) {
+  .app-main {
+    overflow-y: auto;
+  }
+
   .model-picker__search {
     min-width: 0;
     width: min(320px, calc(100vw - 48px));
@@ -911,15 +939,85 @@ body {
   color: var(--signal);
 }
 
-.graph-toolbar__status {
+.graph-toolbar__health {
+  min-width: 56px;
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 1px solid var(--pill-stroke);
+  border-radius: 6px;
+  background: var(--pill-fill);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.graph-toolbar__field--health {
+  position: relative;
+}
+
+.graph-toolbar__health-popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 230px;
+  z-index: 25;
+  border: 1px solid var(--pill-stroke);
+  border-radius: 8px;
+  background: var(--pill-fill);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  padding: 10px;
+  pointer-events: auto;
+}
+
+.graph-toolbar__health-list {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.graph-toolbar__health-list + .graph-toolbar__health-list {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hair);
+}
+
+.graph-toolbar__health-legend {
   font-size: 11px;
   color: var(--lane-label);
-  max-width: 280px;
+  padding: 0;
+  margin-bottom: 6px;
+}
+
+.graph-toolbar__health-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.graph-toolbar__health-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid var(--pill-stroke);
+}
+
+.graph-toolbar__status {
+  flex: 1 1 160px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--lane-label);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   pointer-events: none;
 }
 
 .entity-node-shell {
-  height: 100%;
+  height: auto;
   pointer-events: none;
 }
 
@@ -935,7 +1033,7 @@ body {
   width: 26px;
   height: 26px;
   padding: 0;
-  margin: 0 -2px 0 0;
+  margin: 0 -2px 0 24px;
   box-sizing: border-box;
   border: 1px solid transparent;
   /* Nearly square: at the 25px rendered floor a 6px radius cut the corner samples of the required
@@ -973,6 +1071,7 @@ body {
 
 .entity-node__hidden {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 5px 10px 6px;

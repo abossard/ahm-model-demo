@@ -143,6 +143,34 @@ queries after the read grants.
 For a first deployment, follow [Get started from scratch](../README.md#get-started-from-scratch).
 Use `azd up` to provision resources and deploy application images.
 
+The provisioning hooks use the selected azd subscription, regardless of Azure CLI's default.
+Preprovision resolves your Entra identity in that subscription's tenant. Conditional Access can
+require a fresh Azure CLI sign-in to that tenant with Microsoft Graph access.
+
+PostgreSQL defaults to `Standard_B1ms` in the `Burstable` tier. Set
+`AZURE_POSTGRES_SKU_NAME` and `AZURE_POSTGRES_SKU_TIER` with
+`azd env set --environment <env>` to override compute for that environment, for example
+`Standard_D2ds_v5` and `GeneralPurpose`. Choose a region-supported pair; catalog support does not
+guarantee allocation capacity. Larger compute costs more. These overrides leave PostgreSQL 16,
+32 GiB storage, the region, and disabled high availability unchanged.
+
+Container Apps defaults to the legacy `ConsumptionOnly` environment type with no subnet
+delegation. Set `AZURE_CONTAINER_APPS_ENVIRONMENT_MODE` to `WorkloadProfiles` with
+`azd env set --environment <env>` to use the current environment type with only a `Consumption`
+profile. This delegates only `snet-container-apps` to `Microsoft.App/environments`; it adds no
+dedicated profile. Changing an existing environment's type requires replacement, not an in-place
+update. Confirm it is empty and obtain approval before deleting that exact environment. The
+environment type does not guarantee regional allocation. See the
+[environment types](https://learn.microsoft.com/en-us/azure/container-apps/environment) and
+[subnet requirements](https://learn.microsoft.com/en-us/azure/container-apps/custom-virtual-networks).
+
+For existing subnet NSG attachments, save their exact resource IDs in the selected environment with
+`azd env set --environment <env>`: `AZURE_CONTAINER_APPS_SUBNET_NSG_ID`,
+`AZURE_PRIVATE_ENDPOINT_SUBNET_NSG_ID`, and `AZURE_AKS_SUBNET_NSG_ID`. These inputs retain the
+attachments on reprovision without creating NSGs or changing their rules or routes. They default
+to empty, leaving the subnets unattached. Reprovisioning an existing VNet without its attachment
+IDs clears those bindings, so read the current subnet properties before provisioning.
+
 For infrastructure changes in a configured environment, `azd provision` provisions all models but
 does not deploy application images:
 

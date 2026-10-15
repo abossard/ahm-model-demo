@@ -12,7 +12,10 @@ const LAYOUT_IDS = [
   "elk-layered",
   "elk-radial",
   "d3-force",
+  "d3-force-adaptive",
 ];
+
+const STATIC_LAYOUT_IDS = LAYOUT_IDS.filter((id) => id !== "d3-force-adaptive");
 
 interface Box {
   readonly id: string;
@@ -689,12 +692,12 @@ test("C3-1 — every edge leaves and enters on the boundary facing the other car
   );
 });
 
-test("C3-1b — all four card boundaries are used across the seven layouts", async ({ page }) => {
+test("C3-1b — all four card boundaries are used across the static layouts", async ({ page }) => {
   await boot(page);
   const used = new Set<string>();
   const perLayout: Record<string, string[]> = {};
 
-  for (const layoutId of LAYOUT_IDS) {
+  for (const layoutId of STATIC_LAYOUT_IDS) {
     await chooseLayout(page, layoutId);
     const ends = await edgeEnds(page);
     perLayout[layoutId] = ends.map((end) => `${end.id} ${end.sourceSide}->${end.targetSide}`);
@@ -714,7 +717,7 @@ test("C3-1b — all four card boundaries are used across the seven layouts", asy
   ]);
 });
 
-for (const layoutId of LAYOUT_IDS) {
+for (const layoutId of STATIC_LAYOUT_IDS) {
   test(`C3-2 — ${layoutId} attaches every Free edge to the facing boundary`, async ({
     page,
   }) => {
@@ -1133,7 +1136,7 @@ test("C3-7 — collapsing anchors the toggled node and leaves unrelated nodes un
   expect(zoomOf(await viewportTransform(page))).toBe(zoomBefore);
 });
 
-for (const layoutId of LAYOUT_IDS) {
+for (const layoutId of STATIC_LAYOUT_IDS) {
   test(`C3-7c — ${layoutId} restores every descendant to its own transform on expand`, async ({ page }) => {
     await boot(page);
     await chooseLayout(page, layoutId);
@@ -1593,6 +1596,7 @@ test("C4-2b — a 22-node graph keeps every visible disclosure clickable from de
   // A plain centre click at the zoom the overlay toolbar used to swallow entirely.
   const zoom = await wheelToZoom(page, 0.97);
   expect(Math.abs(zoom - 0.97)).toBeLessThanOrEqual(0.01);
+  await page.waitForTimeout(400);
   const probes = await disclosureProbes(page);
   const target = probes.find((probe) => probe.fullyVisible && probe.id === "n0") ??
     (probes.find((probe) => probe.fullyVisible) as DisclosureProbe);
@@ -1605,7 +1609,10 @@ test("C4-2b — a 22-node graph keeps every visible disclosure clickable from de
   await expect(page.getByTestId("entity-panel")).toHaveCount(0);
   await expect(page.locator(".react-flow__node")).not.toHaveCount(22);
 
-  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.click(
+    box.x + box.width / 2,
+    box.y + box.height / 2,
+  );
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator(".react-flow__node")).toHaveCount(22);
 });

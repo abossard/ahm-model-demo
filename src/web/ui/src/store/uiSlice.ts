@@ -6,8 +6,11 @@ import { DEFAULT_LAYOUT_ID, type LayoutId } from "../model/layout";
 import type { ConnectionPolicy, EdgeStyle } from "../model/edgeRouting";
 import type { SortKey } from "../model/ordering";
 import type { ThemeName } from "../model/theme";
+import type { HealthState } from "../model/types";
 
 export const REFRESH_COUNTDOWN_SECONDS = 10;
+export type HealthFilterState = Exclude<HealthState, "Deleted">;
+export type ExcludedEntityMode = "hide" | "dot";
 
 interface UiState {
   readonly panelOpen: boolean;
@@ -27,6 +30,8 @@ interface UiState {
   readonly focusNames: readonly string[];
   readonly focusSeq: number;
   readonly announcement: string;
+  readonly selectedHealth: readonly HealthFilterState[];
+  readonly excludedEntityMode: ExcludedEntityMode;
 }
 
 const initialState: UiState = {
@@ -47,6 +52,8 @@ const initialState: UiState = {
   focusNames: [],
   focusSeq: 0,
   announcement: "",
+  selectedHealth: ["Healthy", "Degraded", "Unhealthy", "Unknown"],
+  excludedEntityMode: "hide",
 };
 
 const uiSlice = createSlice({
@@ -120,6 +127,17 @@ const uiSlice = createSlice({
     announce: (state, action: PayloadAction<string>) => {
       state.announcement = action.payload;
     },
+    setSelectedHealth: (state, action: PayloadAction<readonly HealthFilterState[]>) => {
+      state.selectedHealth = [...new Set(action.payload)];
+    },
+    toggleSelectedHealth: (state, action: PayloadAction<HealthFilterState>) => {
+      state.selectedHealth = state.selectedHealth.includes(action.payload)
+        ? state.selectedHealth.filter((item) => item !== action.payload)
+        : [...state.selectedHealth, action.payload];
+    },
+    setExcludedEntityMode: (state, action: PayloadAction<ExcludedEntityMode>) => {
+      state.excludedEntityMode = action.payload;
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -127,6 +145,8 @@ const uiSlice = createSlice({
         state.panelOpen = false;
         state.collapsed = [];
         state.highlightedName = null;
+        state.focusNames = [];
+        state.focusSeq = 0;
       })
       .addCase(submitHealthReport.fulfilled, (state) => {
         state.refreshCountdown = REFRESH_COUNTDOWN_SECONDS;
@@ -154,5 +174,8 @@ export const {
   closeSearch,
   focusEntities,
   announce,
+  setSelectedHealth,
+  toggleSelectedHealth,
+  setExcludedEntityMode,
 } = uiSlice.actions;
 export const uiReducer = uiSlice.reducer;

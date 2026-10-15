@@ -35,6 +35,23 @@ label { display: block; margin-bottom: .6rem; font-weight: 600; overflow-wrap: a
 .share img { display: block; max-width: 100%; height: auto; margin-top: 1rem; }
 .share input { margin-bottom: .75rem; }
 .code { font-size: 2rem; font-weight: 800; letter-spacing: .15em; }
-.distribution { display: block; width: 100%; height: 160px; border-bottom: 1px solid #82978a; }
-.distribution rect { fill: #22684b; }
+.card h2 { overflow-wrap: anywhere; }
+.chart { margin: 1rem 0; }
+.chart svg, svg.comparison { display: block; width: 100%; height: auto; max-width: 100%; }
+.chart figcaption, .overview p, .bands { font-size: .85rem; color: #3e5b4c; overflow-wrap: anywhere; }
+.chart table { width: 100%; border-collapse: collapse; margin-top: .5rem; font-size: .85rem; }
+.chart th, .chart td { text-align: left; padding: .2rem .4rem; border-bottom: 1px solid #d8e0d7; }
+svg [data-axis] { stroke: #3e5b4c; stroke-width: 1; }
+svg [data-mean], svg [data-zero] { stroke: #22352f; stroke-width: 2; stroke-dasharray: 4 2; }
+svg text { fill: #22352f; font-size: 11px; font-family: inherit; }
+.overview { margin: 1.5rem 0; }
+.overview h3 { font-size: 1rem; margin: 0; overflow-wrap: anywhere; }
+.overview ol, .overview ul { list-style: none; padding: 0; margin: 0; }
+.comparison-rows > li { padding: .75rem 0; border-bottom: 1px solid #d8e0d7; }
+.comparison-rows p { margin: .15rem 0; }
+.legend, .bands { display: flex; flex-wrap: wrap; gap: .25rem .9rem; }
+.swatch { display: inline-block; width: .8rem; height: .8rem; margin-right: .3rem; border-radius: 2px; }
+svg.histogram, svg.dots, svg.comparison { overflow: visible; }
+@media (max-width: 480px) { svg text { font-size: 15px; } }
+@media (max-width: 400px) { svg text { font-size: 20px; } }
 @media (max-width: 480px) { header > span { display: none; } .card { padding: 1rem; } }

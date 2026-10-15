@@ -65,6 +65,17 @@ npm --prefix src/web/ui test
 The Python suite includes two storyboard checks for the absent `docs/scenes` directory. Those checks
 currently fail.
 
+For graph-layout changes, prefer targeted browser checks before the full suite:
+
+```bash
+npm --prefix src/web/ui run e2e -- --project chromium tests/adaptive-graph.spec.ts tests/graph-ux.spec.ts tests/spa.spec.ts
+```
+
+Run `tests/visual-c1.spec.ts` with the same runner for desktop text-containment and overlap checks
+across all eight layouts. It saves light/dark screenshots and measured reports in
+`.playwright-mcp/visual-c1/`. Cards grow to fit wrapped content; their measured dimensions drive
+layout and edge attachment, while filtered dots stay 12 pixels square.
+
 ## Live Playwright checks
 
 Use the explicit live config in `src/web/ui/playwright.live.config.ts` for deployed read-only

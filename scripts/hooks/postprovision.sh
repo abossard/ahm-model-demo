@@ -104,10 +104,11 @@ subscription_scope="/subscriptions/$AZURE_SUBSCRIPTION_ID"
 
 assignment_count() {
   az role assignment list \
-    --assignee "$UAMI_OBJECT_ID" \
+    --subscription "$AZURE_SUBSCRIPTION_ID" \
     --scope "$subscription_scope" \
+    --fill-principal-name false \
     --only-show-errors \
-    --query "length([?scope=='$subscription_scope' && roleDefinitionName=='$1'])" \
+    --query "length([?scope=='$subscription_scope' && principalId=='$UAMI_OBJECT_ID' && roleDefinitionName=='$1'])" \
     --output tsv
 }
 
@@ -116,9 +117,11 @@ grant_command() {
     "$UAMI_OBJECT_ID" "$1" "$subscription_scope"
 }
 
+reader_assignments=$(assignment_count Reader)
+report_assignments=$(assignment_count "$HEALTH_REPORT_ROLE_NAME")
 missing=()
-[[ "$(assignment_count Reader)" == '0' ]] && missing+=(Reader)
-[[ "$(assignment_count "$HEALTH_REPORT_ROLE_NAME")" == '0' ]] && missing+=("$HEALTH_REPORT_ROLE_NAME")
+[[ "$reader_assignments" == '0' ]] && missing+=(Reader)
+[[ "$report_assignments" == '0' ]] && missing+=("$HEALTH_REPORT_ROLE_NAME")
 
 if (( ${#missing[@]} == 0 )); then
   printf 'CATALOG_SCOPE subscription principal=%s\n' "$UAMI_NAME"

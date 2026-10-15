@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from "vitest";
 import {
   LAYOUT_CHOICES,
@@ -132,7 +133,7 @@ describe("layout engine registry", () => {
     },
   );
 
-  it("offers exactly the seven advertised engines in order", () => {
+  it("offers the existing seven engines plus the live adaptive force option at the end", () => {
     expect(LAYOUT_CHOICES.map((engine) => engine.id)).toEqual([
       "dagre-tb",
       "dagre-bt",
@@ -141,6 +142,7 @@ describe("layout engine registry", () => {
       "elk-layered",
       "elk-radial",
       "d3-force",
+      "d3-force-adaptive",
     ]);
   });
 
@@ -281,4 +283,30 @@ describe("anchorLayout", () => {
 
     expect(anchorLayout(next, new Map(), SIZES)).toBe(next);
   });
+
+  it.each([120, 420, 960])("clears retained nodes when painted content grows to %s pixels", (height) => {
+    const positions = new Map([
+      ["a", { x: 0, y: 0 }],
+      ["b", { x: 0, y: 100 }],
+      ["c", { x: 0, y: 200 }],
+    ]);
+    const sizes = new Map([...positions.keys()].map((name) => [name, { width: 260, height }]));
+    const next = anchorLayout({ positions, width: 260, height: 300 }, positions, sizes);
+    expect(next.positions.get("a")).toEqual(positions.get("a"));
+    assertPacking(next, sizes);
+  });
 });
+
+function assertPacking(layout: GraphLayout, sizes: ReadonlyMap<string, NodeSize>): void {
+  const boxes = [...layout.positions].map(([name, point]) => ({ name, ...point, ...sizes.get(name)! }));
+  for (const a of boxes) {
+    expect(Number.isFinite(a.x) && Number.isFinite(a.y), a.name).toBe(true);
+    for (const b of boxes) {
+      if (a.name >= b.name) continue;
+      expect(
+        a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y,
+        `${a.name}/${b.name}`,
+      ).toBe(false);
+    }
+  }
+}
