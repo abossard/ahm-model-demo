@@ -37,9 +37,6 @@ param containerAppsSubnetNsgId string = ''
 @description('Existing private endpoint subnet NSG resource ID. Empty leaves the subnet unattached.')
 param privateEndpointSubnetNsgId string = ''
 
-@description('Existing AKS subnet NSG resource ID. Empty leaves the subnet unattached.')
-param aksSubnetNsgId string = ''
-
 @description('Region hosting the Azure Health Model.')
 param healthModelLocation string = location
 
@@ -100,7 +97,6 @@ module foundation 'modules/foundation.bicep' = {
     containerAppsEnvironmentMode: containerAppsEnvironmentMode
     containerAppsSubnetNsgId: containerAppsSubnetNsgId
     privateEndpointSubnetNsgId: privateEndpointSubnetNsgId
-    aksSubnetNsgId: aksSubnetNsgId
     tags: tags
   }
 }
@@ -162,29 +158,6 @@ module rbac 'modules/rbac.bicep' = {
     applicationInsightsName: foundation.outputs.applicationInsightsName
     identityId: foundation.outputs.identityId
     identityPrincipalId: foundation.outputs.identityPrincipalId
-  }
-}
-
-module aks 'modules/aks.bicep' = {
-  scope: rg
-  name: 'aks'
-  params: {
-    location: location
-    namePrefix: namePrefix
-    aksSubnetId: foundation.outputs.aksSubnetId
-    tags: tags
-  }
-}
-
-module aksAccess 'modules/aks-access.bicep' = {
-  scope: rg
-  name: 'aks-access'
-  params: {
-    registryName: foundation.outputs.registryName
-    kubeletObjectId: aks.outputs.kubeletObjectId
-    identityName: foundation.outputs.identityName
-    oidcIssuerUrl: aks.outputs.oidcIssuerUrl
-    namePrefix: namePrefix
   }
 }
 
@@ -426,7 +399,6 @@ module healthModelAccess 'modules/health-model-access.bicep' = {
     modelPrincipalId: healthModel.outputs.modelPrincipalId
     monitoredResources: {
       containerApp: web.outputs.containerAppId
-      aksCluster: aks.outputs.clusterId
       postgres: foundation.outputs.postgresId
       storage: storage.outputs.storageId
       agentWebApp: agentWeb.outputs.containerAppId
@@ -477,7 +449,6 @@ module shopHealthModel 'modules/shop-health-model.bicep' = {
     modelName: shopHealthModelName
     healthModelLocation: healthModelLocation
     containerAppId: web.outputs.containerAppId
-    aksClusterId: aks.outputs.clusterId
     postgresId: foundation.outputs.postgresId
     storageId: storage.outputs.storageId
     workspaceId: foundation.outputs.workspaceId
@@ -485,10 +456,9 @@ module shopHealthModel 'modules/shop-health-model.bicep' = {
   }
 }
 
-output AZURE_CONTAINER_REGISTRY_ENDPOINT string = aksAccess.outputs.registryLoginServer
+output AZURE_CONTAINER_REGISTRY_ENDPOINT string = rbac.outputs.registryLoginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = foundation.outputs.registryName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = foundation.outputs.environmentId
-output AZURE_AKS_CLUSTER_NAME string = aks.outputs.clusterName
 output AZURE_RESOURCE_GROUP string = rg.name
 output AZURE_IDENTITY_NAME string = foundation.outputs.identityName
 output AZURE_IDENTITY_CLIENT_ID string = foundation.outputs.identityClientId

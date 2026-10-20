@@ -37,15 +37,11 @@ param containerAppsSubnetNsgId string = ''
 @description('Existing private endpoint subnet NSG resource ID. Empty leaves the subnet unattached.')
 param privateEndpointSubnetNsgId string = ''
 
-@description('Existing AKS subnet NSG resource ID. Empty leaves the subnet unattached.')
-param aksSubnetNsgId string = ''
-
 @description('Tags applied to all taggable resources.')
 param tags object
 
 var infrastructureSubnetName = 'snet-container-apps'
 var privateEndpointSubnetName = 'snet-private-endpoints'
-var aksSubnetName = 'snet-aks'
 
 resource vnet 'Microsoft.Network/virtualNetworks@2025-07-01' = {
   name: 'vnet-${namePrefix}'
@@ -85,17 +81,6 @@ resource vnet 'Microsoft.Network/virtualNetworks@2025-07-01' = {
         }, empty(privateEndpointSubnetNsgId) ? {} : {
           networkSecurityGroup: {
             id: privateEndpointSubnetNsgId
-          }
-        })
-      }
-      {
-        name: aksSubnetName
-        properties: union({
-          addressPrefix: '10.42.3.0/24'
-          delegations: []
-        }, empty(aksSubnetNsgId) ? {} : {
-          networkSecurityGroup: {
-            id: aksSubnetNsgId
           }
         })
       }
@@ -304,7 +289,6 @@ output workspaceId string = workspace.id
 output applicationInsightsName string = applicationInsights.name
 output applicationInsightsId string = applicationInsights.id
 output privateEndpointSubnetId string = '${vnet.id}/subnets/${privateEndpointSubnetName}'
-output aksSubnetId string = '${vnet.id}/subnets/${aksSubnetName}'
 output queuePrivateDnsZoneId string = queuePrivateDnsZone.id
 output postgresId string = postgres.id
 output postgresHost string = postgres.properties.fullyQualifiedDomainName

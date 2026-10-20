@@ -46,7 +46,7 @@ function pickIcon(label: string): string {
   if (has("ship", "carrier", "logistics", "delivery", "sink")) return "ship";
   if (has("analytics", "report", "pipeline", "ingest", "index", "search", "batch", "scheduler")) return "analytics";
   if (has("security", "defender", "firewall", "waf", "auth", "identity", "entra", "key vault", "secret", "safety")) return "shield";
-  if (has("kubernetes", "container", "aks", "pod", "cluster")) return "cube";
+  if (has("container")) return "cube";
   if (has("model", "nested")) return "cube";
   if (has("app", "hosting", "compute", "vm", "worker", "processor", "agent", "tool")) return "app";
   if (has("shop", "commerce", "checkout", "catalog", "order", "payment", "fraud", "flow", "gateway")) return "flow";

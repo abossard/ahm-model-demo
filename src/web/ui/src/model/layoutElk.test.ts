@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { elkLayout } from "./layoutElk";
 import type { GraphLayout, NodeSize } from "./layout";
 import type { Entity, Relationship } from "./types";
+import { realAnbomovModel } from "../../tests/denseModel";
 
 function entity(name: string): Entity {
   return {
@@ -55,6 +56,34 @@ function overlaps(layout: GraphLayout): readonly string[] {
   return clashes;
 }
 
+function measuredSize(entity: Entity): NodeSize {
+  const name = entity.displayName || entity.name;
+  const nameLines = Math.max(1, Math.ceil((name.length * 6.9) / 120));
+  const headerHeight = Math.max(54, 20 + nameLines * 17);
+  const rowsHeight = entity.signals.length > 0 ? 16 + entity.signals.length * 22 : 0;
+  return { width: 260, height: headerHeight + rowsHeight };
+}
+
+function overlapsBySize(layout: GraphLayout, sizes: ReadonlyMap<string, NodeSize>): readonly string[] {
+  const boxes = [...layout.positions.entries()];
+  const clashes: string[] = [];
+  for (let i = 0; i < boxes.length; i += 1) {
+    for (let j = i + 1; j < boxes.length; j += 1) {
+      const [leftName, left] = boxes[i] as [string, { x: number; y: number }];
+      const [rightName, right] = boxes[j] as [string, { x: number; y: number }];
+      const leftSize = sizes.get(leftName) as NodeSize;
+      const rightSize = sizes.get(rightName) as NodeSize;
+      const apart =
+        left.x + leftSize.width <= right.x ||
+        right.x + rightSize.width <= left.x ||
+        left.y + leftSize.height <= right.y ||
+        right.y + rightSize.height <= left.y;
+      if (!apart) clashes.push(`${leftName}/${rightName}`);
+    }
+  }
+  return clashes;
+}
+
 describe("elkLayout", () => {
   it.each(["radial", "layered"] as const)(
     "%s places disconnected components without overlapping any card",
@@ -76,5 +105,16 @@ describe("elkLayout", () => {
 
     expect(overlaps(layout)).toEqual([]);
     expect(layout.positions.size).toBe(4);
+  });
+
+  it("keeps the historical AKS-free fixture non-overlapping under radial", async () => {
+    const model = realAnbomovModel();
+    const sizes = new Map<string, NodeSize>(
+      model.entities.map((item) => [item.name, measuredSize(item)] as const),
+    );
+    const layout = await elkLayout(model.entities, model.relationships, measuredSize, "radial");
+
+    expect(layout.positions.size).toBe(model.entities.length);
+    expect(overlapsBySize(layout, sizes)).toEqual([]);
   });
 });

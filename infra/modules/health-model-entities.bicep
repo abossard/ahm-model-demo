@@ -632,66 +632,6 @@ resource queueStorage 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
   }
 }
 
-resource aksCluster 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
-  parent: model
-  name: 'aks-cluster'
-  properties: {
-    displayName: 'AKS Cluster'
-    healthObjective: 99
-    impact: 'Standard'
-    canvasPosition: {
-      x: 260
-      y: 490
-    }
-    signalGroups: {
-      azureResource: {
-        authenticationSetting: authenticationSettingName
-        azureResourceId: monitoredResources.aksCluster
-        azureResourceKind: 'AksCluster'
-        resourceHealth: {
-          enabled: 'Enabled'
-        }
-        signals: [
-          {
-            name: 'node-cpu'
-            displayName: 'Node CPU usage'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.ContainerService/managedClusters'
-            metricName: 'node_cpu_usage_percentage'
-            aggregationType: 'Average'
-            dataUnit: 'Percent'
-            timeGrain: 'PT5M'
-            refreshInterval: 'PT5M'
-            evaluationRules: {
-              unhealthyRule: {
-                operator: 'GreaterThan'
-                threshold: 95
-              }
-            }
-          }
-          {
-            name: 'node-memory'
-            displayName: 'Node memory working set'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.ContainerService/managedClusters'
-            metricName: 'node_memory_working_set_percentage'
-            aggregationType: 'Average'
-            dataUnit: 'Percent'
-            timeGrain: 'PT5M'
-            refreshInterval: 'PT5M'
-            evaluationRules: {
-              unhealthyRule: {
-                operator: 'GreaterThan'
-                threshold: 95
-              }
-            }
-          }
-        ]
-      }
-    }
-  }
-}
-
 resource agentWebApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
   name: 'agent-web-app'
@@ -974,7 +914,6 @@ output entityNames object = {
   systemAgentRuntime: systemAgentRuntime.name
   systemAiInference: systemAiInference.name
   containerApp: containerApp.name
-  aksCluster: aksCluster.name
   postgres: postgres.name
   queueStorage: queueStorage.name
   agentWebApp: agentWebApp.name
@@ -984,4 +923,4 @@ output entityNames object = {
   discoveredTopology: discoveredTopology.name
 }
 
-output deterministicEntityCount int = 19
+output deterministicEntityCount int = 18

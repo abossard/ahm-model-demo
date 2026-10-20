@@ -32,9 +32,6 @@
     "privateEndpointSubnetNsgId": {
       "value": "${AZURE_PRIVATE_ENDPOINT_SUBNET_NSG_ID:-}"
     },
-    "aksSubnetNsgId": {
-      "value": "${AZURE_AKS_SUBNET_NSG_ID:-}"
-    },
     "healthModelLocation": {
       "value": "${HEALTH_MODEL_LOCATION:-northeurope}"
     },

@@ -7,8 +7,8 @@ three Azure Health Models.
 
 | Model | Module | What it describes |
 |-------|--------|-------------------|
-| `hm-<env>` | `modules/health-model.bicep` + `health-model-entities.bicep` + `health-model-relationships.bicep` + `health-model-discovery.bicep` | The real application: 19 authored entities over live metrics, log queries, availability tests, submitted health reports, and an Application Insights discovery rule. This is the model the web app selects by default. |
-| `hm-<env>-shop` | `modules/shop-health-model.bicep` | A fictional shop with 18 entities, 21 relationships, and no discovery. |
+| `hm-<env>` | `modules/health-model.bicep` + `health-model-entities.bicep` + `health-model-relationships.bicep` + `health-model-discovery.bicep` | The real application: 18 authored entities over live metrics, log queries, availability tests, submitted health reports, and an Application Insights discovery rule. This is the model the web app selects by default. |
+| `hm-<env>-shop` | `modules/shop-health-model.bicep` | A fictional shop with 17 entities, 21 relationships, and no discovery. |
 | `hm-<env>-survey` | `modules/survey-health-model.bicep` | Survey authoring, joining/answering, and public results over real resources; no discovery or constant-healthy signals. |
 
 All live in the same resource group, and `azd provision` creates them together.
@@ -18,7 +18,7 @@ All live in the same resource group, and `azd provision` creates them together.
 The survey adds its own `survey` Container App and survey health model. It reuses the unchanged
 `container-app.bicep`, existing environment, ACR, user-assigned workload identity, PostgreSQL
 `demo` database, Application Insights, and workspace. No additional AI, database server, standalone
-identity, telemetry component, availability-test resource, or survey AKS service is provisioned.
+identity, telemetry component, or availability-test resource is provisioned.
 The new Container App and model evaluations can incur cost. Template changes are not deployment
 permission; inspect current images, layouts and grants before an authorized provision.
 
@@ -91,7 +91,7 @@ propagate; Unknown or a query error is not proof of Healthy.
 
 ## The shop model
 
-A compact standard shop: 18 entities and 21 directed relationships, tuned so the Designer's layout
+A compact standard shop: 17 entities and 21 directed relationships, tuned so the Designer's layout
 mechanism has room to work. The root `Contoso Shop` has three flows, each fanning out to services.
 
 - Shopping covers browsing: Product Catalog and Shopping Cart.
@@ -103,13 +103,12 @@ mechanism has room to work. The root `Contoso Shop` has three flows, each fannin
 The saved Designer layout places the flows above the services, with Azure resources and simulated
 providers below.
 
-The six Azure-resource nodes bind existing resources through module outputs:
+The five Azure-resource nodes bind existing resources through module outputs:
 
 | Entity | Bound resource |
 |--------|----------------|
 | `azure-postgres` | PostgreSQL flexible server (`Microsoft.DBforPostgreSQL/flexibleServers`), catalog and inventory persistence |
-| `azure-aks` | AKS cluster (`Microsoft.ContainerService/managedClusters`), cart and payment services |
-| `azure-web` | Web container app (`Microsoft.App/containerApps`), catalog and order-processing front end |
+| `azure-web` | Web container app (`Microsoft.App/containerApps`), catalog, cart, payment and order-processing front-end simulation |
 | `azure-queue` | Queue service (`Microsoft.Storage/storageAccounts/queueServices`), named `default` under that account |
 | `azure-storage` | Storage account (`Microsoft.Storage/storageAccounts`), shared cart storage |
 | `azure-workspace` | Log Analytics workspace (`Microsoft.OperationalInsights/workspaces`), analytics backing |
@@ -119,7 +118,7 @@ deploying this model does not deploy commerce workloads or payment integrations.
 
 ### Synthetic demo health
 
-All eight leaves (six Azure resources and two providers) carry one Log Analytics signal,
+All seven leaves (five Azure resources and two providers) carry one Log Analytics signal,
 `Synthetic demo health (constant 100)`. It runs `print Value = 100`, reads the `Value` column,
 and becomes unhealthy only for `GreaterThan` 100. Query and refresh intervals are both `PT5M`.
 Successful evaluations stay Healthy without workload traffic or expiring health reports.
@@ -165,11 +164,13 @@ environment type does not guarantee regional allocation. See the
 [subnet requirements](https://learn.microsoft.com/en-us/azure/container-apps/custom-virtual-networks).
 
 For existing subnet NSG attachments, save their exact resource IDs in the selected environment with
-`azd env set --environment <env>`: `AZURE_CONTAINER_APPS_SUBNET_NSG_ID`,
-`AZURE_PRIVATE_ENDPOINT_SUBNET_NSG_ID`, and `AZURE_AKS_SUBNET_NSG_ID`. These inputs retain the
+`azd env set --environment <env>`: `AZURE_CONTAINER_APPS_SUBNET_NSG_ID` and
+`AZURE_PRIVATE_ENDPOINT_SUBNET_NSG_ID`. These inputs retain the
 attachments on reprovision without creating NSGs or changing their rules or routes. They default
 to empty, leaving the subnets unattached. Reprovisioning an existing VNet without its attachment
 IDs clears those bindings, so read the current subnet properties before provisioning.
+Removing AKS from this source does not retire live AKS infrastructure and is not a safe shortcut
+for reprovisioning an existing VNet that still has AKS subnet dependencies.
 
 For infrastructure changes in a configured environment, `azd provision` provisions all models but
 does not deploy application images:
@@ -186,17 +187,16 @@ az deployment group create \
   --name shop-health-model --mode Incremental \
   --template-file infra/modules/shop-health-model.bicep \
   --parameters modelName=hm-<env>-shop healthModelLocation=northeurope \
-               containerAppId=<id> aksClusterId=<id> postgresId=<id> \
+               containerAppId=<id> postgresId=<id> \
                storageId=<id> workspaceId=<id> \
                tags='{"azd-env-name":"<env>","workload":"azure-health-model-demo"}'
 ```
 
-Pass the same tags `main.bicep` builds, or the model loses them on the next run. Read the five resource
+Pass the same tags `main.bicep` builds, or the model loses them on the next run. Read the four resource
 IDs from the deployment that produced them rather than typing them:
 
 ```bash
 az deployment group show --subscription <sub> -g rg-<env> -n container-app-web --query properties.outputs.containerAppId.value -o tsv
-az deployment group show --subscription <sub> -g rg-<env> -n aks --query properties.outputs.clusterId.value -o tsv
 az deployment group show --subscription <sub> -g rg-<env> -n foundation --query properties.outputs.postgresId.value -o tsv
 az deployment group show --subscription <sub> -g rg-<env> -n foundation --query properties.outputs.workspaceId.value -o tsv
 az deployment group show --subscription <sub> -g rg-<env> -n storage --query properties.outputs.storageId.value -o tsv
@@ -249,7 +249,7 @@ Delete only shop child definitions. The bound Azure resources, their data, and e
 `hm-<env>` stay untouched.
 
 Then run the shop-only incremental deployment above. Repeating it needs no deletions: require the same
-18 names and 21 named endpoint pairs, the same shop principal, and unchanged application-model
+17 names and 21 named endpoint pairs, the same shop principal, and unchanged application-model
 configuration, app images, grants outside the shop, and default selection.
 
 ### Designer layout round-trip
@@ -281,7 +281,7 @@ Use API version `2026-05-01-preview` and follow `nextLink`.
 BASE="https://management.azure.com/subscriptions/<sub>/resourceGroups/rg-<env>/providers/Microsoft.CloudHealth/healthmodels"
 
 az rest --subscription <sub> --method get --url "$BASE?api-version=2026-05-01-preview" # three models
-az rest --subscription <sub> --method get --url "$BASE/hm-<env>-shop/entities?api-version=2026-05-01-preview" # 18 entities
+az rest --subscription <sub> --method get --url "$BASE/hm-<env>-shop/entities?api-version=2026-05-01-preview" # 17 entities
 az rest --subscription <sub> --method get --url "$BASE/hm-<env>-shop/relationships?api-version=2026-05-01-preview" # 21 edges
 ```
 
@@ -289,7 +289,7 @@ An entity's `properties.healthState` is `Unknown` until its first evaluation, wh
 minutes after deployment. Once it evaluates, every synthetic signal under
 `properties.signalGroups.azureLogAnalytics.signals[].status` reports `value: 100`,
 `healthState: Healthy`, a fresh `reportedAt`, and no `error`.
-Require all 18 entities Healthy and all eight evaluated signals at 100. Take two samples at least five
+Require all 17 entities Healthy and all seven evaluated signals at 100. Take two samples at least five
 minutes apart, after the final deployment. Each signal timestamp must advance and be no more than
 ten minutes old. Missing data is not a successful health check.
 

@@ -110,7 +110,6 @@ SHOP_ROOT = "parameters('modelName')"
 
 SHOP_PARAMETER_SOURCES = {
     "containerAppId": ("container-app-web", "containerAppId"),
-    "aksClusterId": ("aks", "clusterId"),
     "postgresId": ("foundation", "postgresId"),
     "storageId": ("storage", "storageId"),
     "workspaceId": ("foundation", "workspaceId"),
@@ -118,7 +117,6 @@ SHOP_PARAMETER_SOURCES = {
 
 SHOP_LEAF_BINDINGS = {
     "azure-web": ("storefront", "containerAppId", "Microsoft.App/containerApps"),
-    "azure-aks": ("products", "aksClusterId", "Microsoft.ContainerService/managedClusters"),
     "azure-postgres": ("ordersDatabase", "postgresId", "Microsoft.DBforPostgreSQL/flexibleServers"),
     "azure-storage": ("storage", "storageId", "Microsoft.Storage/storageAccounts"),
     "azure-queue": ("orderQueue", "storageId", "Microsoft.Storage/storageAccounts/queueServices"),
@@ -168,14 +166,14 @@ SHOP_EDGES = {
     "r-shop-orders-analytics": ("orders", "analytics"),
     "r-shop-product-catalog-azure-web": ("product-catalog", "azure-web"),
     "r-shop-product-catalog-azure-postgres": ("product-catalog", "azure-postgres"),
-    "r-shop-shopping-cart-azure-aks": ("shopping-cart", "azure-aks"),
+    "r-shop-shopping-cart-azure-web": ("shopping-cart", "azure-web"),
     "r-shop-shopping-cart-azure-storage": ("shopping-cart", "azure-storage"),
     "r-shop-inventory-azure-postgres": ("inventory", "azure-postgres"),
     "r-shop-order-processing-azure-web": ("order-processing", "azure-web"),
     "r-shop-order-processing-azure-queue": ("order-processing", "azure-queue"),
     "r-shop-payment-provider-stripe": ("payment", "provider-stripe"),
     "r-shop-payment-provider-paypal": ("payment", "provider-paypal"),
-    "r-shop-payment-azure-aks": ("payment", "azure-aks"),
+    "r-shop-payment-azure-web": ("payment", "azure-web"),
     "r-shop-analytics-azure-workspace": ("analytics", "azure-workspace"),
 }
 
@@ -194,7 +192,6 @@ SHOP_POSITIONS = {
     "provider-stripe": (1655, 597),
     "provider-paypal": (1905, 597),
     "azure-postgres": (625, 579),
-    "azure-aks": (1405, 589),
     "azure-web": (0, 589),
     "azure-queue": (250, 579),
     "azure-storage": (885, 589),
@@ -216,11 +213,93 @@ def shop_edge_endpoint(expression):
 
 
 class SourceLayoutContractTests(unittest.TestCase):
+    def test_application_health_model_contract_removes_aks_authored_topology(self):
+        root = Path(__file__).parents[1]
+        compiled = json.loads(
+            subprocess.run(
+                [
+                    "az",
+                    "bicep",
+                    "build",
+                    "--file",
+                    str(root / "infra" / "main.bicep"),
+                    "--stdout",
+                    "--only-show-errors",
+                    "--subscription",
+                    SUBSCRIPTION_ID,
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+        entities_module = next(
+            resource
+            for resource in compiled["resources"]
+            if resource.get("name") == "health-model-entities"
+        )
+        relationships_module = next(
+            resource
+            for resource in compiled["resources"]
+            if resource.get("name") == "health-model-relationships"
+        )
+        entities_template = entities_module["properties"]["template"]
+        relationships_template = relationships_module["properties"]["template"]
+        entity_resources = [
+            r for r in entities_template["resources"]
+            if r["type"].endswith("/entities")
+        ]
+        relationship_resources = [
+            r for r in relationships_template["resources"]
+            if r["type"].endswith("/relationships")
+        ]
+        relationship_names = {
+            shop_entity_name(resource["name"]) for resource in relationship_resources
+        }
+        relationship_endpoints = {
+            shop_entity_name(resource["name"]): (
+                resource["properties"]["parentEntityName"],
+                resource["properties"]["childEntityName"],
+            )
+            for resource in relationship_resources
+        }
+
+        self.assertEqual(entities_template["outputs"]["deterministicEntityCount"]["value"], 18)
+        self.assertEqual(relationships_template["outputs"]["deterministicRelationshipCount"]["value"], 20)
+        self.assertEqual(len(entity_resources), 18)
+        self.assertEqual(len(relationship_resources), 20)
+        self.assertNotIn("aksCluster", entities_template["outputs"]["entityNames"]["value"])
+        self.assertNotIn("r-app-hosting-aks", relationship_names)
+        self.assertEqual(
+            relationship_endpoints["r-app-hosting-container-app"],
+            (
+                "[parameters('entityNames').systemAppHosting]",
+                "[parameters('entityNames').containerApp]",
+            ),
+        )
+        self.assertFalse(
+            any(resource["name"] == "[format('{0}/{1}', parameters('modelName'), 'aks-cluster')]" for resource in entity_resources)
+        )
+
+        damaged_relationships = copy.deepcopy(relationship_resources)
+        replacement = next(
+            resource
+            for resource in damaged_relationships
+            if shop_entity_name(resource["name"]) == "r-app-hosting-container-app"
+        )
+        replacement["name"] = "[format('{0}/{1}', parameters('modelName'), 'r-app-hosting-aks')]"
+        replacement["properties"]["childEntityName"] = "[parameters('entityNames').aksCluster]"
+        with self.assertRaises(AssertionError):
+            damaged_names = {
+                shop_entity_name(resource["name"]) for resource in damaged_relationships
+            }
+            self.assertNotIn("r-app-hosting-aks", damaged_names)
+
     def assert_shop_health_model_contract(self, template):
         resources = template["resources"]
         entity_list = [r for r in resources if r["type"].endswith("/entities")]
         edge_list = [r for r in resources if r["type"].endswith("/relationships")]
-        self.assertEqual(len(entity_list), 18)
+        self.assertEqual(len(entity_list), 17)
         self.assertEqual(len(edge_list), 21)
         entities = {shop_entity_name(r["name"]): r for r in entity_list}
         self.assertEqual(set(entities), {*SHOP_GROUPS, *SHOP_PROVIDERS, *SHOP_LEAF_BINDINGS})
@@ -242,7 +321,7 @@ class SourceLayoutContractTests(unittest.TestCase):
             {shop_edge_endpoint(v) for v in template["outputs"]["entityNames"]["value"]},
             set(entities),
         )
-        self.assertEqual(len(template["outputs"]["entityNames"]["value"]), 18)
+        self.assertEqual(len(template["outputs"]["entityNames"]["value"]), 17)
         self.assertEqual(
             set(entities) - {c for _, c in expected_pairs}, {SHOP_ROOT}
         )
@@ -328,12 +407,12 @@ class SourceLayoutContractTests(unittest.TestCase):
                 self.assertNotIn("signals", azure)
                 self.assertIn(resource_type, properties["displayName"])
                 bindings.append(azure["azureResourceId"].lower())
-        self.assertEqual(len(set(bindings)), 6)
+        self.assertEqual(len(set(bindings)), 5)
         self.assertGreater(
             min(positions[name]["y"] for name in SHOP_LEAF_BINDINGS),
             max(positions[name]["y"] for name in SHOP_GROUPS),
         )
-        self.assertEqual(len({(p["x"], p["y"]) for p in positions.values()}), 18)
+        self.assertEqual(len({(p["x"], p["y"]) for p in positions.values()}), 17)
         for resource in edge_list:
             for endpoint in ("parentEntityName", "childEntityName"):
                 name = shop_edge_endpoint(resource["properties"][endpoint])

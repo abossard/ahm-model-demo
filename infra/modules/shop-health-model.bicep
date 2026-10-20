@@ -9,9 +9,6 @@ param healthModelLocation string
 @description('Existing container app backing simulated shop services.')
 param containerAppId string
 
-@description('Existing AKS cluster backing product and cart service roles.')
-param aksClusterId string
-
 @description('Existing PostgreSQL server backing the logical shop database roles.')
 param postgresId string
 
@@ -74,7 +71,6 @@ module access 'health-model-access.bicep' = {
     modelPrincipalId: model.identity.principalId
     monitoredResources: {
       storefront: containerAppId
-      products: aksClusterId
       ordersDatabase: postgresId
       storage: storageId
       orderQueue: orderQueueServiceId
@@ -362,35 +358,6 @@ resource azurePostgres 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-p
   }
 }
 
-resource azureAks 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
-  parent: model
-  name: 'azure-aks'
-  properties: {
-    displayName: '${last(split(aksClusterId, '/'))} (Microsoft.ContainerService/managedClusters)'
-    healthObjective: 99
-    impact: 'Standard'
-    canvasPosition: {
-      x: 1405
-      y: 589
-    }
-    signalGroups: {
-      azureResource: {
-        authenticationSetting: authentication.name
-        azureResourceId: access.outputs.monitoredResources.products
-        azureResourceKind: 'AksCluster'
-        resourceHealth: {
-          enabled: 'Disabled'
-        }
-      }
-      azureLogAnalytics: {
-        authenticationSetting: authentication.name
-        logAnalyticsWorkspaceResourceId: access.outputs.monitoredResources.logAnalyticsWorkspace
-        signals: syntheticDemoSignals
-      }
-    }
-  }
-}
-
 resource azureWeb 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
   name: 'azure-web'
@@ -618,12 +585,12 @@ resource relProductCatalogAzurePostgres 'Microsoft.CloudHealth/healthmodels/rela
   }
 }
 
-resource relShoppingCartAzureAks 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+resource relShoppingCartAzureWeb 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
-  name: 'r-shop-shopping-cart-azure-aks'
+  name: 'r-shop-shopping-cart-azure-web'
   properties: {
     parentEntityName: shoppingCart.name
-    childEntityName: azureAks.name
+    childEntityName: azureWeb.name
   }
 }
 
@@ -681,12 +648,12 @@ resource relPaymentProviderPaypal 'Microsoft.CloudHealth/healthmodels/relationsh
   }
 }
 
-resource relPaymentAzureAks 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+resource relPaymentAzureWeb 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
-  name: 'r-shop-payment-azure-aks'
+  name: 'r-shop-payment-azure-web'
   properties: {
     parentEntityName: payment.name
-    childEntityName: azureAks.name
+    childEntityName: azureWeb.name
   }
 }
 
@@ -716,7 +683,6 @@ output entityNames array = [
   providerStripe.name
   providerPaypal.name
   azurePostgres.name
-  azureAks.name
   azureWeb.name
   azureQueue.name
   azureStorage.name

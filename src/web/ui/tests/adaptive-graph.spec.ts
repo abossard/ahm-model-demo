@@ -846,7 +846,7 @@ test("resizing keeps health controls reachable without resetting filter choices"
   await closeHealthFilter(page);
 });
 
-test("settled mixed card-dot layouts keep nodes non-overlapping on six, dense and historical-22 fixtures", async ({ page }) => {
+test("settled mixed card-dot layouts keep nodes non-overlapping on six, dense and historical-21 fixtures", async ({ page }) => {
   const dense = denseModel(DENSE_SEED);
   const variedDense: HealthModel = {
     ...dense,
@@ -866,7 +866,7 @@ test("settled mixed card-dot layouts keep nodes non-overlapping on six, dense an
   const fixtures: Array<{ readonly name: string; readonly model: HealthModel }> = [
     { name: "six", model: healthModel },
     { name: "dense", model: variedDense },
-    { name: "historical-22", model: variedHistorical },
+    { name: "historical-21", model: variedHistorical },
   ];
 
   for (const fixture of fixtures) {

@@ -18,7 +18,7 @@ It also deploys a separate synthetic shop model. The shop is a demo, not the app
 - Website and API: `src/web/ui` renders the graph; `src/web/app` serves the UI and health-model API.
 - AI integration: `src/agent-web` hosts CopilotKit; `src/agent-app` runs the agent and calls the web API.
   The public web app proxies the assistant through `/agent`.
-- Deployment: `azure.yaml` wires Container Apps and AKS. Bicep outputs provide runtime configuration.
+- Deployment: `azure.yaml` wires Container Apps. Bicep outputs provide runtime configuration.
   `scripts/hooks/postup.sh` prints the public links after `azd up`.
 
 ## Change the relevant surface

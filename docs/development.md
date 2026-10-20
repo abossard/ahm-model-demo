@@ -8,8 +8,7 @@ It creates the environment and deploys the app. See the [README](../README.md#ge
 ## Prerequisites
 
 Use macOS, Linux, or WSL. Install Azure CLI, Azure Developer CLI (`azd`), Git, Bash, `make`, `jq`,
-`curl`, and the PostgreSQL client (`psql` on your PATH). The full deployment includes AKS; have Docker
-and `kubectl` available.
+`curl`, and the PostgreSQL client (`psql` on your PATH). Have Docker available for image workflows.
 
 For local development, install [Node.js 26+](https://nodejs.org/en/download) and
 [uv](https://docs.astral.sh/uv/getting-started/installation/). `uv` manages Python 3.14.
@@ -68,7 +67,7 @@ currently fail.
 For graph-layout changes, prefer targeted browser checks before the full suite:
 
 ```bash
-npm --prefix src/web/ui run e2e -- --project chromium tests/adaptive-graph.spec.ts tests/graph-ux.spec.ts tests/spa.spec.ts
+npm --prefix src/web/ui run e2e -- tests/adaptive-graph.spec.ts tests/graph-ux.spec.ts tests/spa.spec.ts --project=chromium
 ```
 
 Run `tests/visual-c1.spec.ts` with the same runner for desktop text-containment and overlap checks

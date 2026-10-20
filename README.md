@@ -37,7 +37,7 @@ Open [localhost:8080](http://localhost:8080). Local development still uses your 
 | Model | Purpose |
 |-------|---------|
 | `hm-<env>` | Application health from metrics, logs, availability tests, and health reports. |
-| `hm-<env>-shop` | An 18-node shop with two simulated payment providers and six real Azure-resource links. |
+| `hm-<env>-shop` | A 17-node shop with two simulated payment providers and five real Azure-resource links. |
 | `hm-<env>-survey` | Author Survey, Join and Answer, and View Results over the survey Container App and shared persistence/telemetry. |
 
 The shop uses synthetic signals. A green shop node does not prove that its Azure resource is healthy.
@@ -56,4 +56,4 @@ The shop uses synthetic signals. A green shop node does not prove that its Azure
 - `src/agent-web`: Next.js and CopilotKit frontend.
 - `src/agent-app`: Python agent and health-model tools.
 - `src/survey`: same-origin FastAPI/React survey app, versioned PostgreSQL schema, and local checks.
-- `infra`: Bicep templates. `azure.yaml` defines Container Apps and AKS hosting.
+- `infra`: Bicep templates. `azure.yaml` defines Container Apps hosting.

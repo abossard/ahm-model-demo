@@ -163,16 +163,6 @@ resource relAppHostingContainerApp 'Microsoft.CloudHealth/healthmodels/relations
   }
 }
 
-resource relAppHostingAks 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
-  parent: model
-  name: 'r-app-hosting-aks'
-  properties: {
-    parentEntityName: entityNames.systemAppHosting
-    childEntityName: entityNames.aksCluster
-    displayName: 'hosted by'
-  }
-}
-
 resource relDatabasePostgres 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
   name: 'r-database-postgres'
@@ -226,4 +216,4 @@ resource relAiInferenceOpenai 'Microsoft.CloudHealth/healthmodels/relationships@
 @description('The discovery source, now safe to attach because every hand-authored edge exists.')
 output discoverySourceId string = discoverySourceId
 
-output deterministicRelationshipCount int = 21
+output deterministicRelationshipCount int = 20

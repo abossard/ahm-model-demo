@@ -5,8 +5,8 @@
 Select a model, open a node, and inspect its health, signals, dependencies, and history.
 The application model is the default. The selector lists models the app's Azure identity can read.
 
-Use the shop model for a small, repeatable diagram. It has 18 entities and 21 relationships:
-Shopping, Checkout, and Orders connect to six services, Stripe and PayPal simulations, and six Azure
+Use the shop model for a small, repeatable diagram. It has 17 entities and 21 relationships:
+Shopping, Checkout, and Orders connect to six services, Stripe and PayPal simulations, and five Azure
 resources. It creates no shop workloads or payment integrations.
 
 ## Understand the health signals

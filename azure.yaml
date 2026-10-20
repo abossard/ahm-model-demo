@@ -38,39 +38,6 @@ services:
     docker:
       path: ./Dockerfile
       remoteBuild: true
-  web-aks:
-    resourceName: ${AZURE_AKS_CLUSTER_NAME}
-    project: ./src/web
-    language: py
-    host: aks
-    docker:
-      path: ./Dockerfile
-      remoteBuild: true
-    k8s:
-      namespace: ahm
-      deploymentPath: manifests
-  agent-web-aks:
-    resourceName: ${AZURE_AKS_CLUSTER_NAME}
-    project: ./src/agent-web
-    language: ts
-    host: aks
-    docker:
-      path: ./Dockerfile
-      remoteBuild: true
-    k8s:
-      namespace: ahm
-      deploymentPath: manifests
-  agent-app-aks:
-    resourceName: ${AZURE_AKS_CLUSTER_NAME}
-    project: ./src/agent-app
-    language: py
-    host: aks
-    docker:
-      path: ./Dockerfile
-      remoteBuild: true
-    k8s:
-      namespace: ahm
-      deploymentPath: manifests
 
 hooks:
   preprovision:

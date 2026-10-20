@@ -92,6 +92,59 @@ async function runElk(
 }
 
 const COMPONENT_GAP = 72;
+const RADIAL_CLEAR_GAP = 24;
+
+interface Placed extends Point, NodeSize {}
+
+function overlaps(left: Placed, right: Placed): boolean {
+  return (
+    left.x < right.x + right.width &&
+    left.x + left.width > right.x &&
+    left.y < right.y + right.height &&
+    left.y + left.height > right.y
+  );
+}
+
+function escape(box: Placed, blocker: Placed): Point {
+  const options: readonly Point[] = [
+    { x: blocker.x + blocker.width + RADIAL_CLEAR_GAP - box.x, y: 0 },
+    { x: blocker.x - RADIAL_CLEAR_GAP - (box.x + box.width), y: 0 },
+    { x: 0, y: blocker.y + blocker.height + RADIAL_CLEAR_GAP - box.y },
+    { x: 0, y: blocker.y - RADIAL_CLEAR_GAP - (box.y + box.height) },
+  ];
+  return options.reduce((best, option) =>
+    Math.hypot(option.x, option.y) < Math.hypot(best.x, best.y) ? option : best,
+  );
+}
+
+function clearRadialOverlaps(
+  positions: ReadonlyMap<string, Point>,
+  sizes: ReadonlyMap<string, NodeSize>,
+): Map<string, Point> {
+  const ordered = [...positions.entries()].sort((left, right) =>
+    left[1].y === right[1].y
+      ? left[1].x === right[1].x
+        ? left[0].localeCompare(right[0])
+        : left[1].x - right[1].x
+      : left[1].y - right[1].y,
+  );
+  const settled: Placed[] = [];
+  const corrected = new Map<string, Point>();
+
+  for (const [name, point] of ordered) {
+    const size = sizes.get(name) ?? { width: 0, height: 0 };
+    let box: Placed = { x: point.x, y: point.y, width: size.width, height: size.height };
+    for (let pass = 0; pass <= settled.length; pass += 1) {
+      const blocker = settled.find((other) => overlaps(box, other));
+      if (!blocker) break;
+      const move = escape(box, blocker);
+      box = { ...box, x: box.x + move.x, y: box.y + move.y };
+    }
+    corrected.set(name, { x: box.x, y: box.y });
+    settled.push(box);
+  }
+  return corrected;
+}
 
 export async function elkLayout(
   entities: readonly Entity[],
@@ -144,5 +197,6 @@ export async function elkLayout(
     parkedX += (sizes.get(item.name)?.width ?? 0) + 48;
   }
 
-  return { positions, ...boundsOf(positions, sizes) };
+  const finalPositions = algorithm === "radial" ? clearRadialOverlaps(positions, sizes) : positions;
+  return { positions: finalPositions, ...boundsOf(finalPositions, sizes) };
 }

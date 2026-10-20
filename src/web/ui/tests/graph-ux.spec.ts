@@ -835,7 +835,7 @@ for (const style of ["smooth", "rounded", "right-angle"] as const) {
     const model = realAnbomovModel();
     await installStubs(page, { healthModelFails: false, model });
     await page.goto("/");
-    await expect(page.locator(".react-flow__edge")).toHaveCount(24);
+    await expect(page.locator(".react-flow__edge")).toHaveCount(23);
     await expect(page.getByLabel("Edge style")).toHaveValue("smooth");
     await chooseLayout(page, "dagre-lr");
     await page.getByLabel("Edge style").selectOption(style);

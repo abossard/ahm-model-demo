@@ -261,7 +261,7 @@ for (const theme of ["light", "dark"] as const) {
 const fixtureShapes = [
   ["six", healthModel],
   ["dense", denseModel(DENSE_SEED)],
-  ["historical-22", realAnbomovModel()],
+  ["historical-21", realAnbomovModel()],
 ] as const;
 
 for (const [shape, original] of fixtureShapes) {

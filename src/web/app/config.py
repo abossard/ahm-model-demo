@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 # Every deployed value comes from the selected azd environment: bicep writes its outputs back
-# into `.azure/<env>/.env`, and both hosting paths inject them as container env vars. Nothing
+# into `.azure/<env>/.env`, and the deployed container apps inject them as container env vars. Nothing
 # here may name a stack, so an unconfigured app fails at import instead of silently reporting
 # health into whichever environment a stale literal happened to name.
 REQUIRED_ENV = (

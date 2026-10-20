@@ -121,7 +121,6 @@ const REAL_ENTITIES: readonly (readonly [string, string, number])[] = [
   ["system-queueing", "Queueing", 0],
   ["agent-app", "Agent Backend Container App", 2],
   ["agent-web-app", "Agent Web Container App", 2],
-  ["aks-cluster", "AKS Cluster", 4],
   ["openai-account", "Azure OpenAI Account", 2],
   ["6b69a031-0ec3-4492-a6ec-cb0245a7ae1f", "Cognitive-Accounts", 0],
   ["6e2c5ed8-1ecc-4222-8859-e3d9aa4c1a37", "kv-byoqtzrvfweq2", 3],
@@ -150,7 +149,6 @@ const REAL_RELATIONSHIPS: readonly (readonly [string, string, string, string | n
   ["r-agent-runtime-agent-web", "system-agent-runtime", "agent-web-app", "hosted by"],
   ["r-ai-inference-openai", "system-ai-inference", "openai-account", "backed by"],
   ["8da6b1cd-61e8-4206-9663-3cf7f6800221", "system-ai-inference", "6b69a031-0ec3-4492-a6ec-cb0245a7ae1f", null],
-  ["r-app-hosting-aks", "system-app-hosting", "aks-cluster", "hosted by"],
   [
     "system-app-hosting-6e2c5ed8-1ecc-4222-8859-e3d9aa4c1a37",
     "system-app-hosting",
