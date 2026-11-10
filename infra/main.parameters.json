@@ -35,8 +35,8 @@
     "healthModelLocation": {
       "value": "${HEALTH_MODEL_LOCATION:-northeurope}"
     },
-    "openAiLocation": {
-      "value": "${AZURE_OPENAI_LOCATION:-swedencentral}"
+    "foundryLocation": {
+      "value": "${AZURE_FOUNDRY_LOCATION:-swedencentral}"
     },
     "webImage": {
       "value": "${SERVICE_WEB_IMAGE_NAME}"

@@ -295,6 +295,98 @@ class SourceLayoutContractTests(unittest.TestCase):
             }
             self.assertNotIn("r-app-hosting-aks", damaged_names)
 
+    def test_foundry_platform_keeps_agents_read_only_and_egress_closed(self):
+        root = Path(__file__).parents[1]
+        compiled = json.loads(
+            subprocess.run(
+                [
+                    "az",
+                    "bicep",
+                    "build",
+                    "--file",
+                    str(root / "infra" / "main.bicep"),
+                    "--stdout",
+                    "--only-show-errors",
+                    "--subscription",
+                    SUBSCRIPTION_ID,
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+        modules = {
+            resource["name"]: resource["properties"]["template"]
+            for resource in compiled["resources"]
+            if resource["type"] == "Microsoft.Resources/deployments"
+        }
+        foundry = modules["foundry"]
+        foundry_resources = {
+            resource["type"]: resource for resource in foundry["resources"]
+        }
+        roles = {
+            re.fullmatch(r"\[variables\('(\w+)'\)\]", resource["properties"]["roleName"])[1]: set(
+                resource["properties"]["permissions"][0]["actions"]
+            )
+            for resource in modules["subscription-monitoring"]["resources"]
+            if resource["type"] == "Microsoft.Authorization/roleDefinitions"
+        }
+        writes = {
+            action for action in roles["modelWriterRoleName"]
+            if not action.endswith("/read")
+        }
+        egress = foundry_resources[
+            "Microsoft.CognitiveServices/accounts/raiPolicies"
+        ]["properties"]["egressPolicy"]
+
+        cases = (
+            ("foundry region", compiled["parameters"]["foundryLocation"]["defaultValue"], "swedencentral"),
+            ("account kind", foundry_resources["Microsoft.CognitiveServices/accounts"]["kind"], "AIServices"),
+            ("local auth", foundry_resources["Microsoft.CognitiveServices/accounts"]["properties"]["disableLocalAuth"], True),
+            ("egress enforced", (egress["mode"], egress["defaultAction"]), ("Enforced", "Deny")),
+            (
+                "reader changes nothing",
+                [a for a in roles["modelReaderRoleName"] if a.endswith(("/write", "/delete", "ingestHealthReport/action"))],
+                [],
+            ),
+            (
+                "writer changes only model children",
+                sorted(writes),
+                sorted(
+                    f"Microsoft.CloudHealth/healthmodels/{kind}/{verb}"
+                    for kind in ("entities", "relationships", "signaldefinitions")
+                    for verb in ("write", "delete")
+                ),
+            ),
+            (
+                "writer granted to the app",
+                [
+                    r["properties"]["roleDefinitionId"]
+                    for r in modules["rbac"]["resources"]
+                    if r["type"] == "Microsoft.Authorization/roleAssignments"
+                    and "modelWriterRoleDefinitionId" in r["properties"]["roleDefinitionId"]
+                ],
+                ["[parameters('modelWriterRoleDefinitionId')]"],
+            ),
+            (
+                "outputs",
+                [
+                    name for name in (
+                        "FOUNDRY_PROJECT_ENDPOINT",
+                        "FOUNDRY_MODEL_DEPLOYMENT_NAME",
+                        "FOUNDRY_AGENT_EGRESS_POLICY_ID",
+                        "HEALTH_MODEL_READER_ROLE_ID",
+                        "HEALTH_MODEL_DESIGN_NAME",
+                    )
+                    if name not in compiled["outputs"]
+                ],
+                [],
+            ),
+        )
+        for name, actual, expected in cases:
+            with self.subTest(case=name):
+                self.assertEqual(actual, expected)
+
     def assert_shop_health_model_contract(self, template):
         resources = template["resources"]
         entity_list = [r for r in resources if r["type"].endswith("/entities")]

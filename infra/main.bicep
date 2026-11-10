@@ -40,12 +40,12 @@ param privateEndpointSubnetNsgId string = ''
 @description('Region hosting the Azure Health Model.')
 param healthModelLocation string = location
 
-@description('Region hosting the Azure OpenAI account backing the copilot.')
-param openAiLocation string = 'swedencentral'
+@description('Region hosting the Foundry account and its hosted agent. North Europe cannot host agents.')
+param foundryLocation string = 'swedencentral'
 
 @minValue(1)
-@description('Tokens-per-minute capacity of the Azure OpenAI deployment, in thousands.')
-param openAiDeploymentCapacity int = 10
+@description('Tokens-per-minute capacity of the model deployment, in thousands.')
+param modelDeploymentCapacity int = 10
 
 @description('Image published by "azd deploy web". Empty until the first deploy.')
 param webImage string = ''
@@ -75,6 +75,7 @@ var agentAppName = 'ca-${namePrefix}-agent-app'
 var healthModelName = 'hm-${namePrefix}'
 var shopHealthModelName = 'hm-${namePrefix}-shop'
 var surveyHealthModelName = 'hm-${namePrefix}-survey'
+var designHealthModelName = 'hm-${namePrefix}-design'
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-11-01' = {
   name: 'rg-${environmentName}'
@@ -135,15 +136,17 @@ module subscriptionMonitoring 'modules/subscription-monitoring.bicep' = {
   }
 }
 
-module copilot 'modules/copilot.bicep' = {
+module foundry 'modules/foundry.bicep' = {
   scope: rg
-  name: 'copilot'
+  name: 'foundry'
   params: {
-    aiLocation: openAiLocation
-    aiAccountName: 'oai-${namePrefix}-${resourceToken}'
-    aiDeploymentCapacity: openAiDeploymentCapacity
+    location: foundryLocation
+    accountName: 'aif-${namePrefix}-${resourceToken}'
+    projectName: 'proj-${namePrefix}'
+    modelDeploymentCapacity: modelDeploymentCapacity
     identityId: foundation.outputs.identityId
     identityPrincipalId: foundation.outputs.identityPrincipalId
+    deployerPrincipalId: principalId
     tags: tags
   }
 }
@@ -158,6 +161,7 @@ module rbac 'modules/rbac.bicep' = {
     applicationInsightsName: foundation.outputs.applicationInsightsName
     identityId: foundation.outputs.identityId
     identityPrincipalId: foundation.outputs.identityPrincipalId
+    modelWriterRoleDefinitionId: subscriptionMonitoring.outputs.modelWriterRoleDefinitionId
   }
 }
 
@@ -302,11 +306,11 @@ module agentApp 'modules/container-app.bicep' = {
       }
       {
         name: 'AZURE_OPENAI_ENDPOINT'
-        value: copilot.outputs.azureOpenAIEndpoint
+        value: foundry.outputs.openAiEndpoint
       }
       {
         name: 'AZURE_OPENAI_CHAT_DEPLOYMENT_NAME'
-        value: copilot.outputs.azureOpenAIDeploymentName
+        value: foundry.outputs.modelDeploymentName
       }
       {
         name: 'HEALTH_APP_BASE_URL'
@@ -403,7 +407,7 @@ module healthModelAccess 'modules/health-model-access.bicep' = {
       storage: storage.outputs.storageId
       agentWebApp: agentWeb.outputs.containerAppId
       agentApp: agentApp.outputs.containerAppId
-      openAi: copilot.outputs.aiAccountId
+      foundryAccount: foundry.outputs.accountId
       logAnalyticsWorkspace: foundation.outputs.workspaceId
       applicationInsights: foundation.outputs.applicationInsightsId
     }
@@ -456,6 +460,16 @@ module shopHealthModel 'modules/shop-health-model.bicep' = {
   }
 }
 
+module designHealthModel 'modules/design-health-model.bicep' = {
+  scope: rg
+  name: 'design-health-model'
+  params: {
+    modelName: designHealthModelName
+    healthModelLocation: healthModelLocation
+    tags: tags
+  }
+}
+
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = rbac.outputs.registryLoginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = foundation.outputs.registryName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = foundation.outputs.environmentId
@@ -469,8 +483,14 @@ output AZURE_POSTGRES_DATABASE string = foundation.outputs.postgresDatabase
 output AZURE_SUBSCRIPTION_ID string = subscription().subscriptionId
 output AZURE_SUBSCRIPTION_NAME string = subscription().displayName
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = rbac.outputs.applicationInsightsConnectionString
-output AZURE_OPENAI_ENDPOINT string = copilot.outputs.azureOpenAIEndpoint
-output AZURE_OPENAI_CHAT_DEPLOYMENT_NAME string = copilot.outputs.azureOpenAIDeploymentName
+output AZURE_OPENAI_ENDPOINT string = foundry.outputs.openAiEndpoint
+output AZURE_OPENAI_CHAT_DEPLOYMENT_NAME string = foundry.outputs.modelDeploymentName
+output FOUNDRY_ACCOUNT_NAME string = foundry.outputs.accountName
+output FOUNDRY_PROJECT_NAME string = foundry.outputs.projectName
+output FOUNDRY_PROJECT_ENDPOINT string = foundry.outputs.projectEndpoint
+output FOUNDRY_MODEL_DEPLOYMENT_NAME string = foundry.outputs.modelDeploymentName
+output FOUNDRY_AGENT_EGRESS_POLICY_ID string = foundry.outputs.agentEgressPolicyId
+output HEALTH_MODEL_READER_ROLE_ID string = subscriptionMonitoring.outputs.modelReaderRoleDefinitionId
 output AZURE_HEALTH_MODEL_NAME string = healthModel.outputs.modelName
 output HEALTH_REPORT_ROLE_NAME string = subscriptionMonitoring.outputs.healthReportRoleName
 output HEALTH_MODEL_LOCATION string = healthModelLocation
@@ -493,3 +513,5 @@ output SERVICE_SURVEY_ID string = survey.outputs.containerAppId
 output SERVICE_SURVEY_FQDN string = survey.outputs.fqdn
 output SURVEY_HEALTH_MODEL_NAME string = surveyHealthModel.outputs.modelName
 output SURVEY_HEALTH_MODEL_ID string = surveyHealthModel.outputs.modelId
+output HEALTH_MODEL_DESIGN_NAME string = designHealthModel.outputs.modelName
+output HEALTH_MODEL_DESIGN_ID string = designHealthModel.outputs.modelId

@@ -1,7 +1,7 @@
 # Infrastructure
 
-`main.bicep` provisions the whole demo at subscription scope: the resource group, the workload, and
-three Azure Health Models.
+`main.bicep` provisions the whole demo at subscription scope: the resource group, the workload, a
+Foundry project for the task agent, and four Azure Health Models.
 
 ## The health models
 
@@ -10,8 +10,22 @@ three Azure Health Models.
 | `hm-<env>` | `modules/health-model.bicep` + `health-model-entities.bicep` + `health-model-relationships.bicep` + `health-model-discovery.bicep` | The real application: 18 authored entities over live metrics, log queries, availability tests, submitted health reports, and an Application Insights discovery rule. This is the model the web app selects by default. |
 | `hm-<env>-shop` | `modules/shop-health-model.bicep` | A fictional shop with 17 entities, 21 relationships, and no discovery. |
 | `hm-<env>-survey` | `modules/survey-health-model.bicep` | Survey authoring, joining/answering, and public results over real resources; no discovery or constant-healthy signals. |
+| `hm-<env>-design` | `modules/design-health-model.bicep` | Empty until a Design task's approved changes are applied to it. |
 
 All live in the same resource group, and `azd provision` creates them together.
+
+## Foundry
+
+`modules/foundry.bicep` creates the AIServices account, project `proj-<env>`, the `gpt-5.4-mini`
+deployment and the `agent-egress` RAI policy in `foundryLocation` (default `swedencentral`; North
+Europe cannot host agents). The policy denies all session egress except the listed hosts. Each
+agent version must reference `FOUNDRY_AGENT_EGRESS_POLICY_ID`; a missing reference fails open.
+
+A hosted agent runs under its own Entra agent identity, created with the agent. Bicep cannot grant
+it roles, so the agent deploy step assigns Reader, Monitoring Reader, Log Analytics Reader and
+`HEALTH_MODEL_READER_ROLE_ID` on the resource group. The project identity only gets Foundry User.
+The web app identity gets Foundry Agent Consumer on the project and the Health Model Writer role on
+the resource group, which changes entities, signal definitions and relationships but never models.
 
 ## Survey ownership
 
@@ -280,7 +294,7 @@ Use API version `2026-05-01-preview` and follow `nextLink`.
 ```bash
 BASE="https://management.azure.com/subscriptions/<sub>/resourceGroups/rg-<env>/providers/Microsoft.CloudHealth/healthmodels"
 
-az rest --subscription <sub> --method get --url "$BASE?api-version=2026-05-01-preview" # three models
+az rest --subscription <sub> --method get --url "$BASE?api-version=2026-05-01-preview" # four models
 az rest --subscription <sub> --method get --url "$BASE/hm-<env>-shop/entities?api-version=2026-05-01-preview" # 17 entities
 az rest --subscription <sub> --method get --url "$BASE/hm-<env>-shop/relationships?api-version=2026-05-01-preview" # 21 edges
 ```

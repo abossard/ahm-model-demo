@@ -18,6 +18,9 @@ param identityId string
 @description('Principal ID of the workload user-assigned identity.')
 param identityPrincipalId string
 
+@description('Custom role that lets the web app Apply approved changes to health models in this resource group.')
+param modelWriterRoleDefinitionId string
+
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: registryName
 }
@@ -76,6 +79,15 @@ resource metricsPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01' =
       'Microsoft.Authorization/roleDefinitions',
       '3913510d-42f4-4e42-8a64-420c390055eb'
     )
+  }
+}
+
+resource modelWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(resourceGroup().id, identityId, modelWriterRoleDefinitionId)
+  properties: {
+    principalId: identityPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: modelWriterRoleDefinitionId
   }
 }
 

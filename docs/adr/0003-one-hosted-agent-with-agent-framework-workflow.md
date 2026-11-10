@@ -1,0 +1,3 @@
+# One Foundry hosted agent runs the multi-agent workflow
+
+All specialist agents run inside one Python hosted agent in Microsoft Foundry, orchestrated by an Agent Framework workflow. A Session maps to one hosted-agent session, which gives each Session its own microVM with persistent files. Foundry workflows were rejected because they retire on 2026-12-01. Several hosted agents linked over A2A were rejected because A2A calls to Foundry agents are text-only without streaming, which would hide specialist steps from the activity timeline. Prompt agents orchestrated by the web app were rejected because the web app would have to host a workflow engine. Hosted agents require Sweden Central; North Europe is not supported.

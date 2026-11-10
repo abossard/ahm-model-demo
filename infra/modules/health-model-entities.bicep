@@ -756,7 +756,7 @@ resource openAiAccount 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-p
   parent: model
   name: 'openai-account'
   properties: {
-    displayName: 'Azure OpenAI Account'
+    displayName: 'Foundry Account'
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
@@ -766,7 +766,7 @@ resource openAiAccount 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-p
     signalGroups: {
       azureResource: {
         authenticationSetting: authenticationSettingName
-        azureResourceId: monitoredResources.openAi
+        azureResourceId: monitoredResources.foundryAccount
         azureResourceKind: 'CognitiveServicesAccount'
         resourceHealth: {
           enabled: 'Enabled'
