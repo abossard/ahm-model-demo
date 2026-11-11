@@ -12,6 +12,7 @@ logging.getLogger("asyncio").setLevel(logging.ERROR)
 import grounding
 from agent import arguments_of
 from grounding import (
+    CLONE_MARKER,
     EXAMPLE_WORDS,
     GENERIC_WORDS,
     SKILLS_DIR,
@@ -468,6 +469,12 @@ class SignalRunTests(unittest.TestCase):
             ("metric names in another case", metric_signal(metric="cpupercentage"), [run], True),
             ("another metric", metric_signal(metric="Requests"), [run], False),
             ("another resource", metric_signal(), [MetricRun("ca-other", run.names, run.namespace, run.aggregation)], False),
+            ("the resource by its id", metric_signal(), [MetricRun(WEB.lower(), run.names, run.namespace, run.aggregation)], True),
+            ("the resource by its id and a slash", metric_signal(), [MetricRun(WEB.lower() + "/", run.names, run.namespace, run.aggregation)], True),
+            ("another resource of the same group by its id", metric_signal(), [MetricRun(WEB.lower().replace("ca-web", "ca-other"), run.names, run.namespace, run.aggregation)], False),
+            ("a part of the id that is no resource", metric_signal(), [MetricRun("rg", run.names, run.namespace, run.aggregation)], False),
+            ("the subscription", metric_signal(), [MetricRun("s", run.names, run.namespace, run.aggregation)], False),
+            ("the resource group by its id", metric_signal(), [MetricRun("/subscriptions/s/resourcegroups/rg", run.names, run.namespace, run.aggregation)], False),
             ("the parent of the resource the entity is bound to", metric_signal(), [MetricRun("ca-web", run.names, run.namespace, run.aggregation)], True),
             ("another namespace", metric_signal(namespace="Microsoft.Web/sites"), [run], False),
             ("another aggregation", metric_signal(aggregation="Total"), [run], False),
@@ -489,6 +496,22 @@ class SignalRunTests(unittest.TestCase):
 
         self.assertEqual(signal_problems(diff(entity("session-storage", resource=blob, signals=[signal])), run), [])
         self.assertNotEqual(signal_problems(diff(entity("session-storage", resource=WEB, signals=[signal])), run), [])
+
+    def test_a_metric_on_a_child_resource_is_told_from_one_on_another_account_by_id_too(self):
+        blob = STORE + "/blobServices/default"
+        cases = [
+            ("the child by its id", blob.lower(), True),
+            ("its parent by its id", STORE.lower(), True),
+            ("another account by its id", STORE.lower().replace("stsessions", "stother"), False),
+            ("another account by its id, the same child", blob.lower().replace("stsessions", "stother"), False),
+            ("another account by its name", "stother", False),
+        ]
+        for label, resource, ran in cases:
+            with self.subTest(label):
+                run = record(listed={blob.lower(): "default"}, metric_runs=[MetricRun(resource, frozenset({"availability"}), "microsoft.storage/storageaccounts", "average")])
+                signal = metric_signal(name="availability", metric="Availability", namespace="Microsoft.Storage/storageAccounts")
+
+                self.assertEqual(signal_problems(diff(entity("session-storage", resource=blob, signals=[signal])), run) == [], ran)
 
     def test_a_failing_row_belongs_to_a_signal_the_model_already_has(self):
         held = {"name": "failed-requests", "signalKind": "LogAnalyticsQuery", "queryText": QUERY, "valueColumnName": "failedRequests"}
@@ -630,7 +653,8 @@ class RepositoryTests(unittest.TestCase):
 
     def clone(self, name="albums", files=None):
         root = self.folder / name
-        (root / ".git").mkdir(parents=True)
+        root.mkdir(parents=True)
+        (root / CLONE_MARKER).write_text("https://codeload.github.com/example/albums/tar.gz/HEAD", encoding="utf-8")
         for relative, text in (files or {"src/server.js": "const albums = require('./albums');", "README.md": "Album API"}).items():
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -651,6 +675,7 @@ class RepositoryTests(unittest.TestCase):
         self.assertTrue(scan.cloned)
         self.assertLessEqual({"album", "server", "require"}, scan.words)
         self.assertLessEqual({"src/server.js", "server.js", "readme.md"}, scan.paths)
+        self.assertNotIn(CLONE_MARKER, scan.paths)
 
     def test_what_a_clone_does_not_say_stays_out_and_so_do_dependencies_binaries_and_links(self):
         root = self.clone(files={"src/a.js": "plain", "node_modules/x/index.js": "storefront", "bin/tool.js": "storefront", "logo.png": "storefront"})
@@ -663,11 +688,13 @@ class RepositoryTests(unittest.TestCase):
         self.assertNotIn("storefront", scan.words)
 
     def test_clones_are_found_in_the_folder_and_up_to_two_levels_below(self):
-        (self.folder / ".git").mkdir()
+        (self.folder / CLONE_MARKER).touch()
         self.clone("one")
         deep = self.folder / "a" / "b"
-        (deep / ".git").mkdir(parents=True)
-        (self.folder / "x" / "y" / "z" / ".git").mkdir(parents=True)
+        deep.mkdir(parents=True)
+        (deep / CLONE_MARKER).touch()
+        (self.folder / "x" / "y" / "z").mkdir(parents=True)
+        (self.folder / "x" / "y" / "z" / CLONE_MARKER).touch()
 
         roots = repository_roots(self.folder)
 

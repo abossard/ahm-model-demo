@@ -72,6 +72,30 @@ export function forbiddenFor(action: AzureAction, model = "this health model"): 
   }
 }
 
+/**
+ * Whether an Apply that failed may still have written: no answer reached the app, or the app failed on the way (5xx), as
+ * when the connection drops while the changes are still being written one by one. An answer below 500 is a refusal that
+ * comes before the first write.
+ */
+export function applyMayHaveWritten(error: ApiError): boolean {
+  return error.status === undefined || error.status >= 500;
+}
+
+/** What an Apply says when it got no clear answer: some changes may be written, and the app reads the proposed changes again to tell which. */
+export function applyUnsure(model: string, checking: boolean): ErrorPresentation {
+  const cause = `The app did not get an answer about the changes to ${model}, so some of them may have been applied.`;
+  return shown(
+    {
+      title: "Some changes may have been written",
+      message: checking
+        ? `${cause} It is checking which ones.`
+        : `${cause} The ones marked Applied were written. If a change is not marked yet, the app may still be writing it: open this question again in a minute.`,
+      action: null,
+    },
+    null,
+  );
+}
+
 /** What a 401 that survived its one retry means: the app does not accept this sign-in any more. */
 export const SIGN_IN_ENDED = "Your sign-in has expired. Sign in again to continue.";
 

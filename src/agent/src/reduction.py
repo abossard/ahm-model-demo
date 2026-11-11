@@ -100,10 +100,12 @@ def dropped_finding(change: Mapping[str, Any], problem: str) -> dict[str, Any]:
     return {"severity": "medium", "entity": entity, "text": text, "changeIds": []}
 
 
-def partial_summary(why: str, left_out: int, summary: str) -> str:
+def partial_summary(why: str, left_out: int, summary: str, ending: str = "") -> str:
+    """The lead, then the model's summary cut to what is left of SUMMARY_CHARS, then `ending` whole."""
     lead = f"Partial result: {why}, so only what passes every check is kept"
     lead += f"; the {left_out} change(s) left out are quoted in the findings." if left_out else "."
-    return f"{lead} {quote(summary, max(0, SUMMARY_CHARS - len(lead) - 1))}".strip()
+    room = SUMMARY_CHARS - len(lead) - 1 - (len(ending) + 1 if ending else 0)
+    return " ".join(part for part in (lead, quote(summary, max(0, room)), ending) if part)
 
 
 def empty_diff(problems: Sequence[str], dropped: Sequence[dict[str, Any]], why: str) -> dict[str, Any]:
@@ -147,11 +149,12 @@ def reduce_result(
     kept, kept_rows = list(enumerate(changes)), list(enumerate(rows))
     dropped: list[tuple[Mapping[str, Any], str]] = []
     summary = result.get("summary") if isinstance(result.get("summary"), str) else ""
+    inferred = False
     for _ in range(len(changes) + len(rows) + 3):
         ids = {change["id"] for _, change in kept if isinstance(change.get("id"), str)}
         candidate = {
             "kind": "diff",
-            "summary": partial_summary(why, len(dropped), summary),
+            "summary": partial_summary(why, len(dropped), summary, INFERRED_SENTENCE if inferred else ""),
             "changes": [change for _, change in kept],
             "verification": [row for _, row in kept_rows],
             "findings": [
@@ -171,8 +174,8 @@ def reduce_result(
             kept = [item for index, item in enumerate(kept) if index not in out_changes]
             kept_rows = [item for index, item in enumerate(kept_rows) if index not in out_rows]
             continue
-        if any(problem.startswith("summary:") for problem in loose) and INFERRED_SENTENCE not in summary:
-            summary = f"{summary} {INFERRED_SENTENCE}".strip()
+        if any(problem.startswith("summary:") for problem in loose) and not inferred:
+            inferred = True
             continue
         problems = found
         break

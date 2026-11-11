@@ -45,6 +45,7 @@ async function readError(response: Response): Promise<ApiError> {
         retryable: error.retryable ?? false,
         operationId: error.operationId ?? operationIdHeader ?? null,
         requestId: error.requestId ?? requestIdHeader ?? null,
+        status: response.status,
         ...(typeof error.claims === "string" ? { claims: error.claims } : {}),
       };
     }
@@ -57,6 +58,7 @@ async function readError(response: Response): Promise<ApiError> {
     retryable: response.status >= 500,
     operationId: response.headers.get("x-operation-id"),
     requestId: response.headers.get("x-request-id"),
+    status: response.status,
   };
 }
 

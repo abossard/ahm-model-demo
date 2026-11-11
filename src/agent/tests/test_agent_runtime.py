@@ -2,6 +2,7 @@ import logging
 import json
 import os
 import sys
+import tarfile
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 logging.getLogger("asyncio").setLevel(logging.ERROR)
 
+import clone
 from agent import FUNCTION_INVOCATION_CONFIGURATION, KEPT_RESULTS, MODEL_CALLS, MODEL_SECONDS, TaskSettings, build_agent, forget_reads, task_settings, visible_tools
 from contracts import validate_task_result
 from tools import MAX_IDLE
@@ -467,9 +469,13 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as origin:
             (Path(origin) / "src").mkdir()
             (Path(origin) / "src" / "server.js").write_text("// the products API\n", encoding="utf-8")
-            git = Path(origin, "fake-git")
-            git.write_text(f'#!/bin/sh\nfor last; do :; done\nmkdir -p "$last/.git"\ncp -R "{origin}/src" "$last/"\n', encoding="utf-8")
-            git.chmod(0o755)
+            archive = Path(origin, "archive.tar.gz")
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(Path(origin) / "src", arcname="example-albums-1a2b3c/src")
+
+            def download(opener, source, destination, deadline):
+                destination.write_bytes(archive.read_bytes())
+
             task = json.loads(envelope("t-1", "design", model=model).split("\n", 1)[1])
             task["task"]["workload"] = {"resourceGroup": "rg", "repositoryUrl": url}
             text = f"Design this.\n{json.dumps(task)}"
@@ -494,7 +500,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 [call("submit_result", result=design)],
             ]
 
-            with mock.patch.dict(os.environ, {"CLONE_GIT": str(git)}):
+            with mock.patch.object(clone, "download", download):
                 _, response = await self.run_agent([text], steps, tools=[monitor_healthmodels_inspect, group_resource_list])
 
         answers = submissions(response.messages)

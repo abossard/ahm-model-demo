@@ -50,7 +50,6 @@ from config import (
     MEMORY_STORE_URL,
     NONCE_MAX_CHARS,
     REASON_PRESETS,
-    REPOSITORY_URL_MAX_CHARS,
     SECURITY_POLICY,
     SESSION_TITLE_MAX_CHARS,
     SSE_KEEP_ALIVE_SECONDS,
@@ -211,6 +210,7 @@ class SecurityHeadersMiddleware:
                 headers["cache-control"] = "no-store"
                 headers["x-content-type-options"] = "nosniff"
                 headers["referrer-policy"] = "no-referrer"
+                headers["strict-transport-security"] = "max-age=31536000"
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
@@ -276,6 +276,12 @@ api = APIRouter(prefix="/api", dependencies=[Depends(authenticated)])
 @app.exception_handler(StoreUnavailable)
 async def store_unavailable(_request, error):
     return store_error_response(error.operation)
+
+
+@app.exception_handler(AzureError)
+async def azure_unreachable(_request, error):
+    """Whatever Azure or the sign-in exchange raised that a route did not map itself: the usual envelope, not a plain 500."""
+    return sdk_error_response(error, "request")
 
 
 @app.exception_handler(Unauthenticated)
@@ -710,6 +716,15 @@ def _not_found(code, message):
     return error_response(404, code, message, False)
 
 
+def storable(text):
+    """False for a text with a lone surrogate: JSON parses it, but neither the store nor a response can encode it."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 async def _json_body(request):
     raw = await request.body()
     if not raw.strip():
@@ -788,13 +803,10 @@ def _design_fields(body):
         )
     repository = workload.get("repositoryUrl")
     if repository not in (None, ""):
-        if (
-            not isinstance(repository, str)
-            or len(repository) > REPOSITORY_URL_MAX_CHARS
-            or not GITHUB_REPOSITORY.fullmatch(repository)
-        ):
+        if not isinstance(repository, str) or not GITHUB_REPOSITORY.fullmatch(repository):
             return None, validation_error(
-                "invalid_repository_url", "workload.repositoryUrl must be an https://github.com/ repository."
+                "invalid_repository_url",
+                "Enter a public GitHub repository, such as https://github.com/owner/repository.",
             )
     return {
         "target": {
@@ -817,7 +829,7 @@ async def _task_fields(body, user, caller):
     instruction = body.get("instruction")
     if instruction is None:
         instruction = ""
-    if not isinstance(instruction, str) or len(instruction) > INSTRUCTION_MAX_CHARS:
+    if not isinstance(instruction, str) or len(instruction) > INSTRUCTION_MAX_CHARS or not storable(instruction):
         return None, validation_error(
             "invalid_instruction",
             f"instruction must be text of at most {INSTRUCTION_MAX_CHARS} characters.",
@@ -848,7 +860,7 @@ async def create_session(request: Request, caller: Authed):
     title = body.get("title")
     if title is None or title == "":
         title = f"Session {datetime.now(timezone.utc):%Y-%m-%d %H:%M}"
-    elif not isinstance(title, str) or not title.strip() or len(title) > SESSION_TITLE_MAX_CHARS:
+    elif not isinstance(title, str) or not title.strip() or len(title) > SESSION_TITLE_MAX_CHARS or not storable(title):
         return validation_error(
             "invalid_title", f"title must be text of at most {SESSION_TITLE_MAX_CHARS} characters."
         )

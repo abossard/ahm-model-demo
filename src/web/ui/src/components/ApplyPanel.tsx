@@ -19,9 +19,10 @@ import {
   tokens,
 } from "@fluentui/react-components";
 import { previewSelection } from "../model/changes";
-import { forbiddenFor } from "../model/errors";
+import { applyMayHaveWritten, applyUnsure, forbiddenFor, technicalLine } from "../model/errors";
 import type { ApplyOutcome, DiffView } from "../model/types";
 import { actions, useStore } from "../store/store";
+import { TechnicalLine } from "./TechnicalLine";
 
 const useStyles = makeStyles({
   bar: { display: "flex", flexDirection: "column", rowGap: tokens.spacingVerticalXS },
@@ -196,6 +197,7 @@ function OutcomeSummary({ view, outcome }: { readonly view: DiffView; readonly o
 
 export function ApplyResult({ view }: { readonly view: DiffView }): JSX.Element | null {
   const apply = useStore((state) => state.apply);
+  const checking = useStore((state) => state.applyChecking);
   if (apply.kind === "idle") return null;
   if (apply.kind === "loading") {
     return <Spinner size="small" label="Applying the selected changes" role="status" data-testid="apply-running" />;
@@ -219,6 +221,19 @@ export function ApplyResult({ view }: { readonly view: DiffView }): JSX.Element 
             Check again
           </Button>
         </MessageBarActions>
+      </MessageBar>
+    );
+  }
+  if (applyMayHaveWritten(apply.error)) {
+    // The changes are written one by one in a single call, so a call that ends without an answer may have written some.
+    const unsure = applyUnsure(view.target.name, checking);
+    return (
+      <MessageBar intent="warning" data-testid="apply-result" data-outcome="unsure">
+        <MessageBarBody>
+          <MessageBarTitle>{unsure.title}</MessageBarTitle>
+          {unsure.message}
+          <TechnicalLine text={technicalLine(apply.error)} />
+        </MessageBarBody>
       </MessageBar>
     );
   }

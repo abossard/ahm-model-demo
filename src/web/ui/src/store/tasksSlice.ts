@@ -1,6 +1,7 @@
 import type { StateCreator } from "zustand";
 import { parseActivityEvent } from "../model/activity";
 import { changeIdsForEntity, writtenIds } from "../model/changes";
+import { applyMayHaveWritten } from "../model/errors";
 import { sameModel } from "../model/selection";
 import {
   TASK_LIFETIME_MS,
@@ -95,6 +96,8 @@ export interface TasksState {
   /** The changes the user ticked, a set kept as a sorted array. */
   readonly selectedChanges: readonly string[];
   readonly apply: AsyncState<ApplyOutcome>;
+  /** An Apply that got no clear answer is being checked: the proposed changes are read again to see what it wrote. */
+  readonly applyChecking: boolean;
   readonly compare: boolean;
   readonly draft: TaskDraft;
   readonly launch: Launch;
@@ -171,6 +174,7 @@ const NO_TASK = {
   diff: IDLE,
   selectedChanges: [],
   apply: IDLE,
+  applyChecking: false,
   compare: false,
   chainNames: [],
 } as const;
@@ -210,6 +214,17 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
     const diff = await settle(api.fetchDiff(sid, seq), "The proposed changes could not be loaded.");
     if (!isOpen(sid, seq)) return;
     if (!keepCurrent || diff.kind === "success") set({ diff });
+  };
+
+  /** What an Apply that got no clear answer wrote is in the history of the proposed changes: read it, and what was written shows as Applied. */
+  const checkApply = async (sid: string, seq: number, before: DiffView): Promise<void> => {
+    set({ applyChecking: true });
+    await loadDiff(sid, seq, true);
+    if (!isOpen(sid, seq)) return;
+    const { diff, selected } = get();
+    const written = diff.kind === "success" ? writtenIds(diff.value.applies) : new Set<string>();
+    set((state) => ({ applyChecking: false, selectedChanges: state.selectedChanges.filter((id) => !written.has(id)) }));
+    if (diff.kind === "success" && diff.value.applies.length > before.applies.length && selected && sameModel(diff.value.target, selected)) void get().loadHealthModel();
   };
 
   const loadDiffOf = async (task: Task): Promise<void> => {
@@ -569,7 +584,10 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
       );
       if (!isOpen(sessionId, taskSeq)) return;
       set({ apply: outcome });
-      if (outcome.kind !== "success") return;
+      if (outcome.kind !== "success") {
+        if (outcome.kind === "failure" && applyMayHaveWritten(outcome.error)) await checkApply(sessionId, taskSeq, diff.value);
+        return;
+      }
       const written = new Set(outcome.value.written);
       set((state) => ({ selectedChanges: state.selectedChanges.filter((id) => !written.has(id)) }));
       await loadDiff(sessionId, taskSeq, true);

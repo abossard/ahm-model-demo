@@ -167,6 +167,10 @@ Response (all times are epoch milliseconds, states are codes `0` Unknown, `1` He
 - `complete: false` means the page budget cut the series at its old end: `earliest` is the oldest point returned. Zoom in and ask for the narrower range to read it in full.
 - The service returns the newest points first, 1000 per page (100 for annotations), and a `nextMarker` that cannot be combined with a window. The app follows markers up to 4 pages per signal, 5 per entity state history and 3 per annotation list. A signal that refreshes every minute fills a page in 17 hours, so a 7 day range of such a signal is cut. Entity transitions are sparse and almost always complete.
 - Fan-out: 8 concurrent calls per request, 24 across the app, 400 calls and 40 seconds per request, 120 signals per request (more is `too_many_series`: pass `entity`). The UI asks for `states,annotations,reports` once and then `signals` for the entities it shows.
+- Every route that takes a model checks that the caller can read it, as the caller, before anything is served: also the app's own model, which a user of the app's directory gets when the request has no selector. A model the caller cannot read answers `unknown_model`, whatever a warm hub or a cache holds.
+- An Azure or sign-in-exchange failure that a route does not map itself answers the usual envelope with 503 `health_model_unavailable` (retryable), never a plain 500.
+- `POST .../tasks` refuses a `workload.repositoryUrl` that the agent would not clone with 400 `invalid_repository_url`: `https://github.com/<owner>/<repository>`, optionally ending in `.git` and `/`, an owner of 1 to 39 letters, digits and hyphens that starts with a letter or digit, a repository of up to 100 letters, digits, `_`, `.` and `-` that does not start with `.` or `-`. A session title or an instruction with a lone surrogate is refused with `invalid_title` or `invalid_instruction`.
+- Every response carries `Strict-Transport-Security: max-age=31536000` besides the other security headers.
 - Caching: per user, per entity, signal and window. The window is snapped outwards to 1 minute (up to 6 hours), 5 minutes (up to 2 days) or 15 minutes, so a moving window hits the cache. A window that reaches now lives 30 seconds, a closed one 5 minutes. Failures are not cached. The entity list lives 30 seconds.
 - Errors: `unsupported_query`, `invalid_include`, `invalid_resolution`, `invalid_range`, `unknown_entity`, `too_many_series`, `unknown_model` with the usual envelope.
 
@@ -174,7 +178,7 @@ Response (all times are epoch milliseconds, states are codes `0` Unknown, `1` He
 
 [ADR 0007](../adr/0007-warm-while-watched.md): the app keeps a model warm and pushes its changes only while someone has it open.
 
-`GET /api/health-model/stream?model&resourceGroup&subscription`, with an optional `Last-Event-ID` header. Refusals before the stream starts are the usual envelope: `unknown_model`, `unsupported_query`, `invalid_last_event_id` (400), `too_many_streams` (429), `too_many_subscribers` and `live_unavailable` (503, retryable), and the Azure errors of the first read. `/api/health-model` answers from the hub, without a call to Azure, while the model is warm.
+`GET /api/health-model/stream?model&resourceGroup&subscription`, with an optional `Last-Event-ID` header. Refusals before the stream starts are the usual envelope: `unknown_model`, `unsupported_query`, `invalid_last_event_id` (400), `too_many_streams` (429), `too_many_subscribers` and `live_unavailable` (503, retryable; also while a write of the app is not read back yet), and the Azure errors of the first read. `/api/health-model` answers from the hub, without a call to Azure, while the model is warm.
 
 | Event | `id` | `data` |
 |-------|------|--------|
@@ -198,7 +202,8 @@ delta = { observedAt?, model?: {changed fields}, reportOptions?,
 
 - An empty delta is never sent. `epoch` names one life of the hub: an id of another epoch, or one the ring of the last 256 events no longer reaches, gets a `snapshot`. A viewer is registered in the same step that reads what it missed, so no event falls between catch-up and subscribe.
 - **The hub** (`model_hub.py`) is one per `(subscription, resource group, model)`. Its poller starts with the first viewer and stops 20 s after the last. It reads every 30 s as one current viewer, with that viewer's on-behalf-of credential, and moves to another viewer when that one leaves, its token is within 5 s of expiry, or its exchange fails (401, `ClientAuthenticationError`, consent or interaction required; that viewer is not used again for 5 min). A viewer is admitted only after `has_model` as that user; the check is repeated every 5 min and a viewer that fails it gets `error`. A viewer whose token expires gets `reconnect`.
-- Every poll reads the entity list and the relationships (with the model: 3 calls). New points and reports come from the status of each signal in that snapshot, so they cost no call. The history of an entity is read only when its state changed (from its last transition minus 2 min, merged by `(entity, t, from, to)`; a failed read is retried on the next poll), annotations of all entities every 5 min. A failure backs off 30 s, 60 s, up to 5 min; 429 and 503 wait at least a minute.
+- After a write of the app (Apply, a health report) the hub reads the model at once and does not serve its snapshot, to a route or a new viewer, until a read that began after the write has succeeded: a poll that was already reading when the write happened cannot clear that.
+- Every poll reads the entity list and the relationships (with the model: 3 calls). New points and reports come from the status of each signal in that snapshot, so they cost no call. The history of an entity is read only when its state changed (from its last transition minus 2 min, merged by `(entity, t, from, to)`; a failed read is retried on the next poll, but after a 429 or 503 only once the `Retry-After` has passed, at least a minute and at most 5; an entity that answers 404 adds nothing and does not fail the read of the others), annotations of all entities every 5 min. A failure backs off 30 s, 60 s, up to 5 min; 429 and 503 wait at least a minute.
 - Limits: 8 hubs, 50 viewers per hub, 6 streams per user (tenant and user), a queue of 64 events per viewer, 4 concurrent reads toward Azure.
 - **History cache** (`history_store.py`): closed days of a signal and closed weeks of transitions and annotations (closed means ended 15 min ago) are kept per model in memory (4096 buckets, least recently used out) and, when a Sessions container is configured, in that container under `history/v1/<subscription>/<resource group>/<model>/<kind>/<entity>/<signal>/<bucket start ms>.json`. A bucket is kept only when read in full and wholly inside the 30 days the service keeps; the open tail is always read. The store never deletes (set a lifecycle rule on the prefix) and a blob that cannot be read is a miss. It is read only after the route admitted the caller, and it is keyed by model, not by user: a subscription id belongs to one directory, so a key never names the data of two directories. It does keep the history of every directory's models in the app's storage account.
 - The browser: one stream per selected model, closed when the model changes; the model in the store is changed in place (`model/live.ts`), so entities a delta does not touch keep their identity and the arrays of a view do not change unless its structure did. A change is announced to a screen reader and the node is outlined for 2 s (still under `prefers-reduced-motion`). The Live control pauses and resumes; a 503 `live_unavailable` falls back to reading the model every minute. The timeline follows now (`?timeline=1&live=1&span=<ms>`) and keeps the last overview of each model in IndexedDB (schema 1) for a first paint.
@@ -307,7 +312,7 @@ flowchart LR
 
 ## Hosted agent
 
-- Image: Python with the agent code, the skill folders, `jq` and `git` (kept off the shell's path). Port 8088,
+- Image: Python with the agent code, the skill folders and `jq`. Port 8088,
   linux/amd64. `azmcp` is not in it: the MCP server is the Container App built from `src/mcp`.
 - Code: `FoundryChatClient`, a skills provider and `MCPStreamableHTTPTool` against `MCP_URL`, hosted by
   `ResponsesHostServer`. Every MCP request carries the signed-in user's token from the token broker.
@@ -323,7 +328,8 @@ flowchart LR
   the Task's. A call that names others is answered `Error: refused.`
 - History is bounded: only an Explain reads it, only for the asked entity, from now minus 24 hours, or the period
   the instruction names (30 days at most). The result's `window` says what was read.
-- `clone_repository` clones a public `https://github.com/<owner>/<repository>`, shallow, into the Task folder.
+- `clone_repository` downloads a public `https://github.com/<owner>/<repository>` as an archive from
+  `codeload.github.com`, without history, and unpacks it into the Task folder. The image has no `git`.
 - A Task ends with a result. Every model call must call a tool, and the last call a type may make must be
   `submit_result`. A rejected result gets its problems back; when the same problems come back a third time, or a
   budget runs out, the agent submits a reduced result itself: the changes that pass every check, the rest as findings.
@@ -338,7 +344,8 @@ flowchart LR
 1. Write as the signed-in user. Azure RBAC decides; a missing role answers 403 `forbidden`.
 2. Load the live model, compare fingerprints, 409 `base_changed` on mismatch.
 3. Expand the selection with dependent changes: an added entity brings its relationships and the signal
-   definitions it references; a removed entity brings its relationships.
+   definitions it references; a removed entity brings the relationships that name it, whether the diff removes
+   them or changes them to name another entity.
 4. Write in order: signal definitions, entities, relationships; removals in reverse.
 5. Append the outcome to `applies.jsonl`. Stop at the first failure and report what was written.
 

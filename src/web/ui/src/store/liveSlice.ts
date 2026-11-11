@@ -10,6 +10,8 @@ import type { Store } from "./store";
 export type LiveStatus = "off" | "connecting" | "live" | "reconnecting" | "paused" | "polling";
 
 export const POLL_FALLBACK_MS = 60_000;
+/** Longer than any read of the timeline takes. */
+export const TIMELINE_HOLD_MS = 120_000;
 /** A server clock further than this from the browser's is not a clock difference but old data: it is not followed. */
 export const MAX_SKEW_MS = 10 * 60_000;
 
@@ -67,6 +69,10 @@ export const liveSlice: StateCreator<Store, [], [], LiveState & LiveActions> = (
             liveChanged: { ...state.liveChanged, ...Object.fromEntries(changes.map((change) => [change.name, observed])) },
           }),
       timelineData: state.timelineStatus === "ready" ? applyTimelineDelta(state.timelineData, delta?.timeline, observed, current) : state.timelineData,
+      // A read of the timeline that is on its way may not have this change: recent ones are kept and applied to its answer.
+      ...(delta?.timeline
+        ? { timelineHeld: [...state.timelineHeld.filter((item) => item.observed > observed - TIMELINE_HOLD_MS), { timeline: delta.timeline, observed }] }
+        : {}),
     }));
     if (changes.length > 0) flashEntities(changes.map((change) => change.name));
   };

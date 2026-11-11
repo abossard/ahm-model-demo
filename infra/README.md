@@ -14,16 +14,16 @@ with a project and a model, a private blob store for Sessions, and two Azure Hea
 | Resource | Module | Notes |
 |----------|--------|-------|
 | Container App `ca-<env>-web` in environment `cae-<env>` | `container-app.bicep`, `foundation.bicep` | Workload profiles environment with only the Consumption profile, joined to the VNet, one replica. Serves the FastAPI app and the SPA. |
-| Container App `ca-<env>-mcp` | `container-app.bicep` | The Azure MCP server (`src/mcp`), external ingress, one replica. See Azure MCP server. |
+| Container App `ca-<env>-mcp` | `container-app.bicep` | The Azure MCP server (`src/mcp`), external ingress, one replica, runs as `id-<env>-mcp`. See Azure MCP server. |
 | App registrations `ahm-<env>-web` and `ahm-<env>-mcp` with their service principals and federated credentials | `entra.bicep` | See Sign-in and on-behalf-of. |
 | Virtual network `vnet-<env>` | `foundation.bicep` | Two subnets, one for the environment and one for private endpoints. See Network. |
-| Identity `id-<env>-app` | `foundation.bicep` | The web app's workload identity. |
+| Identities `id-<env>-app` and `id-<env>-mcp` | `foundation.bicep` | `id-<env>-app` is the web app's workload identity. `id-<env>-mcp` is the MCP server's: it holds AcrPull on the registry and nothing else. |
 | Container registry (Basic) | `foundation.bicep` | Holds the web, MCP and hosted agent images. |
 | Log Analytics, Application Insights, availability tests | `foundation.bicep`, `availability-tests.bicep` | One test GETs the home page and one GETs `/health` of the MCP server, each every 5 minutes. |
 | Storage account with the `sessions` container, its private endpoint and private DNS zone | `storage.bicep` | Session store. |
 | Foundry account, project `proj-<env>`, model, egress policy | `foundry.bicep` | See Foundry. |
 | `hm-<env>`, `hm-<env>-design` | `health-model*.bicep`, `design-health-model.bicep` | See Health models. |
-| Activity log diagnostics | `subscription-monitoring.bicep` | Subscription scope. |
+| Activity log diagnostics | `subscription-monitoring.bicep` | Subscription scope. `azd down` leaves it behind, so the `predown` hook deletes it (see Deploying). |
 
 ## Network
 
@@ -47,6 +47,9 @@ with a project and a model, a private blob store for Sessions, and two Azure Hea
   `privatelink.blob.<storage suffix>` is linked to the VNet, and a zone group on the endpoint fills it, so inside the
   VNet `<account>.blob.core.windows.net` resolves to the endpoint's private address.
 - One private container, `sessions`. The workload identity has Storage Blob Data Contributor on that container only.
+- The blob service keeps deleted blobs and deleted containers for 7 days (soft delete). The governance policies seen on
+  the account only `modify` account-level settings (public network access, local authentication, anonymous blob
+  access), so none conflicts with it.
 - Output and web env var `SESSIONS_CONTAINER_URL`: `https://<account>.blob.core.windows.net/sessions`. It is the
   public host name, which resolves privately only inside the VNet.
 - Nothing outside the VNet reaches the store, so `make dev` exports `SESSIONS_CONTAINER_URL=memory:` and keeps
@@ -62,11 +65,14 @@ with a project and a model, a private blob store for Sessions, and two Azure Hea
   `azd env set AZURE_MODEL_CAPACITY <n>` before `azd provision`; fewer concurrent Tasks fit then.
 - The policy lists the Microsoft.DefaultV2 content filters explicitly, because the service rejects a custom policy
   without them and an empty list would carry none.
+- The model deployment upgrades itself when `modelVersion` retires (`versionUpgradeOption: OnceCurrentVersionExpired`).
+  Set `modelVersion` in `foundry.bicep` to the new default afterwards: a provision sends it again.
 - Check quota before provisioning: `az cognitiveservices usage list -l swedencentral`, row
   `OpenAI.GlobalStandard.gpt-5.4-mini` (`currentValue` plus the new capacity must stay under `limit`).
 - The policy denies all session egress except exact hosts: this account's own `<account>.services.ai.azure.com`,
-  `<account>.openai.azure.com` and `<account>.cognitiveservices.azure.com`, the web app, the MCP server, `github.com`
-  and `codeload.github.com`. The web and MCP hosts are the apps' names on the environment's default domain, so they are
+  `<account>.openai.azure.com` and `<account>.cognitiveservices.azure.com`, the web app, the MCP server and
+  `codeload.github.com`, where the agent downloads a repository as a tarball (the agent ships no git, so `github.com`
+  is not listed). The web and MCP hosts are the apps' names on the environment's default domain, so they are
   known before the apps exist. ARM, Entra login and `api.loganalytics.io` are not listed: the agent holds no Azure
   token, and the MCP server exchanges the user's token itself. There are no wildcards: they would also match other
   tenants, and Application Insights ingestion with a foreign key needs no authentication, so it would be an
@@ -135,7 +141,7 @@ deployed every service. azd exports the environment values to it. Run it alone w
 | Entity | Bound to | Signals |
 |--------|----------|---------|
 | `container-app` | The web Container App | CPU, memory, response time (5 minute grain: it reports only for minutes with requests). Failed requests (HTTP 5xx only, not 4xx), exceptions, home page availability. Resource Health is off: Container Apps do not support it (HTTP 422). |
-| `hosted-agent` | The Foundry project | `agent-task-failures` (degraded above 0, unhealthy above 2 in 15 minutes) and `agent-task-latency` (p95 over 15 minutes, degraded above 120 s, unhealthy above 300 s), both over the web app's `foundry.agent.*` spans in `AppDependencies`. |
+| `hosted-agent` | The Foundry project | `agent-task-failures` (degraded above 0, unhealthy above 2 in 15 minutes) and `agent-task-latency` (p95 over 15 minutes of how long a whole Task run takes, degraded above 450 s, unhealthy above 570 s), both over the web app's `foundry.agent.*` spans in `AppDependencies`. The latency thresholds sit above the agent's budgets (240 s explain, 360 s review, 420 s design) and just under the 600 s at which the web app fails a Task, so a normal Design turn does not turn the root Unhealthy. |
 | `mcp-server` | The MCP Container App | CPU, memory, response time (all 5 minute grain; the response time threshold of 10 s is an assumption: no traffic has run through it yet) and the availability of `/health`. No request-based signal: the server's exporter has no credential for the Entra-only Application Insights, so its requests never reach `AppRequests`. Resource Health is off. |
 | `foundry-account` | The Foundry account | Client errors, server errors, throttled requests (`ModelRequests` with `StatusCode eq '429'`, which has no series and reads Unknown until the first 429). |
 | `session-storage` | The blob service of the session store | Availability, end-to-end latency. Storage emits both only for minutes with blob transactions, so they read Unknown while Sessions are idle. |
@@ -171,28 +177,33 @@ user can read in every subscription of the directory they signed in to.
   `signInAudience: AzureADandPersonalMicrosoftAccount`: work or school accounts of any directory and personal Microsoft
   accounts. That audience needs token version 2 and an application id URI that is globally unique and has no `urn:`
   scheme, wildcard or query (`api://<application id>` is all of that), and caps scope names at 40 characters.
-  - `web` is the SPA and its API. Redirect URIs `https://<web host>/` and `http://localhost:8080/`, scope
-    `access_as_user`, token version 2. It needs ARM `user_impersonation`, the `mcp` scope and its own scope.
+  - `web` is the SPA and its API. Redirect URI `https://<web host>/`, plus `http://localhost:8080/` only when
+    `ENTRA_ALLOW_LOCAL_REDIRECT` is `true`. Scope `access_as_user`, token version 2. It needs ARM
+    `user_impersonation`, the `mcp` scope and its own scope.
   - `mcp` is the Azure MCP server. Scope `Mcp.Tools.ReadWrite`, token version 2, pre-authorizing `web` and listing it
     in `knownClientApplications`. It needs ARM `user_impersonation` and Log Analytics `Data.Read`. The known client
     makes consent to `web`, asked as `api://<web>/.default`, provision this server's service principal and its
     permissions in the consenting directory too: a client cannot be consented into a directory where a resource it
     needs is missing. Both registrations are in this tenant, as the attribute requires.
-  - Each has a federated credential that trusts the workload identity `id-<env>-app` (subject: its object id, audience
-    `api://AzureADTokenExchange`), so no client secret exists. Both apps sign the on-behalf-of exchange with it, in
-    the directory of each user: Microsoft Learn says an app that trusts a managed identity reaches another tenant when
-    it is multitenant and provisioned there, and that the identity and the app registration belong to the same tenant.
+  - Each has a federated credential (subject: the object id of its identity, audience `api://AzureADTokenExchange`),
+    so no client secret exists. `web` trusts `id-<env>-app` and `mcp` trusts `id-<env>-mcp`, the identity the MCP
+    Container App runs as and names in `AzureAd__ClientCredentials__0__ManagedIdentityClientId` (its client id). Each
+    app signs the on-behalf-of exchange with its own identity, in the directory of each user: Microsoft Learn says an
+    app that trusts a managed identity reaches another tenant when it is multitenant and provisioned there, and that
+    the identity and the app registration belong to the same tenant.
 - Each app is declared twice in `entra.bicep` with the same `uniqueName`, because identifier URIs and the two apps'
   references to each other need an application id that exists only after creation. A uniqueName that survives an
   out-of-band delete conflicts on the next provision (restore the app or purge it from the deleted items), and a new
   app takes a short while to replicate.
 - On-behalf-of has no consent screen. After `azd provision` the `postprovision` hook
-  (`scripts/hooks/postprovision.sh`) grants tenant-wide admin consent for both apps and waits for replication. A
-  deployer needs Global Administrator, Privileged Role Administrator, Cloud Application Administrator or
-  Application Administrator. Without one the hook fails before it changes anything and prints the manual commands,
-  to be run by an administrator in this order: `az ad app permission admin-consent --id <ENTRA_MCP_CLIENT_ID>`, then
-  `az ad app permission admin-consent --id <ENTRA_CLIENT_ID>`. Until then every token request answers a claims
-  challenge.
+  (`scripts/hooks/postprovision.sh`) grants tenant-wide admin consent for both apps and waits for replication. It
+  leaves an app alone when every delegated permission the app requests already has a tenant-wide grant, so a later
+  provision by someone without the role still works. A deployer needs Global Administrator, Privileged Role
+  Administrator, Cloud Application Administrator or Application Administrator. Without one the hook changes nothing,
+  prints the manual commands and ends with exit code 0, so `azd up` goes on to deploy. An administrator runs them in
+  this order: `az ad app permission admin-consent --id <ENTRA_MCP_CLIENT_ID>`, then `az ad app permission
+  admin-consent --id <ENTRA_CLIENT_ID>`. Until then every token request answers a claims challenge. A service
+  principal that stays invisible or a consent that keeps failing for another reason still fails the hook.
 - What users need in Azure RBAC, because every call runs as them: Reader on the resource group or subscription to browse
   and select a model, and Microsoft.CloudHealth read (included in Reader) for history. Health reports need
   `Microsoft.CloudHealth/healthmodels/entities/ingestHealthReport/action`, and Apply needs write and delete on the
@@ -213,6 +224,10 @@ user can read in every subscription of the directory they signed in to.
   still bounded by the developer's own Azure RBAC. It is off by default because it lets any user in the tenant script
   the API the same way; the MCP app is never pre-authorized for it, so the MCP scope stays reachable only through the
   web app's exchange.
+- `ENTRA_ALLOW_LOCAL_REDIRECT` (default `false`, `azd env set ENTRA_ALLOW_LOCAL_REDIRECT true`, then `azd provision`)
+  adds `http://localhost:8080/` as a redirect URI of the web app registration, so a developer can sign in to a local
+  server. It is off by default because the registration accepts any directory and is reachable from the internet. An
+  existing environment loses the redirect URI at its next provision unless the value is `true`.
 - `AUTH_MODE=local` is what `make dev` exports: no managed identity, so no on-behalf-of. The web app acts as the
   developer's `az login` identity and nobody signs in. The app refuses this mode inside a Container App.
 - Removing the old grants from an existing environment: incremental deployment does not delete the web identity's
@@ -280,30 +295,65 @@ account of a second directory and a personal account that owns an Azure subscrip
 ## Azure MCP server
 
 - `src/mcp/Dockerfile` builds `azmcp` from `AZMCP_REPO` and `AZMCP_REF` (build arg defaults) on the .NET SDK image
-  `AZMCP_SDK`, an exact tag such as `10.0.403`, because the floating `sdk:10.0` tag broke the build. Keep it in step
-  with the `sdk.version` in the `global.json` of `AZMCP_REF`. The runtime is the chiseled `runtime-deps` image, with
+  `AZMCP_SDK`, an exact tag such as `10.0.403`, because the floating `sdk:10.0` tag broke the build. `AZMCP_REF` is a
+  commit of the branch `abossard/healthmodels-inspect`, not the branch, so a push to the branch changes no deployed
+  image. To move to a newer head, resolve it with `git ls-remote https://github.com/abossard/mcp.git
+  refs/heads/abossard/healthmodels-inspect`, set it as the default and keep `AZMCP_SDK` in step with the `sdk.version`
+  in the `global.json` of that commit. The runtime is the chiseled `runtime-deps` image, with
   invariant globalization (no ICU) and a non-root user. To build another source, change the defaults in the
   Dockerfile: azd passes no build args, and an unset one would blank the default.
 - The container runs `azmcp server start --transport http --outgoing-auth-strategy UseOnBehalfOf --mode all
   --namespace monitor --namespace group --read-only`. Every request needs a user token for the `mcp` app with the
   `Mcp.Tools.ReadWrite` scope; the server exchanges it for ARM and Log Analytics tokens as that user.
-- Environment (`AzureAd__*`) comes from `entra.bicep` and the workload identity as a managed identity signed
-  assertion. `AzureAd__TenantId` is `organizations`: Microsoft.Identity.Web then validates the issuer of each token
+- Environment (`AzureAd__*`) comes from `entra.bicep` and the identity `id-<env>-mcp` as a managed identity signed
+  assertion: `AzureAd__ClientCredentials__0__ManagedIdentityClientId` is that identity's client id and the `mcp`
+  registration's federated credential trusts its object id. The identity holds AcrPull and nothing else (not the
+  session store, not Foundry), because the server is reachable from the internet and runs a branch build.
+  `AzureAd__TenantId` is `organizations`: Microsoft.Identity.Web then validates the issuer of each token
   against the `tid` it carries and runs the on-behalf-of exchange at that directory (read in its 4.6.0 source: a web
-  API exchange takes the tenant of the caller's token, and a meta tenant is refused only for app-only tokens). TLS ends at the ingress, so HTTPS redirection is off and `X-Forwarded-Proto` is trusted. `/health` is
-  anonymous and answers the availability probe. Port 8080, path `/`.
+  API exchange takes the tenant of the caller's token, and a meta tenant is refused only for app-only tokens). TLS
+  ends at the ingress, so HTTPS redirection is off and `X-Forwarded-Proto` is trusted. `/health` is anonymous and
+  answers the availability probe. Port 8080, path `/`.
 - Telemetry is off (`AZURE_MCP_COLLECT_TELEMETRY=false`): the server's exporter has no credential, Application Insights
   here accepts only Entra tokens, and product telemetry stays inside the deployment.
 - External ingress, because the hosted agent calls it from Foundry's network. Every request still needs a token.
+- Accepted limit: the server takes a token of any directory issued to any client app, so `ENTRA_ALLOWED_TENANTS` and
+  the per-user limits, which live in the web app, do not cover this endpoint.
+  - Configuration cannot close it (read at `AZMCP_REF`). The server binds the `AzureAd` section into
+    Microsoft.Identity.Web 4.6.0 and builds its JWT bearer options in code. The issuer validator of
+    Microsoft.IdentityModel.Validators (the same logic in 8.15.0 and 8.22.0) accepts the issuer of any `tid` under
+    `organizations`, and takes `ValidIssuers` (settable as `Authentication:Schemes:Bearer:ValidIssuers`) as extra
+    issuers to accept, never as a limit. Nothing checks `azp` or `tid`. A directory id as `AzureAd__TenantId` would
+    admit that one directory only.
+  - What it allows: someone who consents to the `mcp` app in a directory of their own and registers their own client
+    calls the endpoint with their own token. They read only their own Azure (the server exchanges their token in their
+    directory, and its own identity can only pull its image), but they use the one replica and skip the allow-list and
+    the limits.
+  - What would close it, as code in azmcp (not patched here): in `ServerStartCommand.CreateHttpHost`, an assertion on
+    the `McpAccess` policy that requires `azp` (`appid` in a v1 token) to be in a configured list of client ids (the
+    web app's) and, when a list is set, `tid` to be in a configured list of directory ids. Both lists would be bound
+    from `AzureAd` settings that `main.bicep` fills from `ENTRA_CLIENT_ID` and `ENTRA_ALLOWED_TENANTS`.
 - The first provision runs a placeholder image on the app until `azd deploy mcp` publishes the real one, so the MCP
   availability signal and the `mcp-server` entity read Unhealthy until then.
+- An environment from before `id-<env>-mcp` existed: `azd provision` creates the identity and its AcrPull, changes the
+  subject of the `mcp` registration's federated credential (the same `workload-identity`, in place) and moves the MCP
+  app to the new identity with a new revision. From the credential change until that revision serves, the old
+  revision's assertions match no credential and Tasks that read Azure fail. If the new revision cannot pull its image
+  while the AcrPull assignment propagates, run `azd provision` again. The web identity keeps its grants and its
+  credential, and nothing is deleted.
 
 ## Deploying
 
 For a first deployment, follow [Get started from scratch](../README.md#get-started-from-scratch).
 
-- `azd up` provisions and deploys. `azd provision` changes infrastructure and then grants admin consent.
-  `azd deploy` publishes the web and MCP images, then runs the agent deploy hook.
+- `azd up` provisions and deploys. `azd provision` changes infrastructure and then grants admin consent, unless the
+  grants exist or the deployer lacks the role (Sign-in and on-behalf-of). `azd deploy` publishes the web and MCP images,
+  then runs the agent deploy hook.
+- The `predown` hook (`scripts/hooks/predown.sh`) deletes the activity log diagnostic setting `diag-<env>-activity`
+  before `azd down`. A subscription-scope setting is not in the resource group, so `azd down` would leave it pointing at
+  the deleted workspace and holding one of the subscription's five slots. The hook ends with 0 when the setting is
+  already gone, and fails when it cannot be read or deleted. Run it alone with `azd hooks run predown`; `azd provision`
+  creates the setting again.
 - azd sets `AZURE_PRINCIPAL_ID`, the deployer who becomes Foundry Project Manager.
 - The subscription-scope module is deployed as `subscription-monitoring-<region>`. A deployment record's name is bound to
   its region, so a bare name collides with an environment in another region (`InvalidDeploymentLocation`).

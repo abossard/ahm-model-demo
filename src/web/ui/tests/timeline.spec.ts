@@ -331,6 +331,18 @@ test("an open row shows one lane per signal, and only the lanes that show are as
   await expect(page.getByTestId("tl-label-signal")).not.toHaveCount(0);
 });
 
+test("the overview is read once when the timeline opens and again when Refresh is pressed, not on its own while the stream is live", async ({ page }) => {
+  const requests = await open(page);
+  await openTimeline(page);
+  const overviews = (): number => requests.seen.filter((query) => !(query.get("include") ?? "").includes("signals")).length;
+  await expect.poll(overviews).toBe(1);
+  await page.waitForTimeout(1500);
+  expect(overviews()).toBe(1);
+
+  await page.getByTestId("refresh-now").click();
+  await expect.poll(overviews).toBe(2);
+});
+
 test("zooming in on an opened row asks again for the narrower window, once the zoom settles", async ({ page }) => {
   const requests = await open(page);
   await openTimeline(page);

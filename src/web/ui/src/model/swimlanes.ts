@@ -323,6 +323,9 @@ export function layoutSwimlanes({ entities, relationships, layering }: SwimlaneI
     const node = drawn.get(id) as Drawn;
     return { x: (centre.get(id) as number) - node.width / 2, y: cardTop(id), width: node.width, height: node.height };
   };
+  // A lane whose cards a chip folded away has no row and is not drawn; the lanes that are drawn are numbered from 0.
+  const drawnLanes = [...new Set(rowLane)];
+  const laneNumber = new Map(drawnLanes.map((lane, position) => [lane, position] as const));
   const cards: SwimCard[] = [];
   const folds: SwimFold[] = [];
   const ownerOfFold = new Map([...groups.keys()].map((owner) => [foldId(owner), owner] as const));
@@ -338,8 +341,8 @@ export function layoutSwimlanes({ entities, relationships, layering }: SwimlaneI
           const state = healthBucket((byName.get(name) as Entity).healthState);
           states[state] = (states[state] ?? 0) + 1;
         }
-        folds.push({ id, owner, lane: rowLane[index] as number, row: index, rect: rectOf(id), members: [...members].sort(byText), open: options.open.has(owner), states });
-      } else if (only === undefined || only.entities.has(id)) cards.push({ id, lane: rowLane[index] as number, row: index, rect: rectOf(id), spec: specs.get(id) as CardSpec });
+        folds.push({ id, owner, lane: laneNumber.get(rowLane[index] as number) as number, row: index, rect: rectOf(id), members: [...members].sort(byText), open: options.open.has(owner), states });
+      } else if (only === undefined || only.entities.has(id)) cards.push({ id, lane: laneNumber.get(rowLane[index] as number) as number, row: index, rect: rectOf(id), spec: specs.get(id) as CardSpec });
     }
   }
   const lineById = new Map(lines.map((line) => [line.id, line] as const));
@@ -381,9 +384,10 @@ export function layoutSwimlanes({ entities, relationships, layering }: SwimlaneI
   }
   const x0 = left - MARGIN - LANE_GUTTER;
   const width = right + MARGIN - x0;
-  const lanes: SwimLane[] = used.map((item, index) => {
-    const first = rowLane.indexOf(index);
-    const last = rowLane.lastIndexOf(index);
+  const lanes: SwimLane[] = drawnLanes.map((usedIndex, index) => {
+    const item = used[usedIndex] as (typeof used)[number];
+    const first = rowLane.indexOf(usedIndex);
+    const last = rowLane.lastIndexOf(usedIndex);
     const top = rowTop[first] as number;
     const bottom = (rowTop[last] as number) + pad(last) + (rowHeight[last] as number) + ROW_BOTTOM + plan.channelHeight(last);
     return { index, kind: item.lane.kind, title: item.lane.title, count: only === undefined ? item.names.length : item.names.filter((name) => only.entities.has(name)).length, rect: { x: x0, y: top, width, height: bottom - top } };

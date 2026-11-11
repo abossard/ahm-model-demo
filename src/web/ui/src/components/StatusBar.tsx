@@ -107,7 +107,10 @@ function RefreshControls(): JSX.Element {
         size="small"
         icon={<ArrowSync20Regular />}
         data-testid="refresh-now"
-        onClick={() => void actions.loadHealthModel({ fresh: true })}
+        onClick={() => {
+          void actions.loadHealthModel({ fresh: true });
+          void actions.refreshTimeline();
+        }}
       >
         Refresh
       </Button>

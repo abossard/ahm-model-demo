@@ -68,10 +68,11 @@ DEPLOY_SCRIPT_OVERRIDES = (
     "FORBIDDEN_RETRY_SECONDS",
 )
 
-# The Azure MCP server is built once, in src/mcp/Dockerfile, from these build arg defaults.
+# The Azure MCP server is built once, in src/mcp/Dockerfile, from these build arg defaults. The ref is a commit of the
+# branch abossard/healthmodels-inspect, so a push to the branch changes no deployed image.
 AZMCP_BUILD_ARGS = {
     "AZMCP_REPO": "https://github.com/abossard/mcp.git",
-    "AZMCP_REF": "abossard/healthmodels-inspect",
+    "AZMCP_REF": "b844ad32aa998647ede5368e30512d3901e37770",
 }
 MCP_DIR = ROOT / "src" / "mcp"
 
@@ -215,7 +216,7 @@ APP_SIGNALS = {
 # (entity, signal): (degraded rule, unhealthy rule). A missing rule is None.
 APP_RULES = {
     ("hosted-agent", "agent-task-failures"): (("GreaterThan", 0), ("GreaterThan", 2)),
-    ("hosted-agent", "agent-task-latency"): (("GreaterThan", 120000), ("GreaterThan", 300000)),
+    ("hosted-agent", "agent-task-latency"): (("GreaterThan", 450000), ("GreaterThan", 570000)),
     ("foundry-account", "throttled-requests"): (("GreaterThan", 0), ("GreaterThan", 10)),
     ("session-storage", "availability"): (None, ("LessThan", 99)),
     ("session-storage", "end-to-end-latency"): (None, ("GreaterThan", 5000)),
@@ -307,15 +308,15 @@ DEFAULT_V2_CONTENT_FILTERS = (
 )
 
 # The exact hosts a hosted-agent session may reach: the account's three hosts, the web app that issues its per-Task
-# token, the MCP server that reads Azure for it, and GitHub. ARM, Entra login and Log Analytics are not reachable: the
-# agent holds no Azure token and the MCP server exchanges the user's token itself.
+# token, the MCP server that reads Azure for it, and the GitHub tarball host (the agent ships no git, so not github.com).
+# ARM, Entra login and Log Analytics are not reachable: the agent holds no Azure token and the MCP server exchanges the
+# user's token itself.
 EGRESS_HOSTS = (
     "{account}.services.ai.azure.com",
     "{account}.openai.azure.com",
     "{account}.cognitiveservices.azure.com",
     "{web}",
     "{mcp}",
-    "github.com",
     "codeload.github.com",
 )
 
@@ -553,6 +554,7 @@ class SourceLayoutContractTests(unittest.TestCase):
             "infra/README.md",
             "scripts/hooks/postprovision.sh",
             "scripts/hooks/postup.sh",
+            "scripts/hooks/predown.sh",
             "scripts/local-env.sh",
             "src/mcp/.dockerignore",
             "src/mcp/Dockerfile",
@@ -614,7 +616,7 @@ class SourceLayoutContractTests(unittest.TestCase):
                 for path in (ROOT / "scripts").rglob("*")
                 if path.is_file()
             ),
-            ["scripts/hooks/postprovision.sh", "scripts/hooks/postup.sh", "scripts/local-env.sh"],
+            ["scripts/hooks/postprovision.sh", "scripts/hooks/postup.sh", "scripts/hooks/predown.sh", "scripts/local-env.sh"],
         )
 
     def test_tests_folder_holds_only_test_modules(self):
@@ -635,7 +637,7 @@ class SourceLayoutContractTests(unittest.TestCase):
 
         self.assertEqual(re.findall(r"^  ([\w-]+):$", services, re.MULTILINE), ["web", "mcp"])
         self.assertNotIn("hooks:", services)
-        self.assertEqual(re.findall(r"^  ([\w-]+):$", hooks, re.MULTILINE), ["postprovision", "postdeploy", "postup"])
+        self.assertEqual(re.findall(r"^  ([\w-]+):$", hooks, re.MULTILINE), ["postprovision", "postdeploy", "postup", "predown"])
         web, mcp = services.split("\n  mcp:\n")
         for service, block, lines in (
             ("web", web, ("    project: ./src/web", "    language: py")),
@@ -648,6 +650,7 @@ class SourceLayoutContractTests(unittest.TestCase):
             ("postprovision", "bash ./scripts/hooks/postprovision.sh"),
             ("postdeploy", "bash ./src/agent/deploy/deploy-agent.sh"),
             ("postup", "bash ./scripts/hooks/postup.sh"),
+            ("predown", "bash ./scripts/hooks/predown.sh"),
         ):
             with self.subTest(hook=hook):
                 self.assertIn(f"  {hook}:\n    shell: sh\n    interactive: true\n    run: {command}", hooks)
@@ -803,6 +806,7 @@ class InfrastructureContractTests(unittest.TestCase):
                     "webImage",
                     "mcpImage",
                     "entraAllowAzureCli",
+                    "entraAllowLocalRedirect",
                     "entraAllowedTenants",
                     "foundryAgentPrincipalId",
                 ]
@@ -865,6 +869,7 @@ class InfrastructureContractTests(unittest.TestCase):
             sorted(declared),
             [
                 "entraAllowAzureCli",
+                "entraAllowLocalRedirect",
                 "entraAllowedTenants",
                 "environmentName",
                 "foundryAgentPrincipalId",
@@ -885,6 +890,7 @@ class InfrastructureContractTests(unittest.TestCase):
             ("webImage", "${SERVICE_WEB_IMAGE_NAME}"),
             ("mcpImage", "${SERVICE_MCP_IMAGE_NAME}"),
             ("entraAllowAzureCli", "${ENTRA_ALLOW_AZURE_CLI:-false}"),
+            ("entraAllowLocalRedirect", "${ENTRA_ALLOW_LOCAL_REDIRECT:-false}"),
             # Empty lets every directory sign in.
             ("entraAllowedTenants", "${ENTRA_ALLOWED_TENANTS}"),
             # Set by the agent deploy script with `azd env set`; empty until the agent exists.
@@ -897,6 +903,7 @@ class InfrastructureContractTests(unittest.TestCase):
             ("mcpImage", ""),
             ("foundryAgentPrincipalId", ""),
             ("entraAllowAzureCli", False),
+            ("entraAllowLocalRedirect", False),
             ("entraAllowedTenants", ""),
         ):
             with self.subTest(default=name):
@@ -930,6 +937,12 @@ class InfrastructureContractTests(unittest.TestCase):
             ("local auth", foundry_resources["Microsoft.CognitiveServices/accounts"]["properties"]["disableLocalAuth"], True),
             ("egress enforced", (egress["mode"], egress["defaultAction"]), ("Enforced", "Deny")),
             ("model capacity", foundry["parameters"]["modelDeploymentCapacity"]["defaultValue"], 500),
+            # A retired model version must not stop the deployment: the service moves it to the current default.
+            (
+                "model upgrade",
+                of_type(foundry, "Microsoft.CognitiveServices/accounts/deployments")[0]["properties"]["versionUpgradeOption"],
+                "OnceCurrentVersionExpired",
+            ),
             ("outputs", [name for name in outputs if name not in compiled["outputs"]], []),
             ("removed outputs", removed_outputs, []),
         )
@@ -1041,9 +1054,13 @@ class InfrastructureContractTests(unittest.TestCase):
         assignments = of_type(templates()["rbac"], "Microsoft.Authorization/roleAssignments")
 
         # Health models are read, reported on and changed as the signed-in user, so the workload identity holds no
-        # health model role and the deployment defines no custom role.
+        # health model role and the deployment defines no custom role. The MCP server's own identity is separate.
         self.assertEqual(
-            sorted((scope_type(a), role_guid(a)) for a in assignments),
+            sorted(
+                (scope_type(a), role_guid(a))
+                for a in assignments
+                if a["properties"]["principalId"] == "[parameters('identityPrincipalId')]"
+            ),
             sorted(
                 [
                     ("Microsoft.ContainerRegistry/registries", BUILT_IN_ROLES["AcrPull"]),
@@ -1052,6 +1069,7 @@ class InfrastructureContractTests(unittest.TestCase):
                 ]
             ),
         )
+        self.assertEqual(len(assignments), 4)
         self.assertEqual(of_type(templates()["health-model"], "Microsoft.Authorization/roleAssignments"), [])
         self.assertEqual(
             sorted(r["type"] for r in resources(templates()["subscription-monitoring"])),
@@ -1222,6 +1240,7 @@ class InfrastructureContractTests(unittest.TestCase):
     def test_session_store_is_a_private_entra_only_blob_container(self):
         storage = templates()["storage"]
         account = of_type(storage, "Microsoft.Storage/storageAccounts")[0]["properties"]
+        blob_service = of_type(storage, "Microsoft.Storage/storageAccounts/blobServices")[0]["properties"]
         containers = of_type(storage, "Microsoft.Storage/storageAccounts/blobServices/containers")
         diagnostics = of_type(storage, "Microsoft.Insights/diagnosticSettings")
         rbac = templates()["rbac"]
@@ -1241,6 +1260,10 @@ class InfrastructureContractTests(unittest.TestCase):
         ):
             with self.subTest(account=name):
                 self.assertEqual(account[name], expected)
+        # A deleted or overwritten blob and a deleted container can be restored for a week.
+        for policy in ("deleteRetentionPolicy", "containerDeleteRetentionPolicy"):
+            with self.subTest(soft_delete=policy):
+                self.assertEqual(blob_service[policy], {"enabled": True, "days": 7})
         self.assertEqual(
             sorted(r["type"] for r in storage["resources"]),
             [
@@ -1352,6 +1375,9 @@ class AgentDeploymentContractTests(unittest.TestCase):
         entrypoint = json.loads(re.search(r"^ENTRYPOINT (\[.*?\])$", dockerfile.replace("\\\n", " "), re.MULTILINE)[1])
 
         self.assertEqual(args, AZMCP_BUILD_ARGS)
+        # A full commit id, not a branch name, and the branch it comes from is named next to it.
+        self.assertRegex(args["AZMCP_REF"], r"^[0-9a-f]{40}$")
+        self.assertRegex(dockerfile, r"\n# [^\n]*abossard/healthmodels-inspect[^\n]*\n(?:#[^\n]*\n)*ARG AZMCP_REF=")
         self.assertIn('"$AZMCP_REPO" "$AZMCP_REF"', azmcp_stage)
         # The SDK image is an exact tag (the floating sdk:10.0 broke the build), declared before the first FROM so the
         # FROM can use it, and kept in step with the sdk.version of the global.json at AZMCP_REF.
@@ -1543,8 +1569,13 @@ class EntraAndMcpContractTests(unittest.TestCase):
                 {"resourceAppId": "[reference('webCreated').appId]", "resourceAccess": [{"id": "[variables('webScopeId')]", "type": "Scope"}]},
             ],
         )
-        # A single-page app: redirects to the deployed site and to the local dev server, and no web or implicit flow.
-        self.assertEqual(web["spa"]["redirectUris"], ["[parameters('webUrl')]", "http://localhost:8080/"])
+        # A single-page app: it redirects to the deployed site, to the local dev server only when asked (next test), and
+        # has no web or implicit flow.
+        self.assertEqual(
+            web["spa"]["redirectUris"],
+            "[if(parameters('allowLocalRedirect'), createArray(parameters('webUrl'), variables('localRedirectUri')), "
+            "createArray(parameters('webUrl')))]",
+        )
         for key in ("web", "implicitGrantSettings", "publicClient"):
             with self.subTest(absent=key):
                 self.assertNotIn(key, web)
@@ -1590,7 +1621,37 @@ class EntraAndMcpContractTests(unittest.TestCase):
         self.assertEqual(entra["variables"]["webScopeId"], "[guid(variables('webUniqueName'), variables('webScopeValue'))]")
         self.assertNotIn("azureCliApplicationId", json.dumps(mcp))
 
-    def test_both_registrations_trust_the_workload_identity_through_a_federated_credential(self):
+    def test_local_redirect_uri_is_added_only_when_asked(self):
+        compiled, _ = compile_main()
+        entra = templates()["entra"]
+        web = entra["resources"]["webApp"]["properties"]
+        expression = re.fullmatch(
+            r"\[if\(parameters\('allowLocalRedirect'\), createArray\(parameters\('webUrl'\), variables\('(\w+)'\)\), "
+            r"createArray\(parameters\('webUrl'\)\)\)\]",
+            web["spa"]["redirectUris"],
+        )
+
+        def rendered(allow):
+            # What the one conditional in the web app's redirect URIs renders to for a value of the parameter.
+            return ["[parameters('webUrl')]", entra["variables"][expression[1]]] if allow else ["[parameters('webUrl')]"]
+
+        self.assertIsNotNone(expression)
+        for module, name in (("main", "entraAllowLocalRedirect"), ("entra", "allowLocalRedirect")):
+            with self.subTest(parameter=name):
+                declared = compiled["parameters"] if module == "main" else entra["parameters"]
+                self.assertEqual((declared[name]["type"], declared[name]["defaultValue"]), ("bool", False))
+        self.assertEqual(module_parameter("entra", "allowLocalRedirect"), "[parameters('entraAllowLocalRedirect')]")
+        self.assertEqual(entra["variables"]["localRedirectUri"], "http://localhost:8080/")
+        for allow, expected in (
+            (False, ["[parameters('webUrl')]"]),
+            (True, ["[parameters('webUrl')]", "http://localhost:8080/"]),
+        ):
+            with self.subTest(allow_local_redirect=allow):
+                self.assertEqual(rendered(allow), expected)
+        # The MCP registration is not a single-page app and never gets a redirect URI.
+        self.assertNotIn("spa", entra["resources"]["mcpApp"]["properties"])
+
+    def test_both_registrations_trust_their_own_workload_identity_through_a_federated_credential(self):
         entra = templates()["entra"]
         credentials = {
             name: r
@@ -1600,20 +1661,25 @@ class EntraAndMcpContractTests(unittest.TestCase):
 
         self.assertEqual(sorted(credentials), ["mcpWorkloadCredential", "webWorkloadCredential"])
         self.assertEqual(entra["parameters"]["tokenExchangeAudience"]["defaultValue"], "api://AzureADTokenExchange")
-        for name, app in (("mcpWorkloadCredential", "mcp"), ("webWorkloadCredential", "web")):
+        # Each app trusts its own identity: the MCP server is reachable from the internet and never signs as the web app.
+        for name, app, parameter, output in (
+            ("mcpWorkloadCredential", "mcp", "mcpIdentityPrincipalId", "mcpIdentityPrincipalId"),
+            ("webWorkloadCredential", "web", "webIdentityPrincipalId", "identityPrincipalId"),
+        ):
             with self.subTest(credential=name):
                 properties = credentials[name]["properties"]
 
                 self.assertEqual(properties["name"], f"[format('{{0}}/workload-identity', variables('{app}UniqueName'))]")
                 self.assertEqual(properties["issuer"], "[format('{0}{1}/v2.0', environment().authentication.loginEndpoint, tenant().tenantId)]")
                 # The subject is the identity's object (principal) id, not its client id.
-                self.assertEqual(properties["subject"], "[parameters('identityPrincipalId')]")
+                self.assertEqual(properties["subject"], f"[parameters('{parameter}')]")
                 self.assertEqual(properties["audiences"], ["[parameters('tokenExchangeAudience')]"])
                 self.assertEqual(credentials[name]["dependsOn"], [f"{app}App"])
-        self.assertRegex(
-            module_parameter("entra", "identityPrincipalId"),
-            r"reference\(.+'foundation'\), '[\d-]+'\)\.outputs\.identityPrincipalId\.value",
-        )
+                self.assertRegex(
+                    module_parameter("entra", parameter),
+                    r"reference\(.+'foundation'\), '[\d-]+'\)\.outputs\." + output + r"\.value",
+                )
+        self.assertNotEqual(module_parameter("entra", "webIdentityPrincipalId"), module_parameter("entra", "mcpIdentityPrincipalId"))
         self.assertEqual(module_parameter("entra", "environmentName"), "[parameters('environmentName')]")
 
     def test_mcp_container_app_serves_remote_on_behalf_of_requests_with_its_entra_settings(self):
@@ -1635,10 +1701,10 @@ class EntraAndMcpContractTests(unittest.TestCase):
             with self.subTest(parameter=name):
                 value = module_parameter("container-app-mcp", name)
                 if expected is None:
-                    self.assertRegex(value, r"identityId\.value")
+                    self.assertRegex(value, r"\.outputs\.mcpIdentityId\.value")
                 else:
                     self.assertEqual(value, expected)
-        self.assertEqual(
+        self.assertNotEqual(
             module_parameter("container-app-mcp", "identityId"),
             module_parameter("container-app-web", "identityId"),
         )
@@ -1660,7 +1726,7 @@ class EntraAndMcpContractTests(unittest.TestCase):
         # Users of any directory call it: the issuer and the on-behalf-of exchange follow the tenant of each token.
         self.assertEqual(env["AzureAd__TenantId"], "organizations")
         self.assertRegex(env["AzureAd__ClientId"], entra_output("mcpClientId"))
-        self.assertRegex(env["AzureAd__ClientCredentials__0__ManagedIdentityClientId"], r"identityClientId\.value")
+        self.assertRegex(env["AzureAd__ClientCredentials__0__ManagedIdentityClientId"], r"\.outputs\.mcpIdentityClientId\.value")
         for name, value in (
             ("AzureAd__ClientCredentials__0__SourceType", "SignedAssertionFromManagedIdentity"),
             ("AzureAd__ClientCredentials__0__TokenExchangeUrl", "api://AzureADTokenExchange"),
@@ -1680,6 +1746,39 @@ class EntraAndMcpContractTests(unittest.TestCase):
             compiled["outputs"]["MCP_URL"]["value"],
             "[format('https://{0}/', reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-{0}', parameters('environmentName'))), 'Microsoft.Resources/deployments', 'container-app-mcp'), '2025-04-01').outputs.fqdn.value)]",
         )
+
+    def test_mcp_server_runs_as_its_own_identity_that_holds_only_acr_pull(self):
+        foundation, rbac = templates()["foundation"], templates()["rbac"]
+        identity = "resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{{0}}-{0}', parameters('namePrefix')))"
+        mcp_assignments = [
+            a for a in of_type(rbac, "Microsoft.Authorization/roleAssignments")
+            if a["properties"]["principalId"] == "[parameters('mcpIdentityPrincipalId')]"
+        ]
+
+        self.assertEqual(
+            sorted(r["name"] for r in of_type(foundation, "Microsoft.ManagedIdentity/userAssignedIdentities")),
+            ["[format('id-{0}-app', parameters('namePrefix'))]", "[format('id-{0}-mcp', parameters('namePrefix'))]"],
+        )
+        # The id, the client id (the setting the MCP server signs its assertion with) and the principal id (the subject
+        # of the federated credential) of each identity come from the same resource.
+        for kind, prefix in (("app", "identity"), ("mcp", "mcpIdentity")):
+            for suffix, expected in (
+                ("Id", f"[{identity.format(kind)}]"),
+                ("ClientId", f"[reference({identity.format(kind)}, '2023-01-31').clientId]"),
+                ("PrincipalId", f"[reference({identity.format(kind)}, '2023-01-31').principalId]"),
+            ):
+                with self.subTest(output=prefix + suffix):
+                    self.assertEqual(foundation["outputs"][prefix + suffix]["value"], expected)
+        # The MCP identity pulls its image and nothing else: no session store, no Foundry, no telemetry.
+        self.assertEqual([(scope_type(a), role_guid(a)) for a in mcp_assignments], [("Microsoft.ContainerRegistry/registries", BUILT_IN_ROLES["AcrPull"])])
+        self.assertIn("parameters('mcpIdentityId')", mcp_assignments[0]["name"])
+        # Only the modules that pull the image, sign the exchange or run the app are handed it.
+        for name, module in deployments().items():
+            with self.subTest(module=name):
+                mentions = "mcpIdentity" in json.dumps(module["properties"]["parameters"])
+
+                self.assertEqual(mentions, name in ("rbac", "entra", "container-app-mcp"))
+        self.assertNotIn("mcpIdentity", json.dumps(module_parameter("container-app-web", "env")))
 
     def test_main_outputs_carry_what_the_hooks_and_the_apps_read(self):
         compiled, _ = compile_main()
@@ -1718,19 +1817,35 @@ class EntraAndMcpContractTests(unittest.TestCase):
             "[format('api://{0}/{1}', reference('mcpCreated').appId, variables('mcpScopeValue'))]",
         )
 
-    def test_consent_hook_runs_after_provision_and_never_half_applies(self):
+    def test_consent_hook_runs_after_provision_skips_existing_grants_and_never_half_applies(self):
         script = ROOT / "scripts" / "hooks" / "postprovision.sh"
         text = script.read_text()
         compiled, _ = compile_main()
-        # A stand-in az: `ad sp show` and `ad app permission admin-consent` behave as AZ_MODE says and every call is logged.
+        # A stand-in az. `ad sp show` finds a service principal (tsv) or describes the one resource both apps request
+        # (json), `ad app show` lists what an app requests, `ad app permission list-grants` answers from AZ_GRANTED (apps
+        # with every grant) and AZ_PARTIAL (apps with one scope missing), and `admin-consent` behaves as AZ_MODE says.
+        # Every call is logged.
         stub = (
             "#!/usr/bin/env bash\n"
             'echo "$*" >> "$AZ_LOG"\n'
             'case "$1 $2 $3" in\n'
-            '  "ad sp show") [ "$AZ_MODE" = nosp ] && { echo "Resource does not exist" >&2; exit 1; }; echo sp-id; exit 0 ;;\n'
+            '  "ad sp show")\n'
+            '    [ "$AZ_MODE" = nosp ] && { echo "Resource does not exist" >&2; exit 1; }\n'
+            '    case "$*" in\n'
+            "      *tsv*) echo sp-id ;;\n"
+            '      *) echo \'{"app":"res-arm","id":"sp-arm","scopes":[{"id":"scope-1","value":"user_impersonation"},{"id":"scope-2","value":"Data.Read"}]}\' ;;\n'
+            "    esac\n"
+            "    exit 0 ;;\n"
+            '  "ad app show") echo \'[{"app":"res-arm","ids":["scope-1","scope-2"]}]\'; exit 0 ;;\n'
             '  "ad app permission")\n'
+            '    if [ "$4" = list-grants ]; then\n'
+            '      case " $AZ_GRANTED " in *" $6 "*) echo \'[{"resource":"sp-arm","scope":"user_impersonation Data.Read"}]\'; exit 0 ;; esac\n'
+            '      case " $AZ_PARTIAL " in *" $6 "*) echo \'[{"resource":"sp-arm","scope":"user_impersonation"}]\'; exit 0 ;; esac\n'
+            "      echo '[]'; exit 0\n"
+            "    fi\n"
             '    case "$AZ_MODE" in\n'
             '      denied) echo "Insufficient privileges to complete the operation." >&2; exit 1 ;;\n'
+            '      never) echo "Request_ResourceNotFound: not found" >&2; exit 1 ;;\n'
             '      flaky) [ -f "$AZ_STATE" ] || { touch "$AZ_STATE"; echo "Request_ResourceNotFound: not found" >&2; exit 1; } ;;\n'
             "    esac ;;\n"
             "esac\n"
@@ -1738,16 +1853,55 @@ class EntraAndMcpContractTests(unittest.TestCase):
         )
         web, mcp = "11111111-aaaa-4aaa-8aaa-111111111111", "22222222-bbbb-4bbb-8bbb-222222222222"
         consent = lambda app: f"ad app permission admin-consent --id {app}"
-        show = lambda app: f"ad sp show --id {app} --query id -o tsv"
+        # Calls as the log holds them up to their --query.
+        show = lambda app: f"ad sp show --id {app}"
+        reads = lambda app: [f"ad app show --id {app}", f"ad app permission list-grants --id {app}", show("res-arm")]
         manual = [f"az {consent(mcp)}", f"az {consent(web)}"]
-        # mode: (return code, az calls in order, strings stderr must hold)
+        # case: (az mode, apps with every grant, apps with a scope missing, return code, az calls in order, strings stderr
+        # must hold, strings stdout must hold)
         cases = {
-            "granted": (0, [show(mcp), show(web), consent(mcp), consent(web)], []),
-            "replication delay is waited out": (0, [show(mcp), show(web), consent(mcp), consent(mcp), consent(web)], ["not accepted yet"]),
-            "no Entra role": (1, [show(mcp), show(web), consent(mcp)], ["lack the Entra role", *manual]),
-            "service principal never appears": (1, [show(mcp)], ["still not visible", *manual]),
+            "nothing granted yet": (
+                "ok", (), (), 0,
+                [show(mcp), show(web), *reads(mcp), consent(mcp), *reads(web), consent(web)],
+                [], [f"consent granted for app {mcp}", f"consent granted for app {web}"],
+            ),
+            "every grant exists, so nothing is consented": (
+                "ok", (mcp, web), (), 0,
+                [show(mcp), show(web), *reads(mcp), *reads(web)],
+                [], [f"consent already granted for app {mcp}", f"consent already granted for app {web}"],
+            ),
+            "only the app without a grant is consented": (
+                "ok", (mcp,), (), 0,
+                [show(mcp), show(web), *reads(mcp), *reads(web), consent(web)],
+                [], [f"consent already granted for app {mcp}", f"consent granted for app {web}"],
+            ),
+            "a grant that misses a requested scope is completed": (
+                "ok", (web,), (mcp,), 0,
+                [show(mcp), show(web), *reads(mcp), consent(mcp), *reads(web)],
+                [], [f"consent granted for app {mcp}", f"consent already granted for app {web}"],
+            ),
+            "replication delay is waited out": (
+                "flaky", (), (), 0,
+                [show(mcp), show(web), *reads(mcp), consent(mcp), consent(mcp), *reads(web), consent(web)],
+                ["not accepted yet"], [],
+            ),
+            "no Entra role: the commands are printed and the deployment goes on": (
+                "denied", (), (), 0,
+                [show(mcp), show(web), *reads(mcp), consent(mcp)],
+                ["lack the Entra role", "goes on", *manual], [],
+            ),
+            "no Entra role, but an administrator consented earlier": (
+                "denied", (mcp, web), (), 0,
+                [show(mcp), show(web), *reads(mcp), *reads(web)],
+                [], [f"consent already granted for app {mcp}", f"consent already granted for app {web}"],
+            ),
+            "service principal never appears": ("nosp", (), (), 1, [show(mcp)], ["still not visible", *manual], []),
+            "consent keeps failing for another reason": (
+                "never", (), (), 1,
+                [show(mcp), show(web), *reads(mcp), consent(mcp)],
+                ["still fails", *manual], [],
+            ),
         }
-        modes = {"granted": "ok", "replication delay is waited out": "flaky", "no Entra role": "denied", "service principal never appears": "nosp"}
 
         for output in ("ENTRA_CLIENT_ID", "ENTRA_MCP_CLIENT_ID"):
             with self.subTest(reads=output):
@@ -1759,7 +1913,7 @@ class EntraAndMcpContractTests(unittest.TestCase):
             az = Path(directory) / "az"
             az.write_text(stub)
             az.chmod(0o755)
-            for name, (code, calls, messages) in cases.items():
+            for name, (mode, granted, partial, code, calls, stderr, stdout) in cases.items():
                 with self.subTest(case=name):
                     log, state = Path(directory) / "calls", Path(directory) / "state"
                     log.unlink(missing_ok=True)
@@ -1770,18 +1924,25 @@ class EntraAndMcpContractTests(unittest.TestCase):
                         path_prefix=directory,
                         AZ_LOG=str(log),
                         AZ_STATE=str(state),
-                        AZ_MODE=modes[name],
+                        AZ_MODE=mode,
+                        AZ_GRANTED=" ".join(granted),
+                        AZ_PARTIAL=" ".join(partial),
                         ENTRA_CLIENT_ID=web,
                         ENTRA_MCP_CLIENT_ID=mcp,
-                        CONSENT_WAIT_SECONDS="0" if modes[name] == "nosp" else "30",
+                        CONSENT_WAIT_SECONDS="0" if mode in ("nosp", "never") else "30",
                         POLL_INTERVAL_SECONDS="0",
                     )
 
                     self.assertEqual(result.returncode, code, result.stderr)
                     # Only one app is ever consented when the first grant fails: nothing is half applied.
-                    self.assertEqual(log.read_text().splitlines() if log.exists() else [], calls)
-                    for message in messages:
+                    self.assertEqual(
+                        [line.split(" --query")[0].split(" -o ")[0] for line in log.read_text().splitlines()] if log.exists() else [],
+                        calls,
+                    )
+                    for message in stderr:
                         self.assertIn(message, result.stderr)
+                    for message in stdout:
+                        self.assertIn(message.lower(), result.stdout.lower())
             for name in ("ENTRA_CLIENT_ID", "ENTRA_MCP_CLIENT_ID"):
                 with self.subTest(missing=name):
                     result = run_script(
@@ -1789,6 +1950,76 @@ class EntraAndMcpContractTests(unittest.TestCase):
                         path_prefix=directory,
                         drop=(name,),
                         **{other: "x" for other in ("ENTRA_CLIENT_ID", "ENTRA_MCP_CLIENT_ID") if other != name},
+                    )
+
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(name, result.stderr)
+
+    def test_predown_hook_deletes_the_activity_log_setting_once_and_tolerates_its_absence(self):
+        script = ROOT / "scripts" / "hooks" / "predown.sh"
+        compiled, _ = compile_main()
+        # A stand-in az: `show` and `delete` of a subscription diagnostic setting behave as AZ_MODE says, every call is logged.
+        stub = (
+            "#!/usr/bin/env bash\n"
+            'echo "$*" >> "$AZ_LOG"\n'
+            'case "$AZ_MODE $4" in\n'
+            '  "absent show") echo "ERROR: (ResourceNotFound) The diagnostic setting does not exist." >&2; exit 1 ;;\n'
+            '  "unreadable show") echo "ERROR: (AuthorizationFailed) The client does not have authorization." >&2; exit 1 ;;\n'
+            '  "undeletable delete") echo "ERROR: (Conflict) The setting is locked." >&2; exit 1 ;;\n'
+            "esac\n"
+            "exit 0\n"
+        )
+        subscription, environment = "11111111-1111-1111-1111-111111111111", "demo"
+        setting = f"diag-{environment}-activity"
+        call = lambda verb, *flags: f"monitor diagnostic-settings subscription {verb} --subscription {subscription} --name {setting}" + "".join(f" {flag}" for flag in flags)
+        # mode: (return code, az calls in order, strings stderr must hold, strings stdout must hold)
+        cases = {
+            "present": ("present", 0, [call("show", "--output none"), call("delete", "--yes")], [], ["Deleted"]),
+            "already gone": ("absent", 0, [call("show", "--output none")], [], ["already gone"]),
+            "cannot be read": ("unreadable", 1, [call("show", "--output none")], ["AuthorizationFailed"], []),
+            "cannot be deleted": ("undeletable", 1, [call("show", "--output none"), call("delete", "--yes")], ["Conflict"], []),
+        }
+
+        # The hook derives the setting's name the way main.bicep does and reads only values azd defines.
+        self.assertEqual(
+            module_parameter("subscription-monitoring", "diagnosticSettingName"),
+            "[format('diag-{0}-activity', variables('namePrefix'))]",
+        )
+        self.assertEqual(compiled["variables"]["namePrefix"], "[parameters('environmentName')]")
+        self.assertEqual(json.loads((ROOT / "infra" / "main.parameters.json").read_text())["parameters"]["environmentName"]["value"], "${AZURE_ENV_NAME}")
+        self.assertIn('setting="diag-${AZURE_ENV_NAME}-activity"', script.read_text())
+        self.assertEqual(subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True).returncode, 0)
+        with tempfile.TemporaryDirectory() as directory:
+            az = Path(directory) / "az"
+            az.write_text(stub)
+            az.chmod(0o755)
+            for name, (mode, code, calls, stderr, stdout) in cases.items():
+                with self.subTest(case=name):
+                    log = Path(directory) / "calls"
+                    log.unlink(missing_ok=True)
+
+                    result = run_script(
+                        "./scripts/hooks/predown.sh",
+                        path_prefix=directory,
+                        AZ_LOG=str(log),
+                        AZ_MODE=mode,
+                        AZURE_ENV_NAME=environment,
+                        AZURE_SUBSCRIPTION_ID=subscription,
+                    )
+
+                    self.assertEqual(result.returncode, code, result.stderr)
+                    self.assertEqual(log.read_text().splitlines() if log.exists() else [], calls)
+                    for message in stderr:
+                        self.assertIn(message, result.stderr)
+                    for message in stdout:
+                        self.assertIn(message, result.stdout)
+            for name in ("AZURE_ENV_NAME", "AZURE_SUBSCRIPTION_ID"):
+                with self.subTest(missing=name):
+                    result = run_script(
+                        "./scripts/hooks/predown.sh",
+                        path_prefix=directory,
+                        drop=(name,),
+                        **{other: "x" for other in ("AZURE_ENV_NAME", "AZURE_SUBSCRIPTION_ID") if other != name},
                     )
 
                     self.assertNotEqual(result.returncode, 0)
@@ -1933,6 +2164,24 @@ class ApplicationHealthModelContractTests(unittest.TestCase):
                     window = re.search(r"ago\((\d+)m\)", definition["queryText"])[1]
 
                     self.assertEqual(definition["timeGrain"], f"PT{window}M")
+
+    def test_agent_latency_thresholds_sit_above_every_task_budget_and_below_the_task_timeout(self):
+        # The signal is the p95 of the whole-Task span, so a normal Task of the longest kind must not trip it.
+        agent = (AGENT_DIR / "src" / "agent.py").read_text()
+        web_config = (ROOT / "src" / "web" / "app" / "config.py").read_text()
+        budgets = dict(re.findall(r'"(\w+)": (\d+)', re.search(r"^MODEL_SECONDS = \{([^}]*)\}", agent, re.MULTILINE)[1]))
+        timeout = int(re.search(r"^TASK_TIMEOUT_SECONDS = (\d+)", web_config, re.MULTILINE)[1])
+        rules = signal(app_entities()["hosted-agent"], "agent-task-latency")["evaluationRules"]
+        degraded, unhealthy = rules["degradedRule"]["threshold"], rules["unhealthyRule"]["threshold"]
+
+        self.assertEqual(sorted(budgets), ["design", "explain", "review"])
+        for task_type, budget in budgets.items():
+            with self.subTest(task_type=task_type):
+                self.assertGreater(degraded, int(budget) * 1000)
+        for name, threshold in (("degraded", degraded), ("unhealthy", unhealthy)):
+            with self.subTest(rule=name):
+                self.assertLess(threshold, timeout * 1000)
+        self.assertLess(degraded, unhealthy)
 
     def test_web_app_signals_read_all_workspace_telemetry_without_survey_or_database_filters(self):
         queries = {

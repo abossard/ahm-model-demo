@@ -152,6 +152,18 @@ test.describe("the interface speaks in questions and answers", () => {
     expect(found, "words of the code on screen").toEqual([]);
   });
 
+  test("an Apply that got no answer is told in plain words", async ({ page }) => {
+    const stub = await boot(page, SESSION_WITH_TASK(), `/?${MODEL_QUERY}&session=${SESSION_ID}&task=1`);
+    await expect(page.getByTestId("diff-result")).toBeVisible();
+    stub.applyReplies.push({ status: 504, body: "upstream request timeout" });
+    await page.getByTestId("change-select-c3").click();
+    await page.getByTestId("apply-button").click();
+    await page.getByTestId("apply-confirm").click();
+    await expect(page.getByTestId("apply-result")).toHaveAttribute("data-outcome", "unsure");
+    await expect(page.getByTestId("apply-result").getByTestId("technical-details")).toContainText("http_error");
+    expect(await offenders(page, "an Apply that got no answer"), "words of the code on screen").toEqual([]);
+  });
+
   test("what goes wrong is told in plain words, with the code kept to a small last line", async ({ page }) => {
     const stub = await boot(page);
     const found: string[] = [];

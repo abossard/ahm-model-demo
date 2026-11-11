@@ -28,11 +28,11 @@ export const TASK_TYPES: readonly TaskTypeInfo[] = [
 ];
 
 export const INSTRUCTION_MAX = 2000;
-const REPOSITORY_URL_MAX = 200;
 
 export const NO_DESIGN_MODEL = "There is no separate model to save a design in, so designing is not available here.";
 
-const GITHUB_REPOSITORY = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\.git)?\/?$/;
+// The rule of the web app (config.py) and the agent (clone.py): keep the three the same.
+const GITHUB_REPOSITORY = /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}(\.git)?\/?$/;
 
 export interface TaskDraft {
   readonly type: TaskType;
@@ -51,7 +51,7 @@ export interface TaskContext {
 export function repositoryProblem(url: string): string | null {
   const trimmed = url.trim();
   if (trimmed === "") return null;
-  return GITHUB_REPOSITORY.test(trimmed) && trimmed.length <= REPOSITORY_URL_MAX
+  return GITHUB_REPOSITORY.test(trimmed)
     ? null
     : "Enter a public GitHub repository, such as https://github.com/owner/repository.";
 }

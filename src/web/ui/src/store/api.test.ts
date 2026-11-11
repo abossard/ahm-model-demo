@@ -60,7 +60,7 @@ describe("failures", () => {
         JSON.stringify({ error: { code: "sdk_unavailable", message: "down", retryable: true, operationId: "op-1" } }),
         { status: 503, headers: { "x-request-id": "req-1" } },
       ),
-      expected: { code: "sdk_unavailable", message: "down", retryable: true, operationId: "op-1", requestId: "req-1" },
+      expected: { code: "sdk_unavailable", message: "down", retryable: true, operationId: "op-1", requestId: "req-1", status: 503 },
     },
     {
       name: "a body that is not an API error",
@@ -71,6 +71,7 @@ describe("failures", () => {
         retryable: true,
         operationId: "op-2",
         requestId: null,
+        status: 502,
       },
     },
   ])("turns $name into an ApiError", async ({ response, expected }) => {

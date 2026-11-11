@@ -5,7 +5,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from contracts import validate_task_result
-from grounding import INFERRED_SENTENCE
+from grounding import INFERRED, INFERRED_SENTENCE
+from plain import summary_faults
 from reduction import (
     LEAD_CHARS,
     QUOTE_CHARS,
@@ -22,6 +23,7 @@ from reduction import (
     reduce_result,
     reduction_notice,
 )
+from tools import RunRecord
 
 RESOURCE = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg/providers/Microsoft.Web/sites/web-app"
 
@@ -169,6 +171,30 @@ class ReduceTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in reduced["changes"]], ["c1"])
         self.assertTrue(reduced["summary"].endswith(INFERRED_SENTENCE))
+
+    def test_a_summary_repair_shortens_the_model_summary_first_so_the_sentence_survives(self):
+        def problems_of(result):
+            plain = INFERRED.search(result["summary"]) and not summary_faults(result["summary"], RunRecord())
+            return [] if plain else ["summary: no repository was read, or it is not plain"]
+
+        cases = [
+            ("a long summary", "A long summary of the model. " * 30, []),
+            ("a long summary and a change taken out", "A long summary of the model. " * 30, ["c2"]),
+            ("a summary that fills the room", "x" * 330, []),
+            ("a short summary", "Proposes the model.", []),
+            ("no summary", "", []),
+        ]
+        for label, summary, bad in cases:
+            with self.subTest(label):
+                result = diff([change(number) for number in range(1, 5)], summary=summary)
+
+                reduced = reduce_result(result, lambda candidate: problems_of(candidate) + flagging(*bad)(candidate), kind="diff", asked="", why="the proposal was rejected 3 times")
+
+                self.assertEqual([item["id"] for item in reduced["changes"]], [f"c{number}" for number in range(1, 5) if f"c{number}" not in bad])
+                self.assertLessEqual(len(reduced["summary"]), SUMMARY_CHARS)
+                self.assertTrue(reduced["summary"].endswith(INFERRED_SENTENCE))
+                self.assertEqual(summary_faults(reduced["summary"], RunRecord()), [])
+                self.assertEqual(validate_task_result(reduced), [])
 
     def test_the_summary_stays_within_its_limit_whatever_the_model_wrote(self):
         reduced = self.reduce(diff([change(1)], summary="Long. " * 200), [])

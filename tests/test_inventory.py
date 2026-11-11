@@ -79,14 +79,22 @@ class DefaultTests(unittest.TestCase):
 
 
 class SelectionTests(unittest.TestCase):
-    def test_a_request_without_a_selector_opens_the_apps_model_for_the_home_directory_only(self):
+    def test_a_request_without_a_selector_opens_the_apps_model_for_a_home_directory_user_who_can_read_it(self):
         cases = [
-            ("the home directory", HOME, (HOME, None)),
-            ("another directory", None, (None, "unknown_model")),
+            ("the home directory, with a role", HOME, True, (HOME, None)),
+            ("the home directory, without a role", HOME, False, (None, "unknown_model")),
+            ("another directory", None, True, (None, "unknown_model")),
         ]
-        for label, default, expected in cases:
+        for label, default, readable, expected in cases:
             with self.subTest(label=label):
-                self.assertEqual(inventory.resolve_selection({}, lambda *_: True, default), expected)
+                asked = []
+
+                def model_exists(*selection):
+                    asked.append(selection)
+                    return readable
+
+                self.assertEqual(inventory.resolve_selection({}, model_exists, default), expected)
+                self.assertEqual(asked, [HOME] if default else [])
 
     def test_a_partial_selector_borrows_the_apps_subscription_for_the_home_directory_only(self):
         params = {"model": "hm-a", "resourceGroup": "rg-a"}

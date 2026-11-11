@@ -899,6 +899,33 @@ class DelegatedAccessTests(EntraCase):
                             self.assertIsNone(challenge)
                         self.assertEqual(asyncio.run(self.store.list_tasks(ADA, sid)), [])
 
+    def test_an_exchange_that_cannot_run_is_a_json_503_on_every_azure_route_and_for_every_directory(self):
+        named = f"?model={MODEL}&resourceGroup={GROUP}&subscription={SUB}"
+        callers = [  # a user of the apps own directory falls back to the apps model when the catalog cannot be read: no error there
+            ("the apps own directory, default model", bearer(mint(ADA)), "", []),
+            ("the apps own directory, named model", bearer(mint(ADA)), named, []),
+            ("another directory, named model", bearer(other_directory()), named, [("the catalog", "GET", "/api/health-models", None)]),
+        ]
+        with TestClient(self.module.app) as client:
+            for name in ("query_models", "has_model", "client", "read_model"):
+                setattr(self.health, name, self.raiser(ServiceRequestError("SECRET down")))
+            for who, headers, selector, catalog in callers:
+                sid = client.post("/api/sessions", json={}, headers=headers).json()["id"]
+                routes = catalog + [
+                    ("the model", "GET", f"/api/health-model{selector}", None),
+                    ("the live stream", "GET", f"/api/health-model/stream{selector}", None),
+                    ("an entity", "GET", f"/api/entities/orders-api{selector}", None),
+                    ("the timeline", "GET", f"/api/timeline{selector}", None),
+                    ("a health report", "POST", f"/api/entities/orders-api/health-reports{selector}", REPORT),
+                    ("a task", "POST", f"/api/sessions/{sid}/tasks", {"type": "review", "target": TARGET}),
+                ]
+                for route, method, path, body in routes:
+                    with self.subTest(caller=who, route=route), self.assertLogs("ahm-demo", level="WARNING"):
+                        response = self.call(client, method, path, None, headers=headers, **({"json": body} if body else {}))
+
+                        self.assert_error(response, 503, "health_model_unavailable", True)
+                        self.assertNotIn("SECRET", response.text)
+
     def raiser(self, error):
         def raise_it(*args, **kwargs):
             raise error

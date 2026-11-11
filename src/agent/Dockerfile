@@ -8,7 +8,7 @@ ENV PYTHONNOUSERSITE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:${PATH}"
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates git jq \
+ && apt-get install -y --no-install-recommends ca-certificates jq \
  && rm -rf /var/lib/apt/lists/*
 RUN useradd --uid 10001 --user-group --create-home --home-dir /home/session --shell /bin/bash session
 WORKDIR /app
@@ -17,9 +17,6 @@ COPY pyproject.toml uv.lock .python-version ./
 RUN UV_PYTHON_DOWNLOADS=never UV_COMPILE_BYTECODE=1 uv sync --frozen --no-dev --no-cache
 COPY src ./src
 COPY skills ./skills
-# git is kept off the shell's path: only the clone_repository tool runs it, from here (src/clone.py)
-# /usr/lib/git-core/git points at the moved binary, so git still finds its own sub-commands
-RUN mkdir -p /opt/git && mv /usr/bin/git /opt/git/git && ln -sf /opt/git/git /usr/lib/git-core/git
 USER session
 EXPOSE 8088
 CMD ["python", "src/main.py"]

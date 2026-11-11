@@ -25,6 +25,9 @@ param webImage string = ''
 @description('Let the Azure CLI request tokens for the web API without a browser sign-in of the app, for unattended checks as a signed-in developer. Any user in the tenant can then script the API as themselves, so it stays off by default. The MCP scope is never opened to it.')
 param entraAllowAzureCli bool = false
 
+@description('Add http://localhost:8080/ as a redirect URI of the web app registration, for signing in to a local server. Off by default: the registration is multitenant and reachable from the internet.')
+param entraAllowLocalRedirect bool = false
+
 @description('Directory (tenant) ids, separated by commas, whose users may sign in to the web app. Empty lets every Microsoft Entra directory in, and the directory this app belongs to is always allowed. A personal Microsoft account signs in through a directory it belongs to, so it is let in by that directory\'s id.')
 param entraAllowedTenants string = ''
 
@@ -115,8 +118,10 @@ module entra 'modules/entra.bicep' = {
   params: {
     environmentName: environmentName
     webUrl: 'https://${webFqdn}/'
-    identityPrincipalId: foundation.outputs.identityPrincipalId
+    webIdentityPrincipalId: foundation.outputs.identityPrincipalId
+    mcpIdentityPrincipalId: foundation.outputs.mcpIdentityPrincipalId
     allowAzureCli: entraAllowAzureCli
+    allowLocalRedirect: entraAllowLocalRedirect
   }
 }
 
@@ -130,6 +135,8 @@ module rbac 'modules/rbac.bicep' = {
     applicationInsightsName: foundation.outputs.applicationInsightsName
     identityId: foundation.outputs.identityId
     identityPrincipalId: foundation.outputs.identityPrincipalId
+    mcpIdentityId: foundation.outputs.mcpIdentityId
+    mcpIdentityPrincipalId: foundation.outputs.mcpIdentityPrincipalId
   }
 }
 
@@ -237,6 +244,7 @@ module web 'modules/container-app.bicep' = {
 
 // The Azure tools of the agent. It exchanges each caller's token for ARM and Log Analytics tokens itself (on behalf
 // of the user), so it needs no Azure role. External ingress because the hosted agent calls it from Foundry's network.
+// It is internet-facing and built from a branch, so it runs as its own identity (AcrPull only), not the web app's.
 // The flags that make it read-only and pick its tools live in src/mcp/Dockerfile.
 module mcp 'modules/container-app.bicep' = {
   scope: rg
@@ -246,7 +254,7 @@ module mcp 'modules/container-app.bicep' = {
     location: location
     serviceName: 'mcp'
     environmentId: foundation.outputs.environmentId
-    identityId: foundation.outputs.identityId
+    identityId: foundation.outputs.mcpIdentityId
     registryLoginServer: rbac.outputs.registryLoginServer
     image: mcpImage
     placeholderImage: placeholderImage
@@ -276,7 +284,7 @@ module mcp 'modules/container-app.bicep' = {
       }
       {
         name: 'AzureAd__ClientCredentials__0__ManagedIdentityClientId'
-        value: foundation.outputs.identityClientId
+        value: foundation.outputs.mcpIdentityClientId
       }
       {
         name: 'AzureAd__ClientCredentials__0__TokenExchangeUrl'

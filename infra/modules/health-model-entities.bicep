@@ -343,6 +343,10 @@ resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
 // Bound to the project, which Resource Health does not cover. The signals read the web app's own
 // foundry.agent.* spans; the web app is the only caller of the hosted agent. An idle window leaves the
 // failure count at 0 (Healthy) and drops the latency row, so latency reads Unknown instead of a healthy zero.
+// The latency signal measures how long a whole Task run takes (foundry.agent.respond, one span per Task). A normal
+// Task takes minutes: the agent budgets 240 s (explain), 360 s (review) and 420 s (design) and the web app fails a
+// Task at 600 s. So the thresholds sit above the budgets: Degraded above 450 s, Unhealthy above 570 s, close to the
+// timeout. An inline signal has no description property, so this comment and the display name say what it measures.
 resource hostedAgent 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
   name: 'hosted-agent'
@@ -389,7 +393,7 @@ resource hostedAgent 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pre
           }
           {
             name: 'agent-task-latency'
-            displayName: 'Agent task latency (p95)'
+            displayName: 'Agent Task duration (p95, whole Task)'
             signalKind: 'LogAnalyticsQuery'
             queryText: 'AppDependencies | where TimeGenerated > ago(15m) | where Name startswith "foundry.agent." | summarize Value = percentile(DurationMs, 95) | where not(isnan(Value))'
             valueColumnName: 'Value'
@@ -399,11 +403,11 @@ resource hostedAgent 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pre
             evaluationRules: {
               degradedRule: {
                 operator: 'GreaterThan'
-                threshold: 120000
+                threshold: 450000
               }
               unhealthyRule: {
                 operator: 'GreaterThan'
-                threshold: 300000
+                threshold: 570000
               }
             }
           }

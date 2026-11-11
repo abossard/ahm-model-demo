@@ -4,7 +4,9 @@
 ARG AZMCP_SDK=10.0.403
 FROM mcr.microsoft.com/dotnet/sdk:${AZMCP_SDK} AS azmcp
 ARG AZMCP_REPO=https://github.com/abossard/mcp.git
-ARG AZMCP_REF=abossard/healthmodels-inspect
+# A commit, not a branch: a push to the branch abossard/healthmodels-inspect must not change a deployed image. To move
+# to a newer head, set the new commit here and check AZMCP_SDK against its global.json.
+ARG AZMCP_REF=b844ad32aa998647ede5368e30512d3901e37770
 WORKDIR /src
 RUN git init -q . \
  && git fetch -q --depth 1 "$AZMCP_REPO" "$AZMCP_REF" \

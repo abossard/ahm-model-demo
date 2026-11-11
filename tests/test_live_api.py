@@ -166,6 +166,29 @@ class LiveStreamTests(base.ApiCase):
 
                     self.assertEqual((response.status_code, response.json()["error"]["code"]), (status, code))
 
+    def test_a_user_without_a_role_on_the_default_model_gets_nothing_of_it_from_a_warm_hub_on_any_route(self):
+        install(self)
+        with Server(self.module.app) as client, self.open(client) as keeper:
+            next(frames(keeper.iter_lines()))
+            sid = client.post("/api/sessions", json={}).json()["id"]
+            self.health.deny(base.SUB, base.GROUP, base.MODEL)
+            routes = [
+                ("the model", "GET", "/api/health-model", {}),
+                ("the live stream", "GET", "/api/health-model/stream", {}),
+                ("the timeline", "GET", "/api/timeline", {}),
+                ("the history of an entity", "GET", "/api/entities/orders-api", {}),
+                ("a health report", "POST", "/api/entities/orders-api/health-reports", {"json": REPORT}),
+                ("a task", "POST", f"/api/sessions/{sid}/tasks", {"json": {"type": "review", "target": base.TARGET}}),
+            ]
+            for label, method, path, arguments in routes:
+                with self.subTest(label), client.stream(method, path, **arguments) as response:
+                    code = None
+                    if response.status_code >= 400:
+                        response.read()
+                        code = response.json()["error"]["code"]
+
+                    self.assertEqual((response.status_code, code), (400, "unknown_model"))
+
     def test_too_many_models_watched_is_a_503_the_ui_can_fall_back_from(self):
         install(self, max_hubs=0)
         with Server(self.module.app) as client:

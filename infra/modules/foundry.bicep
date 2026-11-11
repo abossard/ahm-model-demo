@@ -47,7 +47,6 @@ var egressAllowedHosts = [
   '${accountName}.cognitiveservices.azure.com'
   webFqdn
   mcpFqdn
-  'github.com'
   'codeload.github.com'
 ]
 
@@ -103,7 +102,7 @@ resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2026-
       name: modelName
       version: modelVersion
     }
-    versionUpgradeOption: 'NoAutoUpgrade'
+    versionUpgradeOption: 'OnceCurrentVersionExpired'
   }
 }
 

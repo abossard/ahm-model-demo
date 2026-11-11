@@ -133,6 +133,25 @@ describe("layoutSwimlanes, lanes", () => {
     expect(layout.lanes.map((lane) => lane.kind)).toEqual(["root", "flows", "systems", "resources"]);
   });
 
+  const tree = (...pairs: readonly (readonly [string, string])[]): Model => {
+    const names = [...new Set(pairs.flat())];
+    const entities: Entity[] = names.map((name) => ({ name, displayName: name, healthState: "Healthy", impact: "Standard", canvasPosition: null, discoveredBy: null, parents: [], children: [], unlinked: false, latestEvaluationAt: null, latestTransitionAt: null, signals: [], report: { eligible: true, signalName: null } }));
+    return { entities, relationships: pairs.map(([parent, child]) => ({ name: `${parent}-${child}`, displayName: null, parentEntityName: parent, childEntityName: child })) };
+  };
+
+  it.each([
+    ["one lane under a chip", tree(["r", "p"], ["p", "a"], ["p", "b"]), ["root", "flows"]],
+    ["two lanes under a chip", tree(["r", "p"], ["p", "q"], ["q", "a"], ["q", "b"]), ["root", "flows"]],
+  ] as const)("draws no lane that a chip folded away, and every card and chip is in a lane that is there: %s", (_name, model, kinds) => {
+    const layout = lay(model, { foldAbove: 1 });
+    expect(layout.folds.length).toBeGreaterThan(0);
+    expect(layout.lanes.map((lane) => lane.kind)).toEqual(kinds);
+    for (const lane of layout.lanes) for (const value of [lane.rect.x, lane.rect.y, lane.rect.width, lane.rect.height]) expect(Number.isFinite(value), lane.kind).toBe(true);
+    for (const thing of [...layout.cards, ...layout.folds]) expect(layout.lanes[thing.lane], thing.id).toBeDefined();
+    expect(Number.isFinite(layout.bounds.height)).toBe(true);
+    expect(layout.bounds.height).toBeGreaterThanOrEqual(Math.max(...layout.lanes.map((lane) => lane.rect.y + lane.rect.height)));
+  });
+
   it("lists the cards lane by lane, row by row, left to right", () => {
     const layout = lay(incidentModel());
     const keys = layout.cards.map((card) => [card.lane, card.row, card.rect.x]);

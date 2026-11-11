@@ -191,6 +191,7 @@ class SessionRouteTests(ApiCase):
             ("title not text", {"json": {"title": 5}}, 400, "invalid_title"),
             ("title only blanks", {"json": {"title": "   "}}, 400, "invalid_title"),
             ("title too long", {"json": {"title": "x" * 121}}, 400, "invalid_title"),
+            ("title with a lone surrogate", {"content": json.dumps({"title": "half \ud83d"}).encode(), "headers": {"content-type": "application/json"}}, 400, "invalid_title"),
             ("not json content type", {"content": b"{}", "headers": {"content-type": "text/plain"}}, 415, "json_required"),
             ("invalid json", {"content": b"{oops", "headers": {"content-type": "application/json"}}, 400, "invalid_json"),
             ("json array", {"content": b"[]", "headers": {"content-type": "application/json"}}, 400, "invalid_json"),
@@ -317,6 +318,24 @@ class TaskValidationTests(ApiCase):
             self.assertEqual(response.json()["error"]["code"], code)
         return response
 
+    def test_an_instruction_with_a_lone_surrogate_is_refused_before_anything_is_stored(self):
+        bodies = [
+            ("a review", {"type": "review", "target": TARGET}),
+            ("a design", {"type": "design", "workload": {"resourceGroup": GROUP}}),
+        ]
+        with TestClient(self.module.app) as client:
+            sid = self.new_session(client)
+            for label, body in bodies:
+                with self.subTest(label):
+                    response = client.post(
+                        f"/api/sessions/{sid}/tasks",
+                        content=json.dumps({**body, "instruction": "half \ud83d"}).encode(),
+                        headers={"content-type": "application/json"},
+                    )
+
+                    self.assertEqual((response.status_code, response.json()["error"]["code"]), (400, "invalid_instruction"))
+            self.assertEqual(client.get(f"/api/sessions/{sid}").json()["tasks"], [])
+
     def test_every_task_request_rule(self):
         long_ok, long_bad = "x" * 2000, "x" * 2001
         cases = [
@@ -365,11 +384,13 @@ class TaskValidationTests(ApiCase):
             ("model of one character", {"type": "review", "target": {**TARGET, "name": "m"}}, 400, "unknown_model"),
             ("model starting with a hyphen", {"type": "review", "target": {**TARGET, "name": "-hm"}}, 400, "unknown_model"),
         ]
-        for url in ("https://github.com/o/r", "https://github.com/o/r.git", "https://github.com/o-1/r_x.y/", ""):
+        for url in ("https://github.com/o/r", "https://github.com/o/r.git", "https://github.com/o-1/r_x.y/", "https://github.com/9/_r", ""):
             cases.append((f"design repository {url!r}", {"type": "design", "workload": {"resourceGroup": GROUP, "repositoryUrl": url}}, 202, None))
         for url in ("http://github.com/o/r", "https://gitlab.com/o/r", "https://github.com/o", "https://github.com/o/r?x=1",
                     "https://github.com/o/r; rm -rf /", "https://github.com/o/r$(id)", "git@github.com:o/r.git", "https://github.com/o/r/tree/main",
-                    "https://github.com.evil.example/o/r", "https://github.com/o/r\nnext", "https://github.com/o/r\n", "https://github.com/o/r.git\n", 5):
+                    "https://github.com.evil.example/o/r", "https://github.com/o/r\nnext", "https://github.com/o/r\n", "https://github.com/o/r.git\n", 5,
+                    "https://github.com/-o/r", "https://github.com/o_1/r", "https://github.com/o.1/r", "https://github.com/o/.r", "https://github.com/o/-r",
+                    "https://github.com/o/.git", "https://github.com/ o/r", " https://github.com/o/r"):
             cases.append((f"design repository {url!r}", {"type": "design", "workload": {"resourceGroup": GROUP, "repositoryUrl": url}}, 400, "invalid_repository_url"))
 
         for label, body, status, code in cases:
@@ -1363,12 +1384,14 @@ class BodyLimitTests(ApiCase):
 
         self.assertEqual(seen, ["lifespan"])
 
-    def test_the_repository_url_may_have_at_most_200_characters(self):
-        prefix = "https://github.com/o/"
+    def test_the_repository_url_follows_the_limits_of_the_address_the_agent_clones(self):
         cases = [
-            ("exactly 200", prefix + "r" * (200 - len(prefix)), 202),
-            ("201", prefix + "r" * (201 - len(prefix)), 400),
-            ("very long", prefix + "r" * 5000, 400),
+            ("an owner of 39 characters", f"https://github.com/{'o' * 39}/r", 202),
+            ("an owner of 40 characters", f"https://github.com/{'o' * 40}/r", 400),
+            ("a repository of 100 characters", f"https://github.com/o/{'r' * 100}", 202),
+            ("a repository of 100 characters and .git", f"https://github.com/o/{'r' * 100}.git/", 202),
+            ("a repository of 101 characters", f"https://github.com/o/{'r' * 101}", 400),
+            ("very long", f"https://github.com/o/{'r' * 5000}", 400),
         ]
         for label, url, status in cases:
             with self.subTest(label=label):
@@ -1380,7 +1403,9 @@ class BodyLimitTests(ApiCase):
 
                 self.assertEqual(response.status_code, status)
                 if status == 400:
-                    self.assertEqual(response.json()["error"]["code"], "invalid_repository_url")
+                    error = response.json()["error"]
+                    self.assertEqual(error["code"], "invalid_repository_url")
+                    self.assertEqual(error["message"], "Enter a public GitHub repository, such as https://github.com/owner/repository.")
 
 
 class MalformedInputTests(ApiCase):

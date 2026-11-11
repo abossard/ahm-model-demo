@@ -190,6 +190,18 @@ describe("events", () => {
     expect(data.now).toBe(t);
   });
 
+  it.each([
+    { name: "a recent one stays", earlier: "2026-11-11T10:00:00.000Z", held: 2 },
+    { name: "an old one is dropped", earlier: "2026-11-11T09:50:00.000Z", held: 1 },
+  ])("the changes to the timeline of the last minutes are kept for the next answer: $name", ({ earlier, held }) => {
+    const change = (at: string) => ({ kind: "delta" as const, id: at, delta: { observedAt: at, timeline: { transitions: [{ entity: "ss", t: Date.parse(at), from: 1 as const, to: 3 as const, reason: null }] } } });
+
+    emit(change(earlier));
+    emit(change("2026-11-11T10:00:30.000Z"));
+
+    expect(useStore.getState().timelineHeld).toHaveLength(held);
+  });
+
   it("remembers how far the server's clock is from the browser's", () => {
     vi.setSystemTime(Date.parse("2026-11-11T10:00:00.000Z"));
 

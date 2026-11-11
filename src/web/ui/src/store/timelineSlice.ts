@@ -7,7 +7,9 @@ import {
   type TimelineData,
   type TimelineResponse,
 } from "../model/timeline";
+import type { LiveTimeline } from "../model/live";
 import { batchEntities } from "../model/timelineIncidents";
+import { applyTimelineDelta, stateCode } from "../model/timelineLive";
 import { entityOfKey, rootKeys, type RowOrder } from "../model/timelineRows";
 import { DAY, MINUTE, clampView, presetView, type Bounds, type View } from "../model/timelineScale";
 import { timelineFromSearch } from "../model/timelineUrl";
@@ -56,6 +58,13 @@ export interface TimelineState {
   readonly timelineFollow: boolean;
   /** What is shown was read from the browser's cache and the network has not answered yet. */
   readonly timelineStale: boolean;
+  /** The live changes of the last minutes: they are applied to every answer of the network, which may not have them. */
+  readonly timelineHeld: readonly HeldTimeline[];
+}
+
+export interface HeldTimeline {
+  readonly timeline: LiveTimeline;
+  readonly observed: number;
 }
 
 export interface TimelineActions {
@@ -82,7 +91,8 @@ export interface TimelineActions {
 }
 
 let overviewRequest: AbortController | null = null;
-const signalRequests = new Set<AbortController>();
+/** The signal requests in flight, with the entities each one reads. */
+const signalRequests = new Map<AbortController, readonly string[]>();
 let generation = 0;
 let overviewCache: OverviewCache | null | undefined;
 
@@ -94,10 +104,19 @@ export function setOverviewCache(cache: OverviewCache | null): void {
 const cacheKey = (selected: { readonly subscriptionId: string; readonly resourceGroup: string; readonly name: string } | null): string =>
   selected ? `${selected.subscriptionId}/${selected.resourceGroup}/${selected.name}`.toLowerCase() : "";
 
-/** Cancels every request the timeline has in flight: the view it was made for has moved on. */
+/** Cancels every request the timeline has in flight: the model it was made for is gone. */
 export function cancelTimelineSignals(): void {
-  for (const request of signalRequests) request.abort();
+  for (const request of signalRequests.keys()) request.abort();
   signalRequests.clear();
+}
+
+/** Cancels the requests none of whose entities shows any more; one that reads an entity still shown is left to finish. */
+export function cancelUnwantedSignals(wanted: ReadonlySet<string>): void {
+  for (const [request, names] of signalRequests) {
+    if (names.some((name) => wanted.has(name))) continue;
+    request.abort();
+    signalRequests.delete(request);
+  }
 }
 
 /** The oldest instant any entity's history starts at: the real beginning of "all". */
@@ -163,6 +182,7 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
   timelinePinned: null,
   timelineFollow: true,
   timelineStale: false,
+  timelineHeld: [],
 
   openTimeline: () => set({ timelineOpen: true }),
   closeTimeline: () => {
@@ -211,6 +231,7 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
       timelineExpanded: [],
       timelinePinned: null,
       timelineStale: false,
+      timelineHeld: [],
     });
   },
 
@@ -245,7 +266,10 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
     }
     if (mine !== generation || get().selected !== selected) return;
     const stale = get().timelineStale;
-    const data = mergeResponse(stale ? { ...get().timelineData, states: {}, series: {} } : get().timelineData, response);
+    const answered = mergeResponse(stale ? { ...get().timelineData, states: {}, series: {} } : get().timelineData, response);
+    const shown = get().model;
+    const current = new Map((shown.kind === "success" ? shown.value.entities : []).map((entity) => [entity.name, stateCode(entity.healthState)]));
+    const data = get().timelineHeld.reduce((held, item) => applyTimelineDelta(held, item.timeline, item.observed, current), answered);
     const view = get().timelineView;
     const bounds = timelineBounds(data, now);
     // A view that came from the cache ends where the cache did: begin again from now.
@@ -265,7 +289,7 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
     const { selected, timelineData } = get();
     const mine = generation;
     const request = new AbortController();
-    signalRequests.add(request);
+    signalRequests.set(request, names);
     set((state) => ({ timelineLoading: [...new Set([...state.timelineLoading, ...names])] }));
     const settled = (): void => {
       signalRequests.delete(request);
@@ -286,6 +310,8 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
   },
 
   refreshTimeline: async () => {
+    // A timeline that is closed holds nothing worth reading again: it is read afresh when it opens.
+    if (!get().timelineOpen) return;
     await get().loadTimelineOverview();
     const { timelineExpanded, timelineData } = get();
     const withSignals = new Set(timelineData.entities.filter((entity) => entity.signals.length > 0).map((entity) => entity.name));

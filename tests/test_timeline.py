@@ -498,6 +498,31 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(len(listing), 1)
 
 
+class TailTests(unittest.TestCase):
+    def test_an_entity_that_is_gone_adds_nothing_and_does_not_fail_the_others_but_other_errors_do(self):
+        moved = {"occurredAt": stamp(1), "previousState": "Healthy", "newState": "Degraded"}
+        since = {"api": timeline.to_ms(stamp(60)), "db": timeline.to_ms(stamp(60))}
+        cases = [
+            ("a 404 on the history of one entity", {("states", "db", None): azure_error(404)}, ["api"], None),
+            ("a 404 on the annotations of one entity", {("annotations", "db", None): azure_error(404)}, ["api"], None),
+            ("a 429", {("states", "db", None): azure_error(429)}, None, 429),
+            ("a 500", {("states", "db", None): azure_error(500)}, None, 500),
+            ("a 403", {("states", "db", None): azure_error(403)}, None, 403),
+        ]
+        for label, errors, rows_of, failed_with in cases:
+            with self.subTest(label):
+                backend = model(pages={("states", "api", None): [{"history": [moved]}]}, errors=errors)
+
+                if failed_with:
+                    with self.assertRaises(HttpResponseError) as raised:
+                        reader().read_tail(backend, SELECTION, since, ["db"])
+                    self.assertEqual(raised.exception.status_code, failed_with)
+                else:
+                    found = reader().read_tail(backend, SELECTION, since, ["db"])
+                    self.assertEqual([row["entity"] for row in found["transitions"]], rows_of)
+                    self.assertEqual(found["annotations"], [])
+
+
 class TimelineApiTests(base.ApiCase):
     def setUp(self):
         super().setUp()

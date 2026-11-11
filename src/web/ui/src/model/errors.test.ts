@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   SIGN_IN_ENDED,
   accessMessage,
+  applyMayHaveWritten,
+  applyUnsure,
   forbiddenFor,
   historyFailure,
   launchFailure,
@@ -178,6 +180,37 @@ describe("forbiddenFor", () => {
 
   it("says this health model when it is not told which", () => {
     expect(forbiddenFor("browse").message).toContain("read this health model");
+  });
+});
+
+describe("applyMayHaveWritten", () => {
+  it.each([
+    { name: "no answer", status: undefined, expected: true },
+    { name: "a 500", status: 500, expected: true },
+    { name: "a 502", status: 502, expected: true },
+    { name: "a 503", status: 503, expected: true },
+    { name: "a 504 from the ingress", status: 504, expected: true },
+    { name: "a 400", status: 400, expected: false },
+    { name: "a 401", status: 401, expected: false },
+    { name: "a 403", status: 403, expected: false },
+    { name: "a 404", status: 404, expected: false },
+    { name: "a 409", status: 409, expected: false },
+  ])("is $expected after $name", ({ status, expected }) => {
+    expect(applyMayHaveWritten({ ...error("any", false), ...(status === undefined ? {} : { status }) })).toBe(expected);
+  });
+});
+
+describe("applyUnsure", () => {
+  it.each([
+    { checking: true, words: ["changes to hm-x", "may have been applied", "It is checking which ones."], not: ["marked Applied"] },
+    { checking: false, words: ["changes to hm-x", "may have been applied", "marked Applied were written", "may still be writing it"], not: ["is checking"] },
+  ])("says what may have happened, and what the app is doing about it, when checking is $checking", ({ checking, words, not }) => {
+    const shown = applyUnsure("hm-x", checking);
+    expect(shown.title).toBe("Some changes may have been written");
+    for (const word of words) expect(shown.message).toContain(word);
+    for (const word of not) expect(shown.message).not.toContain(word);
+    expect(shown.message).not.toMatch(/nothing was changed/i);
+    expect(shown.action).toBeNull();
   });
 });
 

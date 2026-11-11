@@ -18,6 +18,12 @@ param identityId string
 @description('Principal ID of the workload user-assigned identity.')
 param identityPrincipalId string
 
+@description('Resource ID of the MCP server user-assigned identity.')
+param mcpIdentityId string
+
+@description('Principal ID of the MCP server user-assigned identity. It only pulls its image.')
+param mcpIdentityPrincipalId string
+
 resource registry 'Microsoft.ContainerRegistry/registries@2025-11-01' existing = {
   name: registryName
 }
@@ -45,6 +51,19 @@ resource acrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(registry.id, identityId, 'AcrPull')
   properties: {
     principalId: identityPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+    )
+  }
+}
+
+resource mcpAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: registry
+  name: guid(registry.id, mcpIdentityId, 'AcrPull')
+  properties: {
+    principalId: mcpIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',

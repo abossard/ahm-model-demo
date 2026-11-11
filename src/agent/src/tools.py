@@ -327,13 +327,14 @@ async def run_command(command: str, folder: Path, timeout_seconds: int) -> Shell
     )
     capture = Capture()
     reader = asyncio.create_task(_drain(process.stdout, capture))
+    exit_code: int | None = None
     try:
-        await asyncio.wait_for(process.wait(), timeout_seconds)
-        exit_code: int | None = process.returncode
-    except TimeoutError:
-        exit_code = None
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(process.wait(), timeout_seconds)
+            exit_code = process.returncode
+    finally:
         await _kill_run(process, run_id)
-        await process.wait()
+    await process.wait()
     done, _ = await asyncio.wait({reader}, timeout=DRAIN_SECONDS)
     if not done:
         await _kill_run(process, run_id)
@@ -366,10 +367,10 @@ def read_environs() -> dict[int, bytes]:
 
 
 async def _kill_run(process: asyncio.subprocess.Process, run_id: str) -> None:
-    """Kill the process group, then whatever still carries the run marker, which also finds setsid children."""
-    if process.returncode is None:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
+    """Kill the process group, also when its leader is gone (a background job outlives it), then whatever still carries the run
+    marker, which also finds setsid children. Every command ends here: nothing it started survives into a later Task."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(process.pid, signal.SIGKILL)
     for _ in range(KILL_ROUNDS):
         pids = marked_pids(read_environs(), run_id)
         for pid in pids:

@@ -293,7 +293,7 @@ class TimelineReader:
             ("annotations", name, from_ms(to_ms(self._now()) - 15 * 60_000)) for name in annotation_names
         ]
 
-        def run(job):
+        def read(job):
             kind, name, start = job
             first = {"startAt": start}
             if kind == "states":
@@ -308,6 +308,14 @@ class TimelineReader:
                 lambda response: list(field(response, "annotations", default=[]) or []),
             )
             return [{"entity": name, **row} for row in filter(None, map(annotation_row, rows))]
+
+        def run(job):
+            try:
+                return read(job)
+            except AzureError as error:
+                if getattr(error, "status_code", None) == 404:  # an entity that is gone, such as one an Apply deleted, adds nothing and must not fail the others
+                    return []
+                raise
 
         found = {"transitions": [], "annotations": []}
         for job, rows in zip(jobs, self._run(jobs, run)):

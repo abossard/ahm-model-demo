@@ -181,6 +181,7 @@ class FixtureHealthModels:
                 for name, resources in fixture_model(*ref, design=is_design).items()
             }
         self._refs = {tuple(part.casefold() for part in ref): ref for ref in (default, design)}
+        self._denied = set()
 
     def as_user(self, caller):
         return self
@@ -197,8 +198,13 @@ class FixtureHealthModels:
             for ref in self._refs.values()
         ]
 
+    def deny(self, sub, rg, name):
+        """The caller has no role on this model: `has_model` answers no for it, as the access check does for a user without one."""
+        self._denied.add((sub.casefold(), rg.casefold(), name.casefold()))
+
     def has_model(self, sub, rg, name):
-        return (sub.casefold(), rg.casefold(), name.casefold()) in self._models
+        key = (sub.casefold(), rg.casefold(), name.casefold())
+        return key in self._models and key not in self._denied
 
     def present(self, resource):
         """The entity as it is now: with a live script, its state and the status of its signals follow the script."""

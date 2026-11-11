@@ -109,21 +109,22 @@ TEXT_SUFFIXES = frozenset(
     ".sh .html .css .sql .ini .cfg .xml .gradle .properties .env .dockerfile".split()
 )
 SKIPPED_DIRECTORIES = frozenset(".git node_modules .venv venv vendor dist build target bin obj __pycache__".split())
+CLONE_MARKER = ".cloned-from"
 MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES = 4000, 200_000, 6_000_000
 
 
 def repository_roots(folder: Path) -> list[Path]:
-    """The cloned repositories: the Task folder itself or a folder up to two levels below it that has a `.git`."""
-    found = [folder] if (folder / ".git").exists() else []
-    return found + sorted(path.parent for pattern in ("*/.git", "*/*/.git") for path in folder.glob(pattern))
+    """The cloned repositories: the Task folder itself or a folder up to two levels below it that has the `clone_repository` marker."""
+    found = [folder] if (folder / CLONE_MARKER).exists() else []
+    return found + sorted(path.parent for pattern in (f"*/{CLONE_MARKER}", f"*/*/{CLONE_MARKER}") for path in folder.glob(pattern))
 
 
 def scan_signature(folder: Path) -> tuple[tuple[str, int], ...]:
-    """Changes when a repository appears in the Task folder or a clone updates its `.git`."""
+    """Changes when a repository appears in the Task folder."""
     signature = []
     for root in repository_roots(folder):
         try:
-            signature.append((str(root), (root / ".git").stat().st_mtime_ns))
+            signature.append((str(root), (root / CLONE_MARKER).stat().st_mtime_ns))
         except OSError:
             continue
     return tuple(signature)
@@ -138,6 +139,8 @@ def scan_repository(folder: Path) -> RepoScan:
         for directory, names, filenames in os.walk(root):
             names[:] = [name for name in names if name not in SKIPPED_DIRECTORIES]
             for filename in filenames:
+                if filename == CLONE_MARKER:
+                    continue
                 path = Path(directory, filename)
                 relative = path.relative_to(root).as_posix().lower()
                 paths |= {relative, filename.lower()}
@@ -397,15 +400,25 @@ def signal_label(change: Mapping[str, Any], signal: Mapping[str, Any]) -> str:
     return f"{signal.get('name') or change['name']!r} of {change['name']!r}"
 
 
+def called_as(resource: str) -> set[str]:
+    """How a metrics call can name the resource an entity is bound to, in lower case: by its id or by its name, and the same for
+    each parent resource (a storage account for its blob service). The subscription and the resource group are no resource."""
+    parts = resource.lower().strip("/").split("/")
+    if "providers" not in parts:
+        return {resource.lower()}
+    names = range(parts.index("providers") + 4, len(parts) + 1, 2)
+    return {name for end in names for name in (parts[end - 1], "/" + "/".join(parts[:end]))}
+
+
 def ran_metric(signal: Mapping[str, Any], resource: str, record: RunRecord) -> bool:
-    """Did a metrics query of this run return this signal's metric for its resource? The call names the resource by its
-    name, which may be a parent of the id the entity is bound to (a storage account for its blob service)."""
+    """Did a metrics query of this run return this signal's metric for its resource? The call names the resource by its id or
+    its name, or a parent of it, never another resource."""
     name = str(signal.get("metricName") or "").lower()
     namespace, aggregation = str(signal.get("metricNamespace") or "").lower(), str(signal.get("aggregationType") or "").lower()
-    segments = {segment.lower() for segment in resource.split("/") if segment}
+    called = called_as(resource)
     return any(
         name in run.names
-        and (not segments or not run.resource or any(part in segments for part in run.resource.split("/")))
+        and (not resource or not run.resource or run.resource.rstrip("/") in called)
         and (not namespace or not run.namespace or run.namespace == namespace)
         and (not aggregation or not run.aggregation or run.aggregation == aggregation)
         for run in record.metric_runs

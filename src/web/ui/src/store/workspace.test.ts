@@ -95,7 +95,7 @@ function diffView(patch: Partial<DiffView> = {}): DiffView {
 }
 
 const event = (seq: number, kind = "status") => ({ seq, ts: "2026-11-10T10:00:00Z", kind, summary: `event ${seq}`, payload: {} });
-const API_ERROR = (code: string): ApiError => ({ code, message: `message ${code}`, retryable: false, operationId: null });
+const API_ERROR = (code: string, status?: number): ApiError => ({ code, message: `message ${code}`, retryable: false, operationId: null, ...(status === undefined ? {} : { status }) });
 const detail = (tasks: Task[] = []): SessionDetail => ({ session: { ...SESSION, taskCount: tasks.length }, tasks });
 
 async function openSessionWith(tasks: Task[] = []): Promise<void> {
@@ -804,15 +804,60 @@ describe("applying", () => {
     expect(useStore.getState().selectedChanges).toEqual(["c2", "c3"]);
   });
 
-  it.each(["base_changed", "forbidden"])("keeps the selection and reloads nothing after %s", async (code) => {
-    vi.mocked(api.postApply).mockRejectedValue(API_ERROR(code));
+  it.each([
+    { code: "base_changed", status: 409 },
+    { code: "forbidden", status: 403 },
+    { code: "invalid_change_ids", status: 400 },
+    { code: "diff_not_found", status: 404 },
+  ])("keeps the selection and reloads nothing after the refusal $code, which comes before the first write", async ({ code, status }) => {
+    vi.mocked(api.postApply).mockRejectedValue(API_ERROR(code, status));
     actions.toggleChange("c1");
 
     await actions.applySelected();
 
-    expect(useStore.getState()).toMatchObject({ apply: { kind: "failure", error: { code } }, selectedChanges: ["c1"] });
+    expect(useStore.getState()).toMatchObject({ apply: { kind: "failure", error: { code } }, applyChecking: false, selectedChanges: ["c1"] });
     expect(api.fetchDiff).toHaveBeenCalledTimes(1);
     expect(api.fetchHealthModel).not.toHaveBeenCalled();
+  });
+
+  describe.each([
+    { name: "no answer at all", error: API_ERROR("network_error") },
+    { name: "a 502 from the proxy", error: API_ERROR("http_error", 502) },
+    { name: "a 503 from the app", error: API_ERROR("health_model_unavailable", 503) },
+    { name: "a 504 when the ingress gave up", error: API_ERROR("http_error", 504) },
+  ])("an Apply that ends with $name", ({ error }) => {
+    const wrote = diffView({ applies: [{ outcome: "applied", written: ["c1"], failed: null, expanded: ["c1"] }] });
+
+    it("reads the proposed changes again, so what was written shows as Applied and is no longer picked, and reloads the model on screen", async () => {
+      let reread!: (value: DiffView) => void;
+      vi.mocked(api.postApply).mockRejectedValue(error);
+      vi.mocked(api.fetchDiff).mockReturnValueOnce(new Promise((resolve) => (reread = resolve)));
+      vi.mocked(api.fetchHealthModel).mockReturnValue(new Promise(() => {}));
+      actions.toggleChange("c1");
+      actions.toggleChange("c2");
+
+      const running = actions.applySelected();
+      await flush();
+      expect(useStore.getState()).toMatchObject({ apply: { kind: "failure", error }, applyChecking: true, selectedChanges: ["c1", "c2"] });
+      reread(wrote);
+      await running;
+
+      expect(useStore.getState()).toMatchObject({ apply: { kind: "failure", error }, applyChecking: false, selectedChanges: ["c2"] });
+      expect(useStore.getState().diff).toEqual({ kind: "success", value: wrote });
+      expect(api.fetchDiff).toHaveBeenCalledTimes(2);
+      expect(api.fetchHealthModel).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves the model alone when the check finds nothing written", async () => {
+      vi.mocked(api.postApply).mockRejectedValue(error);
+      actions.toggleChange("c1");
+
+      await actions.applySelected();
+
+      expect(useStore.getState()).toMatchObject({ applyChecking: false, selectedChanges: ["c1"] });
+      expect(api.fetchDiff).toHaveBeenCalledTimes(2);
+      expect(api.fetchHealthModel).not.toHaveBeenCalled();
+    });
   });
 
   it("does nothing without a selection or while an Apply runs", async () => {

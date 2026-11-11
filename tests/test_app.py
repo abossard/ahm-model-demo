@@ -514,6 +514,7 @@ class HealthReportUiTests(unittest.TestCase):
     def assert_security_headers(self, response):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(response.headers["Strict-Transport-Security"], "max-age=31536000")
         self.assertEqual(
             response.headers["Content-Security-Policy"],
             "default-src 'self'; script-src 'self'; "
@@ -639,7 +640,7 @@ class HealthReportUiTests(unittest.TestCase):
         )
         self.assertEqual(payload["reportOptions"]["values"], [None, 0, 0.5, 1])
         self.assertEqual(payload["reportOptions"]["expiries"], [1, 5, 15, 30, 60, 120])
-        self.assertEqual(len(self.cloud.health_models.calls), 1)
+        self.assertEqual(len(self.cloud.health_models.calls), 2, "the access check, then the read")
         self.assertEqual(len(self.cloud.entities.list_calls), 1)
         self.assertEqual(len(self.cloud.relationships.calls), 1)
         self.assert_security_headers(response)
@@ -650,7 +651,7 @@ class HealthReportUiTests(unittest.TestCase):
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
-        self.assertEqual(len(self.cloud.health_models.calls), 2)
+        self.assertEqual(len(self.cloud.health_models.calls), 3, "one access check, kept for a minute, and two reads")
         self.assertEqual(len(self.cloud.entities.list_calls), 2)
         self.assertEqual(len(self.cloud.relationships.calls), 2)
 
@@ -1031,6 +1032,7 @@ class HealthReportUiTests(unittest.TestCase):
             (500, 503, True, "health_model_unavailable"),
             (503, 503, True, "health_model_unavailable"),
         ]
+        self.client.get("/api/health-model")
         for azure_status, expected_status, retryable, code in cases:
             with self.subTest(azure_status=azure_status):
                 self.cloud.health_models.error = azure_error(azure_status)
@@ -1689,33 +1691,37 @@ class HealthReportUiTests(unittest.TestCase):
             (429, 503, "health_model_busy", True),
             (500, 503, "health_model_unavailable", True),
         ]
-        selector = "?model=hm-alpha&resourceGroup=rg-other"
+        selectors = [
+            ("a named model", "?model=hm-alpha&resourceGroup=rg-other"),
+            ("the apps own model", ""),
+        ]
 
-        for azure_status, status, code, warns in cases:
-            with self.subTest(azure_status=azure_status):
-                self.module.health = self.healthmodels.HealthModels(self.credentials)
-                self.cloud.health_models.error = azure_error(azure_status)
-                logs = (
-                    self.assertLogs("ahm-demo", level="WARNING")
-                    if warns
-                    else nullcontext()
-                )
-                with logs:
-                    model = self.client.get(f"/api/health-model{selector}")
-                    report = self.client.post(
-                        f"/api/entities/api/health-reports{selector}",
-                        json=VALID_REPORT,
+        for selector_label, selector in selectors:
+            for azure_status, status, code, warns in cases:
+                with self.subTest(selector=selector_label, azure_status=azure_status):
+                    self.module.health = self.healthmodels.HealthModels(self.credentials)
+                    self.cloud.health_models.error = azure_error(azure_status)
+                    logs = (
+                        self.assertLogs("ahm-demo", level="WARNING")
+                        if warns
+                        else nullcontext()
                     )
-                self.cloud.health_models.error = None
+                    with logs:
+                        model = self.client.get(f"/api/health-model{selector}")
+                        report = self.client.post(
+                            f"/api/entities/api/health-reports{selector}",
+                            json=VALID_REPORT,
+                        )
+                    self.cloud.health_models.error = None
 
-                for response in (model, report):
-                    self.assertEqual(response.status_code, status)
-                    self.assertEqual(response.json()["error"]["code"], code)
-                    self.assertNotIn("SECRET_AZURE_BODY", response.text)
-                self.assertEqual(self.cloud.reads_and_writes(), [[]] * 6)
+                    for response in (model, report):
+                        self.assertEqual(response.status_code, status)
+                        self.assertEqual(response.json()["error"]["code"], code)
+                        self.assertNotIn("SECRET_AZURE_BODY", response.text)
+                    self.assertEqual(self.cloud.reads_and_writes(), [[]] * 6)
 
     def test_absent_selector_keeps_the_configured_model(self):
-        for selector in ("", "?model=&resourceGroup=&subscription="):
+        for selector, calls in (("", 2), ("?model=&resourceGroup=&subscription=", 1)):
             with self.subTest(selector=selector):
                 self.cloud.health_models.calls.clear()
 
@@ -1726,7 +1732,7 @@ class HealthReportUiTests(unittest.TestCase):
                     self.cloud.entities.list_calls[-1][0][:2],
                     (RESOURCE_GROUP, MODEL_NAME),
                 )
-                self.assertEqual(len(self.cloud.health_models.calls), 1)
+                self.assertEqual(len(self.cloud.health_models.calls), calls, "the first read checks access, the next one reuses that")
                 self.assertEqual(self.graph.requests, [])
         self.assertEqual(
             [subscription_id for _, subscription_id, _ in self.created],

@@ -40,6 +40,10 @@ After `azd up`, run `make dev`. To use another existing environment, run `azd en
   or an output is missing (`azd provision` writes the outputs back).
 - Sessions stay in process memory and a restart clears them. The session store takes only private endpoint traffic,
   so a local run cannot reach it ([Session store](../infra/README.md#session-store)).
+- `make dev` signs nobody in (`AUTH_MODE=local`). To sign in to a local server on port 8080 with Entra, add
+  `http://localhost:8080/` to the deployed web app registration: `azd env set ENTRA_ALLOW_LOCAL_REDIRECT true`, then
+  `azd provision`. It is off by default because that registration accepts any directory. Set it back to `false` and
+  provision again when you are done.
 - The app runs as your `az login` identity. For the agent and the health models your account needs the access Bicep gives the web identity ([infra/README.md](../infra/README.md)):
   - Foundry Agent Consumer on the Foundry project
   - the health model roles

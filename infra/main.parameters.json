@@ -23,6 +23,9 @@
     "entraAllowAzureCli": {
       "value": "${ENTRA_ALLOW_AZURE_CLI:-false}"
     },
+    "entraAllowLocalRedirect": {
+      "value": "${ENTRA_ALLOW_LOCAL_REDIRECT:-false}"
+    },
     "entraAllowedTenants": {
       "value": "${ENTRA_ALLOWED_TENANTS}"
     },

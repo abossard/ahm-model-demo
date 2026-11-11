@@ -1,34 +1,102 @@
-import asyncio
+import http.server
+import io
 import os
-import stat
 import sys
+import tarfile
 import tempfile
+import threading
+import time
 import unittest
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 import clone
-from clone import IMAGE_GIT, PASSED_ENV_KEYS, REFUSED, clone_command, clone_env, clone_tool, git_binary, repository_target
+from clone import MEBIBYTE, REFUSED, ArchiveRedirects, CloneError, archive_opener, archive_url, clone_tool, download, repository_target, unpack
+from grounding import CLONE_MARKER
 from tools import RunRecord
 
+TOP = "example-albums-1a2b3c"
+REPOSITORY = [
+    (TOP, "dir", ""),
+    (f"{TOP}/src", "dir", ""),
+    (f"{TOP}/src/server.js", "file", "// the products API\n"),
+    (f"{TOP}/README.md", "file", "Albums\n"),
+]
+KINDS = {
+    "file": tarfile.REGTYPE,
+    "dir": tarfile.DIRTYPE,
+    "symlink": tarfile.SYMTYPE,
+    "hardlink": tarfile.LNKTYPE,
+    "device": tarfile.CHRTYPE,
+    "pipe": tarfile.FIFOTYPE,
+}
 
-def fake_git(directory, fixture, body=""):
-    """A `git` that copies `fixture` into the folder it is told to clone into, and records its arguments and environment."""
-    path = Path(directory, "fake-git")
-    path.write_text(
-        "#!/bin/sh\n"
-        'printf "%s\\n" "$@" > "$HOME/args-seen"\n'
-        'env > "$HOME/env-seen"\n'
-        'for last; do :; done\n'
-        f"{body}\n"
-        'mkdir -p "$last"\n'
-        f'cp -R "{fixture}/." "$last"\n',
-        encoding="utf-8",
-    )
-    path.chmod(path.stat().st_mode | stat.S_IEXEC)
-    return str(path)
+
+def tarball(members, mode=0o644):
+    """A gzipped tarball of (name, kind, content) members; the content of a link is where it points."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for name, kind, content in members:
+            info = tarfile.TarInfo(name)
+            info.type = KINDS[kind]
+            info.mode = 0o755 if kind == "dir" else mode
+            if kind == "file":
+                data = content.encode("utf-8") if isinstance(content, str) else content
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            else:
+                info.linkname = content if kind in ("symlink", "hardlink") else ""
+                tar.addfile(info)
+    return buffer.getvalue()
+
+
+def trickle():
+    """A body that never ends and gives a little every 50 ms."""
+    while True:
+        time.sleep(0.05)
+        yield b"x" * 1024
+
+
+class LocalArchive(unittest.TestCase):
+    """The archive host, played by a server on this machine: `serve` maps a path to (status, headers, body), a body being bytes
+    or an iterable of chunks. `requests` collects the path and headers of each request."""
+
+    def setUp(self):
+        self.requests = []
+        patch = mock.patch.dict(os.environ, {"NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1", "IDENTITY_HEADER": "secret", "OPENAI_API_KEY": "sk-1"})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def serve(self, routes):
+        requests = self.requests
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append((self.path, {name.lower(): value for name, value in self.headers.items()}))
+                status, headers, body = routes.get(self.path, (404, {}, b"not found"))
+                self.send_response(status)
+                for name, value in headers.items():
+                    self.send_header(name, value)
+                self.end_headers()
+                for chunk in [body] if isinstance(body, bytes) else body:
+                    self.wfile.write(chunk)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.handle_error = lambda *args: None
+        threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.origin = f"http://127.0.0.1:{server.server_address[1]}"
+        patch = mock.patch.object(clone, "ARCHIVE_ORIGIN", self.origin)
+        patch.start()
+        self.addCleanup(patch.stop)
 
 
 class AddressTests(unittest.TestCase):
@@ -53,73 +121,208 @@ class AddressTests(unittest.TestCase):
         for label, url, expected in cases:
             with self.subTest(label):
                 self.assertEqual(repository_target(url), expected)
+                self.assertEqual(archive_url(url), expected and f"https://codeload.github.com/example/{expected}/tar.gz/HEAD")
 
-    def test_the_command_allows_one_protocol_and_clones_one_commit_of_one_branch(self):
-        with mock.patch.dict(os.environ, {"CLONE_GIT": "/opt/git/git"}):
-            command = clone_command("https://github.com/example/albums", "albums")
+    def test_a_redirect_may_only_lead_to_the_archive_host_over_the_same_scheme(self):
+        request = urllib.request.Request("https://codeload.github.com/example/albums/tar.gz/HEAD")
+        cases = [
+            ("the same host", "https://codeload.github.com/example/renamed/tar.gz/HEAD", True),
+            ("the host in another case", "https://CODELOAD.github.com/example/renamed/tar.gz/HEAD", True),
+            ("a path of the same host", "/example/renamed/tar.gz/HEAD", True),
+            ("another host", "https://github.com/example/albums", False),
+            ("a host that only starts like it", "https://codeload.github.com.evil.example/x", False),
+            ("a host before an at sign", "https://codeload.github.com@evil.example/x", False),
+            ("a port", "https://codeload.github.com:8443/x", False),
+            ("plain http", "http://codeload.github.com/example/albums", False),
+            ("a local file", "file:///etc/passwd", False),
+        ]
+        for label, location, allowed in cases:
+            with self.subTest(label):
+                newurl = urllib.parse.urljoin(request.full_url, location)
+                if allowed:
+                    self.assertEqual(ArchiveRedirects().redirect_request(request, None, 302, "Found", {}, newurl).full_url, newurl)
+                else:
+                    with self.assertRaisesRegex(CloneError, "redirected away from codeload.github.com"):
+                        ArchiveRedirects().redirect_request(request, None, 302, "Found", {}, newurl)
 
-        self.assertEqual(
-            command,
-            [
-                "/opt/git/git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
-                "clone", "--depth", "1", "--single-branch", "--no-tags", "--", "https://github.com/example/albums", "albums",
-            ],
-        )
+    def test_the_request_follows_the_proxy_of_the_environment_and_adds_no_credentials_or_cookies(self):
+        with mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.invalid:3128", "NO_PROXY": "localhost"}):
+            handlers = archive_opener().handlers
 
-    def test_git_is_the_one_the_image_keeps_off_the_path_unless_told_otherwise(self):
-        with mock.patch.dict(os.environ, {"CLONE_GIT": "/x/git"}):
-            self.assertEqual(git_binary(), "/x/git")
-        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(clone.Path, "exists", return_value=True):
-            self.assertEqual(git_binary(), IMAGE_GIT)
-        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(clone.Path, "exists", return_value=False), mock.patch.object(clone.shutil, "which", return_value="/usr/bin/git"):
-            self.assertEqual(git_binary(), "/usr/bin/git")
-
-    def test_git_sees_no_identity_and_no_configuration_of_its_own(self):
-        parent = {key: "x" for key in PASSED_ENV_KEYS} | {"IDENTITY_HEADER": "secret", "OPENAI_API_KEY": "sk-1", "MCP_URL": "https://mcp", "HOME": "/home/session", "GIT_ASKPASS": "evil"}
-
-        env = clone_env(parent, Path("/work/tasks/t-1"))
-
-        self.assertEqual(set(env), set(PASSED_ENV_KEYS) | {"HOME", "GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_ASKPASS"})
-        self.assertEqual((env["HOME"], env["GIT_TERMINAL_PROMPT"], env["GIT_CONFIG_NOSYSTEM"], env["GIT_CONFIG_GLOBAL"], env["GIT_ASKPASS"]), ("/work/tasks/t-1", "0", "1", os.devnull, "true"))
+        proxy = next(handler for handler in handlers if isinstance(handler, urllib.request.ProxyHandler))
+        self.assertEqual(proxy.proxies["https"], "http://proxy.invalid:3128")
+        names = {type(handler).__name__ for handler in handlers}
+        self.assertFalse(names & {"HTTPCookieProcessor", "HTTPBasicAuthHandler", "HTTPDigestAuthHandler", "ProxyBasicAuthHandler", "ProxyDigestAuthHandler"})
+        self.assertIn("ArchiveRedirects", names)
 
 
-class CloneToolTests(unittest.IsolatedAsyncioTestCase):
+class ArchiveTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        self.fixture = self.root / "fixture"
-        (self.fixture / "src").mkdir(parents=True)
-        (self.fixture / "src" / "server.js").write_text("// the products API\n", encoding="utf-8")
-        (self.fixture / ".git").mkdir()
-        (self.fixture / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
-        self.folder = self.root / "tasks" / "t-1"
+        self.target = self.root / "tasks" / "t-1" / "albums"
+        self.target.mkdir(parents=True)
+
+    def unpack(self, content):
+        archive = self.root / "archive.tar.gz"
+        archive.write_bytes(content)
+        return unpack(archive, self.target, time.monotonic() + 30)
+
+    def test_the_top_folder_is_stripped_and_plain_files_and_folders_are_unpacked_without_extra_rights(self):
+        members = [*REPOSITORY, (f"{TOP}/run.sh", "file", "#!/bin/sh\n")]
+
+        rules = self.unpack(tarball(members, mode=0o4755))
+
+        self.assertEqual(sorted(path.relative_to(self.target).as_posix() for path in self.target.rglob("*")), ["README.md", "run.sh", "src", "src/server.js"])
+        self.assertEqual((self.target / "src" / "server.js").read_text(encoding="utf-8"), "// the products API\n")
+        self.assertEqual((rules.files, rules.links), (3, 0))
+        self.assertEqual((self.target / "run.sh").stat().st_mode & 0o7777, 0o755)
+
+    def test_links_are_left_out_and_counted(self):
+        members = [*REPOSITORY, (f"{TOP}/docs", "symlink", "/etc"), (f"{TOP}/copy.md", "hardlink", f"{TOP}/README.md")]
+
+        rules = self.unpack(tarball(members))
+
+        self.assertEqual(sorted(path.name for path in self.target.iterdir()), ["README.md", "src"])
+        self.assertEqual((rules.files, rules.links), (2, 2))
+
+    def test_an_archive_that_is_no_repository_or_could_do_harm_is_refused_and_writes_nothing_outside(self):
+        many = [(TOP, "dir", ""), *[(f"{TOP}/f{number}", "file", "x") for number in range(4)]]
+        cases = [
+            ("an absolute path", [("/etc/evil", "file", "x")], {}, "path that leaves its folder"),
+            ("a path that climbs", [(TOP, "dir", ""), (f"{TOP}/../../evil", "file", "x")], {}, "path that leaves its folder"),
+            ("a path that climbs from the start", [("../evil", "file", "x")], {}, "path that leaves its folder"),
+            ("two top folders", [(TOP, "dir", ""), ("other", "dir", ""), (f"{TOP}/a", "file", "x")], {}, "does not hold a single folder"),
+            ("a file beside the folder", [(TOP, "dir", ""), ("evil", "file", "x")], {}, "does not hold a single folder"),
+            ("a file in place of the folder", [(TOP, "file", "x")], {}, "does not hold a single folder"),
+            ("a device", [(TOP, "dir", ""), (f"{TOP}/null", "device", "")], {}, "neither a plain file nor a folder"),
+            ("a pipe", [(TOP, "dir", ""), (f"{TOP}/pipe", "pipe", "")], {}, "neither a plain file nor a folder"),
+            ("too many entries", many, {"FILE_LIMIT": 4}, "more than 4 files"),
+            ("too many bytes", [(TOP, "dir", ""), (f"{TOP}/big", "file", bytes(2 * MEBIBYTE))], {"UNPACKED_LIMIT": MEBIBYTE}, "more than 1 MiB of files"),
+            ("nothing", [], {}, "the archive is empty"),
+        ]
+        for label, members, limits, expected in cases:
+            with self.subTest(label), mock.patch.dict(clone.__dict__, limits):
+                with self.assertRaisesRegex(CloneError, expected):
+                    self.unpack(tarball(members))
+
+                self.assertEqual(sorted(path.name for path in self.root.rglob("evil")), [])
+
+    def test_bytes_that_are_no_gzipped_tarball_are_refused(self):
+        whole = tarball(REPOSITORY)
+        for label, content in [("text", b"not an archive"), ("a cut archive", whole[: len(whole) // 2]), ("nothing", b"")]:
+            with self.subTest(label):
+                with self.assertRaisesRegex(CloneError, "the archive could not be unpacked"):
+                    self.unpack(content)
+
+    def test_unpacking_stops_at_the_deadline(self):
+        archive = self.root / "archive.tar.gz"
+        archive.write_bytes(tarball(REPOSITORY))
+
+        with self.assertRaisesRegex(CloneError, "timed out after"):
+            unpack(archive, self.target, time.monotonic() - 1)
+
+
+class DownloadTests(LocalArchive):
+    def setUp(self):
+        super().setUp()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.destination = Path(self.directory.name, "archive.tar.gz")
+
+    def download(self, routes, path="/example/albums/tar.gz/HEAD"):
+        self.serve(routes)
+        download(archive_opener(), f"{self.origin}{path}", self.destination, time.monotonic() + 30)
+
+    def test_the_archive_is_streamed_to_a_file_with_no_credentials_or_cookies(self):
+        body = tarball(REPOSITORY)
+
+        self.download({"/example/albums/tar.gz/HEAD": (200, {}, body)})
+
+        self.assertEqual(self.destination.read_bytes(), body)
+        self.assertEqual([path for path, _ in self.requests], ["/example/albums/tar.gz/HEAD"])
+        self.assertLessEqual(set(self.requests[0][1]), {"host", "user-agent", "accept-encoding", "connection"})
+
+    def test_a_redirect_to_the_same_host_is_followed_and_one_to_another_is_not(self):
+        body = tarball(REPOSITORY)
+        cases = [
+            ("the same host", {"Location": "/moved/tar.gz/HEAD"}, None),
+            ("another host", {"Location": "http://localhost:9/x"}, "redirected away from"),
+        ]
+        for label, headers, refused in cases:
+            with self.subTest(label):
+                self.requests.clear()
+                routes = {"/example/albums/tar.gz/HEAD": (302, headers, b""), "/moved/tar.gz/HEAD": (200, {}, body)}
+
+                if refused:
+                    with self.assertRaisesRegex(CloneError, refused):
+                        self.download(routes)
+                    self.assertEqual(len(self.requests), 1)
+                else:
+                    self.download(routes)
+                    self.assertEqual(self.destination.read_bytes(), body)
+
+    def test_a_download_that_cannot_be_had_says_why(self):
+        cases = [
+            ("not found", 404, "the repository was not found or is not public"),
+            ("needs a login", 401, "the repository was not found or is not public"),
+            ("forbidden", 403, "the repository was not found or is not public"),
+            ("a server error", 500, "GitHub answered 500"),
+        ]
+        for label, status, expected in cases:
+            with self.subTest(label):
+                with self.assertRaisesRegex(CloneError, expected):
+                    self.download({"/example/albums/tar.gz/HEAD": (status, {}, b"no")})
+
+    def test_a_download_above_the_limit_is_stopped(self):
+        with mock.patch.object(clone, "DOWNLOAD_LIMIT", MEBIBYTE), self.assertRaisesRegex(CloneError, "larger than 1 MiB"):
+            self.download({"/example/albums/tar.gz/HEAD": (200, {}, bytes(2 * MEBIBYTE))})
+
+    def test_a_download_that_never_ends_is_stopped_at_the_deadline(self):
+        self.serve({"/example/albums/tar.gz/HEAD": (200, {}, trickle())})
+        started = time.monotonic()
+
+        with self.assertRaisesRegex(CloneError, "timed out after"):
+            download(archive_opener(), f"{self.origin}/example/albums/tar.gz/HEAD", self.destination, time.monotonic() + 0.3)
+
+        self.assertLess(time.monotonic() - started, 2)
+
+    def test_a_host_that_cannot_be_reached_says_so(self):
+        with self.assertRaisesRegex(CloneError, "the download failed"):
+            download(archive_opener(), "http://127.0.0.1:9/x", self.destination, time.monotonic() + 30)
+
+
+class CloneToolTests(LocalArchive, unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        super().setUp()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.folder = Path(self.directory.name, "tasks", "t-1")
         self.record = RunRecord()
 
-    async def clone(self, url, git=None, **environ):
-        script = git or fake_git(self.root, self.fixture)
-        with mock.patch.dict(os.environ, {"CLONE_GIT": script, "IDENTITY_HEADER": "secret", "OPENAI_API_KEY": "sk-1", **environ}):
-            return await clone_tool(self.folder, self.record).invoke(arguments={"url": url}, skip_parsing=True)
+    async def clone(self, url, routes=None):
+        self.serve({"/example/albums/tar.gz/HEAD": (200, {}, tarball(REPOSITORY))} if routes is None else routes)
+        return await clone_tool(self.folder, self.record).invoke(arguments={"url": url}, skip_parsing=True)
 
-    async def test_a_clone_lands_in_the_task_folder_under_its_name_and_is_counted_without_git_files(self):
+    async def test_a_clone_lands_in_the_task_folder_under_its_name_with_a_marker_and_is_counted(self):
         answer = await self.clone("https://github.com/example/albums")
 
-        self.assertEqual(answer, "Cloned https://github.com/example/albums into albums (1 files). Read it with run_shell.")
+        self.assertEqual(answer, "Cloned https://github.com/example/albums into albums (2 files). Read it with run_shell.")
         self.assertEqual((self.folder / "albums" / "src" / "server.js").read_text(encoding="utf-8"), "// the products API\n")
+        self.assertEqual((self.folder / "albums" / CLONE_MARKER).read_text(encoding="utf-8"), f"{self.origin}/example/albums/tar.gz/HEAD")
+        self.assertEqual([path for path, _ in self.requests], ["/example/albums/tar.gz/HEAD"])
         self.assertTrue(self.record.clone_attempted)
 
-    async def test_git_gets_the_command_and_an_environment_without_the_agents_secrets(self):
-        await self.clone("https://github.com/example/albums")
+    async def test_links_that_were_not_copied_are_said(self):
+        members = [*REPOSITORY, (f"{TOP}/docs", "symlink", "/etc")]
 
-        arguments = (self.folder / "args-seen").read_text(encoding="utf-8").split("\n")[:-1]
-        seen = dict(line.split("=", 1) for line in (self.folder / "env-seen").read_text(encoding="utf-8").splitlines() if "=" in line)
-        self.assertEqual(arguments[:6], ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "clone", "--depth"])
-        self.assertEqual(arguments[-3:], ["--", "https://github.com/example/albums", "albums"])
-        self.assertEqual((seen["HOME"], seen["GIT_TERMINAL_PROMPT"]), (str(self.folder), "0"))
-        self.assertNotIn("IDENTITY_HEADER", seen)
-        self.assertNotIn("OPENAI_API_KEY", seen)
+        answer = await self.clone("https://github.com/example/albums", {"/example/albums/tar.gz/HEAD": (200, {}, tarball(members))})
 
-    async def test_an_address_that_is_no_public_github_repository_is_refused_without_running_git(self):
+        self.assertEqual(answer, "Cloned https://github.com/example/albums into albums (2 files; 1 links not copied). Read it with run_shell.")
+        self.assertFalse((self.folder / "albums" / "docs").exists())
+
+    async def test_an_address_that_is_no_public_github_repository_is_refused_without_a_request(self):
         for url in ("https://gitlab.com/example/albums", "file:///tmp/x", "git@github.com:example/albums.git"):
             with self.subTest(url):
                 self.record.clone_attempted = False
@@ -128,34 +331,33 @@ class CloneToolTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(answer, REFUSED)
                 self.assertTrue(answer.startswith("Error: refused. "))
-                self.assertFalse((self.folder / "args-seen").exists())
+                self.assertEqual(self.requests, [])
                 self.assertTrue(self.record.clone_attempted)
 
-    async def test_a_repository_that_is_already_there_is_not_cloned_again(self):
+    async def test_a_repository_that_is_already_there_is_not_fetched_again(self):
         await self.clone("https://github.com/example/albums")
-        (self.folder / "args-seen").unlink()
+        self.requests.clear()
 
         answer = await self.clone("https://github.com/example/albums")
 
         self.assertEqual(answer, "albums is already in the Task folder.")
-        self.assertFalse((self.folder / "args-seen").exists())
+        self.assertEqual(self.requests, [])
 
-    async def test_a_failed_clone_leaves_nothing_behind_and_says_why(self):
-        git = fake_git(self.root, self.fixture, body='echo "fatal: repository not found"; mkdir -p "$last/partial"; exit 128')
+    async def test_a_clone_that_fails_leaves_nothing_behind_and_says_why(self):
+        unsafe = tarball([(TOP, "dir", ""), (f"{TOP}/../../evil", "file", "x")])
+        cases = [
+            ("a repository that is not public", {}, {}, "The clone failed: the repository was not found or is not public."),
+            ("an archive that is no archive", {"/example/albums/tar.gz/HEAD": (200, {}, b"<html>")}, {}, "The clone failed: the archive could not be unpacked"),
+            ("an archive that leaves its folder", {"/example/albums/tar.gz/HEAD": (200, {}, unsafe)}, {}, "The clone failed: the archive has a path that leaves its folder."),
+            ("a download that takes too long", {"/example/albums/tar.gz/HEAD": (200, {}, trickle())}, {"CLONE_TIMEOUT_SECONDS": 0.3}, "The clone failed: timed out after 0.3s."),
+        ]
+        for label, routes, limits, expected in cases:
+            with self.subTest(label), mock.patch.dict(clone.__dict__, limits):
+                answer = await self.clone("https://github.com/example/albums", routes)
 
-        answer = await self.clone("https://github.com/example/private", git=git)
-
-        self.assertEqual(answer, "The clone failed (exit code 128): fatal: repository not found")
-        self.assertFalse((self.folder / "private").exists())
-
-    async def test_a_clone_that_takes_too_long_is_killed(self):
-        git = fake_git(self.root, self.fixture, body="exec sleep 30")
-
-        with mock.patch.object(clone, "CLONE_TIMEOUT_SECONDS", 0.3):
-            answer = await asyncio.wait_for(self.clone("https://github.com/example/slow", git=git), 10)
-
-        self.assertEqual(answer, "The clone failed (exit code 124): timed out after 0.3s")
-        self.assertFalse((self.folder / "slow").exists())
+                self.assertTrue(answer.startswith(expected), answer)
+                self.assertFalse((self.folder / "albums").exists())
+                self.assertFalse((self.folder / "evil").exists())
 
 
 if __name__ == "__main__":

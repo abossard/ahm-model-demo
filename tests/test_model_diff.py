@@ -345,6 +345,8 @@ class ValidationTests(unittest.TestCase):
             ("relationship with snake case names", mutate(replace(3, after={"parent_entity_name": "payments", "child_entity_name": "queue-tier"})), "needs the entity name in parentEntityName"),
             ("relationship to a missing entity", mutate(replace(3, after=link("payments", "nowhere"))), "child entity 'nowhere' does not exist in the proposed model"),
             ("relationship left dangling by a removal", mutate(lambda r: r["changes"].append(change("c6", "remove", "entity", "orders-db"))), "relationship 'orders-api-orders-db' child entity 'orders-db' does not exist"),
+            ("signal of an entity naming a definition nothing defines", mutate(replace(0, after=watching("Payments", "latency", "sd-ghost"))), "entity 'payments' uses signal definition 'sd-ghost', which does not exist in the proposed model; add the signal definition or stop using it"),
+            ("definition removed while an unchanged entity still uses it", mutate(lambda r: r["changes"].append(change("c6", "remove", "signalDefinition", "sd-db-cpu"))), "entity 'orders-db' uses signal definition 'sd-db-cpu', which does not exist in the proposed model"),
             ("same pair under a new name", mutate(replace(3, name="my-own-name", after=link("web-frontend", "orders-api"))), "use the existing name 'web-frontend-orders-api'"),
             ("same pair in another case", mutate(replace(3, name="my-own-name", after=link("WEB-Frontend", "Orders-API"))), "use the existing name 'web-frontend-orders-api'"),
             ("same pair added twice", mutate(lambda r: r["changes"].append(change("c6", "add", "relationship", "payments-queue-again", link("payments", "queue-tier")))), "also used by"),
@@ -358,6 +360,17 @@ class ValidationTests(unittest.TestCase):
 
                 self.assertTrue(problems, label)
                 self.assertTrue(any(expected in problem for problem in problems), (expected, problems))
+
+    def test_a_signal_definition_may_go_with_everything_that_used_it_and_names_match_in_any_case(self):
+        cases = [
+            ("the entity stops using it", [change("c1", "remove", "signalDefinition", "sd-db-cpu"), change("c2", "change", "entity", "orders-db", {"displayName": "Orders DB"})]),
+            ("the entity goes too", [change("c1", "remove", "signalDefinition", "sd-db-cpu"), change("c2", "remove", "relationship", "orders-api-orders-db"), change("c3", "remove", "entity", "orders-db")]),
+            ("the definition is written in another case", [change("c1", "change", "entity", "payments", watching("Payments", "latency", "SD-HTTP-5XX"))]),
+            ("the definition is added by the same diff", [change("c1", "add", "signalDefinition", "sd-queue", definition()), change("c2", "change", "entity", "payments", watching("Payments", "latency", "sd-queue"))]),
+        ]
+        for label, changes in cases:
+            with self.subTest(label=label):
+                self.assertEqual(model_diff.validate_result(diff_result(changes), base_model(), TARGET), [])
 
     def test_replacing_a_relationship_under_a_new_name_is_allowed_when_the_old_one_goes(self):
         result = diff_result(
@@ -383,7 +396,7 @@ class ValidationTests(unittest.TestCase):
 
     def test_problems_are_capped(self):
         result = diff_result(
-            [change(f"c{n}", "change", "entity", f"missing-{n:02d}", watching("x", "a", "b")) for n in range(30)]
+            [change(f"c{n}", "change", "entity", f"missing-{n:02d}", watching("x", "a", "sd-http-5xx")) for n in range(30)]
         )
 
         problems = model_diff.validate_result(result, base_model(), TARGET)
@@ -756,6 +769,24 @@ class SelectionTests(unittest.TestCase):
                 self.assertEqual(
                     model_diff.expand_selection(self.changes(), selected, base_model()), expected
                 )
+
+    def test_removing_an_entity_brings_every_relationship_change_that_moves_off_it(self):
+        changes = [
+            change("move-parent", "change", "relationship", "web-frontend-orders-api", link("hm-base", "orders-api")),
+            change("move-child", "change", "relationship", "orders-api-orders-db", link("orders-api", "payments")),
+            change("drop", "remove", "relationship", "hm-base-web-frontend"),
+            change("gone-frontend", "remove", "entity", "web-frontend"),
+            change("gone-db", "remove", "entity", "orders-db"),
+            change("elsewhere", "change", "relationship", "orders-api-payments", link("orders-api", "payments")),
+        ]
+        cases = [
+            ("the parent end moved away", ["gone-frontend"], ["move-parent", "drop", "gone-frontend"]),
+            ("the child end moved away", ["gone-db"], ["move-child", "gone-db"]),
+            ("the relationship change alone", ["move-parent"], ["move-parent"]),
+        ]
+        for label, selected, expected in cases:
+            with self.subTest(label=label):
+                self.assertEqual(model_diff.expand_selection(changes, selected, base_model()), expected)
 
     def test_removing_a_definition_brings_the_entities_that_stop_using_it(self):
         base = base_model()

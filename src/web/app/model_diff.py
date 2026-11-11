@@ -321,6 +321,14 @@ def base_problems(result, base):
                     f"relationship '{item['name']}' {role} entity '{name}' does not "
                     "exist in the proposed model; remove the relationship or add the entity"
                 )
+    definition_names = {key(item["name"]) for item in proposed["signalDefinitions"]}
+    for item in proposed["entities"]:
+        for name in sorted(references(properties_of(item)), key=key):
+            if key(name) not in definition_names:
+                problems.append(
+                    f"entity '{item['name']}' uses signal definition '{name}', which does not "
+                    "exist in the proposed model; add the signal definition or stop using it"
+                )
     touched = {key(c["name"]) for c in changes if c["kind"] == "relationship"}
     for number, change in enumerate(changes):
         if change["kind"] != "relationship" or change["op"] == "remove":
@@ -500,12 +508,11 @@ def dependencies(changes, base):
                 and touches(after(other), change["name"])
             }
         if kind == "entity" and op == "remove":
+            # A live relationship that names the entity is removed, or moved off it by a change, before the entity goes.
             wanted |= {
                 other["id"]
                 for other in changes
-                if other["kind"] == "relationship"
-                and other["op"] == "remove"
-                and touches(before(other), change["name"])
+                if other["kind"] == "relationship" and touches(before(other), change["name"])
             }
         if kind == "relationship" and op != "remove":
             for end in endpoints(after(change)):

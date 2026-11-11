@@ -8,14 +8,20 @@ param environmentName string
 @description('Public URL of the web app, with a trailing slash. It is a single-page-app redirect URI.')
 param webUrl string
 
-@description('Object ID of the workload user-assigned identity. Both app registrations trust it instead of holding a secret.')
-param identityPrincipalId string
+@description('Object ID of the web app user-assigned identity. The web app registration trusts it instead of holding a secret.')
+param webIdentityPrincipalId string
+
+@description('Object ID of the MCP server user-assigned identity. The MCP app registration trusts it instead of holding a secret.')
+param mcpIdentityPrincipalId string
 
 @description('Audience of the federated credential exchange. Differs in sovereign clouds.')
 param tokenExchangeAudience string = 'api://AzureADTokenExchange'
 
 @description('Pre-authorize the Azure CLI for the web API scope, so a signed-in developer can run "az account get-access-token --scope <ENTRA_API_SCOPE>" and call the API as themselves. Any user in the tenant can then script the API, so it is off unless needed. The MCP app is never affected.')
 param allowAzureCli bool = false
+
+@description('Add http://localhost:8080/ as a redirect URI of the web app registration, so a developer can sign in to a local server. The registration accepts any directory and is reachable from the internet, so it is off unless needed.')
+param allowLocalRedirect bool = false
 
 // Both registrations accept work or school accounts of any directory and personal Microsoft accounts. A personal
 // account reaches Azure through a directory where it is a member or a guest, so it signs in at that directory's
@@ -38,6 +44,9 @@ var logAnalyticsDataReadId = 'e8dac03d-d467-4a7e-9293-9cca7df08b31'
 
 // The Azure CLI public client. It is the only client ever pre-authorized for the web scope, and never for the MCP scope.
 var azureCliApplicationId = '04b07795-8ddb-461a-bbee-02f9e1bf7b46'
+
+// The local server of "make dev" listens here. Only a developer who asks for it gets it as a redirect URI.
+var localRedirectUri = 'http://localhost:8080/'
 
 var mcpScope = {
   id: mcpScopeId
@@ -165,10 +174,14 @@ resource webApp 'Microsoft.Graph/applications@v1.0' = {
       : []
   }
   spa: {
-    redirectUris: [
-      webUrl
-      'http://localhost:8080/'
-    ]
+    redirectUris: allowLocalRedirect
+      ? [
+          webUrl
+          localRedirectUri
+        ]
+      : [
+          webUrl
+        ]
   }
   requiredResourceAccess: [
     armAccess
@@ -201,15 +214,16 @@ resource webServicePrincipal 'Microsoft.Graph/servicePrincipals@v1.0' = {
   appId: webCreated.appId
 }
 
-// The apps authenticate to Entra as the workload identity, so neither holds a client secret or certificate.
+// Each app authenticates to Entra as its own managed identity, so neither holds a client secret or certificate. The
+// MCP server is exposed to the internet, so its identity is not the one that holds the web app's grants.
 resource mcpWorkloadCredential 'Microsoft.Graph/applications/federatedIdentityCredentials@v1.0' = {
   name: '${mcpUniqueName}/workload-identity'
   audiences: [
     tokenExchangeAudience
   ]
-  description: 'The workload managed identity signs the on-behalf-of exchange of the MCP server.'
+  description: 'The MCP server managed identity signs the on-behalf-of exchange of the MCP server.'
   issuer: '${environment().authentication.loginEndpoint}${tenant().tenantId}/v2.0'
-  subject: identityPrincipalId
+  subject: mcpIdentityPrincipalId
   dependsOn: [
     mcpApp
   ]
@@ -222,7 +236,7 @@ resource webWorkloadCredential 'Microsoft.Graph/applications/federatedIdentityCr
   ]
   description: 'The workload managed identity signs the on-behalf-of exchange of the web app.'
   issuer: '${environment().authentication.loginEndpoint}${tenant().tenantId}/v2.0'
-  subject: identityPrincipalId
+  subject: webIdentityPrincipalId
   dependsOn: [
     webApp
   ]

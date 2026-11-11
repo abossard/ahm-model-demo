@@ -111,6 +111,6 @@ The caps are constants in `src/web/app/config.py`. A refused request carries the
 - After an Apply writes changes, a later Apply on the same Task returns `base_changed`.
 - Health reports and Apply work only where your own Azure role allows them.
 
-What stops one person from spending the model quota: one running Task per user, three across the app, the Task timeout, the caps above and the quota of the model deployment, which answers 429 beyond it. Set `ENTRA_ALLOWED_TENANTS` to the directories you trust to close the app to everyone else ([how](../infra/README.md#another-directory)).
+What stops one person from spending the model quota: one running Task per user, three across the app, the Task timeout, the caps above and the quota of the model deployment, which answers 429 beyond it. Set `ENTRA_ALLOWED_TENANTS` to the directories you trust to close the app to everyone else ([how](../infra/README.md#another-directory)). The list guards the web app only: the Azure MCP server takes a token of any directory ([accepted limit](../infra/README.md#azure-mcp-server)).
 
 What does not: there is no limit per directory or in total money, so one directory can hold all three running Tasks, and a directory with many users gives each user the caps above. Sessions are never deleted, so storage grows with use. The closed days of a signal that users read are kept in this deployment's storage account for every directory's models. With the list empty, treat the app as open to anyone who can create a Microsoft account.

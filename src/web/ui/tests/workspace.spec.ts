@@ -614,6 +614,33 @@ test.describe("Apply", () => {
   });
 });
 
+test.describe("Apply that gets no answer", () => {
+  const WRITTEN = { outcome: "applied", written: ["c2", "c3", "c4"], failed: null, expanded: ["c2", "c3", "c4"] } as const;
+
+  for (const { name, reply } of [
+    { name: "a 504 from the ingress", reply: { status: 504, body: "upstream request timeout" } },
+    { name: "a connection that drops", reply: { status: "dropped", body: null } },
+  ] as const) {
+    test(`${name} says some changes may have been written, then shows which were`, async ({ page }) => {
+      const stub = await openDiffTask(page);
+      stub.applyReplies.push({ ...reply, wrote: WRITTEN });
+      await page.getByTestId("change-select-c3").click();
+      await page.getByTestId("apply-button").click();
+      await page.getByTestId("apply-confirm").click();
+
+      const result = page.getByTestId("apply-result");
+      await expect(result).toHaveAttribute("data-outcome", "unsure");
+      await expect(result).toContainText("Some changes may have been written");
+      await expect(result).not.toContainText("Nothing was changed");
+      // The app read the proposed changes again: what the call wrote is marked, and cannot be picked again.
+      await expect(page.getByTestId("change-applied-c3")).toBeVisible();
+      await expect(page.getByTestId("change-select-c3")).toBeDisabled();
+      await expect(result).toContainText("The ones marked Applied were written");
+      expect(stub.applies).toEqual([{ sessionId: SESSION_ID, seq: 1, changeIds: ["c3"] }]);
+    });
+  }
+});
+
 test.describe("deep links", () => {
   test("a link opens the Session and the Task, and the address follows the workspace", async ({ page }) => {
     await boot(page, SESSION_WITH_TASK(), `/?${MODEL_QUERY}&session=${SESSION_ID}&task=1`);

@@ -39,3 +39,7 @@ hooks:
     shell: sh
     interactive: true
     run: bash ./scripts/hooks/postup.sh
+  predown:
+    shell: sh
+    interactive: true
+    run: bash ./scripts/hooks/predown.sh

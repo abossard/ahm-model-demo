@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from tools import RunRecord
-from webchecks import MAX_AFTER_BYTES, MAX_CHANGES, action_group_problems, discovered_problems, present_in, removal_problems, scope_problems, size_problems, web_problems
+from webchecks import MAX_AFTER_BYTES, MAX_CHANGES, action_group_problems, definition_problems, discovered_problems, duplicate_problems, present_in, removal_problems, scope_problems, size_problems, web_problems
 
 SCOPE = ("sub-1", "rg-app")
 INSIDE = "/subscriptions/sub-1/resourceGroups/rg-app/providers/Microsoft.Web/sites/web"
@@ -23,6 +23,17 @@ def diff(*changes):
 
 def resource(rid):
     return {"signalGroups": {"azureResource": {"azureResourceId": rid, "signals": []}}}
+
+
+def using(*definitions, inline=()):
+    """An entity whose signals name these definitions, then signals that name none."""
+    signals = [{"name": f"signal-{number}", "signalKind": "AzureResourceMetric", "signalDefinitionName": name} for number, name in enumerate(definitions)]
+    signals += [{"name": name, "signalKind": "AzureResourceMetric"} for name in inline]
+    return {"signalGroups": {"azureResource": {"azureResourceId": INSIDE, "signals": signals}}}
+
+
+def relationship(name, parent, child, op="add", number=1):
+    return change(op=op, kind="relationship", name=name, after=None if op == "remove" else {"parentEntityName": parent, "childEntityName": child}, number=number)
 
 
 def record(**fields):
@@ -113,6 +124,58 @@ class WebChecksTests(unittest.TestCase):
         self.assertEqual(discovered_problems([change(op="add", name="Web-App")], record()), [])
         self.assertEqual(len(discovered_problems([change(op="change", name="WEB-APP", after={})], record())), 1)
         self.assertEqual(discovered_problems([change(op="change", kind="relationship", name="web-app", after={})], record()), [])
+
+    def test_a_signal_names_a_definition_the_proposed_model_has(self):
+        held = record()
+        held.entities["api-app"] = using("http-5xx", "latency")
+        held.entities["worker"] = using("latency")
+        undefined = "which does not exist in the proposed model; add the signal definition or stop using it"
+        cases = [
+            ("a definition the model uses", diff(change(name="web-new", after=using("http-5xx"))), []),
+            ("a definition in another case", diff(change(name="web-new", after=using("HTTP-5XX"))), []),
+            ("a definition the result adds", diff(change(kind="signalDefinition", name="Queue-Depth", after={}, number=1), change(name="web-new", after=using("queue-depth"), number=2)), []),
+            ("a definition nobody has", diff(change(name="web-new", after=using("ghost"))), [f"entity 'web-new' uses signal definition 'ghost', {undefined}"]),
+            ("a signal that names none", diff(change(name="web-new", after=using(inline=["cpu"]))), []),
+            ("a signal that names an empty one", diff(change(name="web-new", after=using(""))), []),
+            ("a definition the result removes from an entity that stays", diff(change(op="remove", kind="signalDefinition", name="http-5xx", after=None)), [f"entity 'api-app' uses signal definition 'http-5xx', {undefined}"]),
+            ("a definition the result removes with the entity that uses it", diff(change(op="remove", kind="signalDefinition", name="http-5xx", after=None, number=1), change(op="remove", name="api-app", after=None, number=2), relationship("hm-app-api-app", "hm-app", "api-app", op="remove", number=3)), []),
+            ("a definition the entity stops using", diff(change(op="remove", kind="signalDefinition", name="http-5xx", after=None, number=1), change(op="change", name="api-app", after=using("latency"), number=2)), []),
+            ("a definition that is another one's in a changed entity", diff(change(op="change", name="worker", after=using("latency", "gone"))), [f"entity 'worker' uses signal definition 'gone', {undefined}"]),
+            ("entities by name and definitions in lower case order", diff(change(name="web-new", after=using("Zeta", "alpha")), change(name="app-new", after=using("beta"), number=2)), [f"entity 'app-new' uses signal definition 'beta', {undefined}", f"entity 'web-new' uses signal definition 'alpha', {undefined}", f"entity 'web-new' uses signal definition 'Zeta', {undefined}"]),
+            ("an explain", {"kind": "explain"}, []),
+        ]
+        for label, result, expected in cases:
+            with self.subTest(label):
+                if result["kind"] == "diff":
+                    self.assertEqual(definition_problems(result, held), expected)
+                    self.assertEqual([problem for problem in web_problems(result, held) if "signal definition" in problem], expected)
+                else:
+                    self.assertEqual(web_problems(result, held), expected)
+
+    def test_without_an_entity_read_no_definition_is_known(self):
+        self.assertEqual(definition_problems(diff(change(name="web-new", after=using("ghost"))), RunRecord()), [])
+
+    def test_a_relationship_is_the_only_one_for_its_parent_and_child(self):
+        exists = "which already exists as 'web-app-orders-db'; use the existing name 'web-app-orders-db' instead of adding another relationship"
+        cases = [
+            ("a second name for a pair the model has", diff(relationship("orders-db-of-web-app", "web-app", "orders-db")), [f"changes[0]: relationship 'orders-db-of-web-app' repeats web-app -> orders-db, {exists}"]),
+            ("the pair in another case", diff(relationship("orders-db-of-web-app", "Web-App", "ORDERS-DB")), [f"changes[0]: relationship 'orders-db-of-web-app' repeats Web-App -> ORDERS-DB, {exists}"]),
+            ("the existing name in another case", diff(relationship("WEB-APP-ORDERS-DB", "web-app", "orders-db", op="change")), []),
+            ("a pair the model does not have", diff(relationship("hm-app-orders-db", "hm-app", "orders-db")), []),
+            ("the reverse of a pair the model has", diff(relationship("orders-db-web-app", "orders-db", "web-app")), []),
+            ("two new names for one new pair", diff(relationship("a-b", "hm-app", "x"), relationship("a-b-again", "hm-app", "x", number=2)), ["changes[0]: relationship 'a-b' repeats hm-app -> x, also used by 'a-b-again'; keep only one", "changes[1]: relationship 'a-b-again' repeats hm-app -> x, also used by 'a-b'; keep only one"]),
+            ("a pair the model has, whose relationship goes away", diff(relationship("web-app-orders-db", "web-app", "orders-db", op="remove", number=1), relationship("orders-db-of-web-app", "web-app", "orders-db", number=2)), []),
+            ("a pair the model has, whose relationship is changed", diff(relationship("web-app-orders-db", "web-app", "orders-db", op="change", number=1), relationship("orders-db-of-web-app", "web-app", "orders-db", number=2)), ["changes[0]: relationship 'web-app-orders-db' repeats web-app -> orders-db, also used by 'orders-db-of-web-app'; keep only one", "changes[1]: relationship 'orders-db-of-web-app' repeats web-app -> orders-db, also used by 'web-app-orders-db'; keep only one"]),
+            ("a removal alone", diff(relationship("web-app-orders-db", "web-app", "orders-db", op="remove")), []),
+            ("an explain", {"kind": "explain"}, []),
+        ]
+        for label, result, expected in cases:
+            with self.subTest(label):
+                if result["kind"] == "diff":
+                    self.assertEqual(duplicate_problems(result, record()), expected)
+                    self.assertEqual([problem for problem in web_problems(result, record()) if " repeats " in problem], expected)
+                else:
+                    self.assertEqual(web_problems(result, record()), expected)
 
 
 if __name__ == "__main__":

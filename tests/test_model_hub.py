@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import sys
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,9 +30,11 @@ def inventory(*entities):
     return {"model": {"name": "hm", "healthState": "Healthy"}, "observedAt": "t", "entities": list(entities), "relationships": [], "reportOptions": {}}
 
 
-def http_error(status):
+def http_error(status, retry_after=None):
     error = HttpResponseError(message="x")
     error.status_code = status
+    if retry_after is not None:
+        error.response = SimpleNamespace(headers={"Retry-After": retry_after})
     return error
 
 
@@ -62,6 +65,26 @@ class Azure:
         self.state = inventory(*entities)
 
 
+class Held(Azure):
+    """The next read by `ada` shows the model as it is when the read begins, then waits to be released before it answers."""
+
+    def __init__(self):
+        super().__init__()
+        self.holding = False
+        self.began = threading.Event()
+        self.release = threading.Event()
+
+    def read_state(self, user, selection):
+        shown = copy.deepcopy(self.state)
+        if self.holding and user.oid == "ada":
+            self.holding = False
+            self.began.set()
+            self.release.wait(2)
+            self.reads.append(user.oid)
+            return shown, {}
+        return super().read_state(user, selection)
+
+
 def person(oid, allowed=True):
     user = SimpleNamespace(oid=oid, allowed=allowed)
     user.has_model = lambda *_: user.allowed
@@ -81,12 +104,13 @@ async def until(check, seconds=2.0):
 
 
 class HubCase(unittest.IsolatedAsyncioTestCase):
-    def make(self, azure=None, tail=True, wall=None, **settings):
+    def make(self, azure=None, tail=True, wall=None, clock=None, **settings):
         self.azure = azure or Azure()
         self.hubs = model_hub.ModelHub(
             self.azure.read_state,
             self.azure.read_tail if tail else None,
             model_hub.HubSettings(**{**FAST, **settings}),
+            clock=clock or __import__("time").monotonic,
             wall=wall or __import__("time").time,
         )
         self.addAsyncCleanup(self.stop_all)
@@ -466,11 +490,84 @@ class RefreshTests(HubCase):
         self.assertTrue(await hubs.refresh(SELECTION, person("bob")))
         self.assertIsNotNone(hubs.warm(SELECTION))
 
+    async def test_a_read_that_began_before_a_write_cannot_make_the_snapshot_current_again(self):
+        for status in (429, 500):
+            with self.subTest(refresh_error=status):
+                azure = Held()
+                hubs = self.make(azure, poll_seconds=30)
+                await self.join(person("ada"))
+                hub = hubs.warm(SELECTION)
+                azure.holding = True
+                hub.wake.set()
+                await asyncio.to_thread(azure.began.wait, 2)
+                azure.change(entity("a", "Unhealthy"), entity("b"))
+                azure.errors["bob"] = http_error(status)
+
+                refreshing = asyncio.create_task(hubs.refresh(SELECTION, person("bob")))
+                await until(lambda: hub.dirty)
+                azure.release.set()
+
+                self.assertFalse(await refreshing)
+                self.assertIsNone(hubs.warm(SELECTION), "what the early read showed is the model before the write")
+                with self.assertRaises(model_hub.Refusal) as refused:
+                    await self.join(person("cy"))
+                self.assertEqual((refused.exception.status, refused.exception.code, refused.exception.retryable), (503, "live_unavailable", True))
+                azure.errors.clear()
+                self.assertTrue(await hubs.refresh(SELECTION, person("bob")))
+                self.assertIsNotNone(hubs.warm(SELECTION))
+                await self.stop_all()
+
+    async def test_a_viewer_is_not_started_from_a_snapshot_while_a_write_is_not_read_back_yet(self):
+        hubs = self.make(poll_seconds=30)
+        first = await self.join(person("ada"))
+        self.azure.errors["bob"] = http_error(500)
+        await hubs.refresh(SELECTION, person("bob"))
+        cases = [("without an id", None), ("with an id of this hub", first.initial[0]["id"])]
+
+        for label, last_id in cases:
+            with self.subTest(label):
+                with self.assertRaises(model_hub.Refusal) as refused:
+                    await self.join(person("cy"), last_id=last_id)
+
+                self.assertEqual(refused.exception.code, "live_unavailable")
+        self.assertEqual(len(hubs._hubs[model_hub.key_of(SELECTION)].members), 1, "a refused viewer leaves nothing behind")
+
     async def test_a_model_nobody_watches_has_nothing_to_refresh(self):
         hubs = self.make()
 
         self.assertFalse(await hubs.refresh(SELECTION, person("ada")))
         self.assertEqual(self.azure.reads, [])
+
+
+class TailBackoffTests(HubCase):
+    async def test_a_busy_answer_to_a_history_read_is_waited_out_as_asked_and_the_batch_stays_pending(self):
+        cases = [
+            ("no Retry-After", http_error(429), 60),
+            ("a Retry-After shorter than a minute", http_error(429, "7"), 60),
+            ("a Retry-After longer than a minute", http_error(503, "120"), 120),
+            ("a Retry-After beyond the cap", http_error(429, "99999"), 300),
+        ]
+        for label, error, wait in cases:
+            with self.subTest(label):
+                clock = SimpleNamespace(now=1000.0)
+                azure = Azure()
+                azure.tail_error = error
+                self.make(azure, clock=lambda: clock.now)
+                await self.join(person("ada"))
+                azure.change(entity("a", "Degraded"), entity("b"))
+                await until(lambda: len(azure.tails) == 1)
+
+                await asyncio.sleep(0.1)
+                clock.now += wait - 1
+                await asyncio.sleep(0.1)
+                waited = len(azure.tails)
+                clock.now += 2
+                azure.tail_error = None
+                await until(lambda: len(azure.tails) == 2)
+
+                self.assertEqual(waited, 1, "not read again while the service asked to wait")
+                self.assertEqual(list(azure.tails[1][1]), ["a"], "the entity that was waiting is read after the wait")
+                await self.stop_all()
 
 
 class BackoffTests(HubCase):

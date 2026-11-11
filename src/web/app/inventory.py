@@ -119,17 +119,21 @@ def well_formed(requested):
 
 
 def resolve_selection(query_params, model_exists, default):
+    """The model a request is about: the one it names, else the app's own for a user of its directory. Either way the
+    caller must be able to read it, because a warm hub, the timeline cache and every other read serve it to whoever gets here."""
     requested = {key: query_params.get(key) for key in SELECTOR_KEYS}
-    if not any(requested.values()):
-        return (default, None) if default else (None, "unknown_model")
-    selection = (
-        requested["subscription"] or (default[0] if default else None),
-        requested["resourceGroup"],
-        requested["model"],
-    )
-    if not all(selection) or not well_formed(requested) or not model_exists(*selection):
+    if any(requested.values()):
+        selection = (
+            requested["subscription"] or (default[0] if default else None),
+            requested["resourceGroup"],
+            requested["model"],
+        )
+        chosen = selection if all(selection) and well_formed(requested) else None
+    else:
+        chosen = default
+    if not chosen or not model_exists(*chosen):
         return None, "unknown_model"
-    return selection, None
+    return chosen, None
 
 
 def read_raw(health_client, resource_group, model_name):

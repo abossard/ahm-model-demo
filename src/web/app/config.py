@@ -46,10 +46,10 @@ SSE_KEEP_ALIVE_SECONDS = 15
 AGENT_TOKEN_SCOPE = "https://ai.azure.com/.default"
 AGENT_API_VERSION = "v1"
 AGENT_WAIT_SECONDS = 120
+# The same rule as the agent's `clone_repository` (src/agent/src/clone.py): an address it refuses must be refused at the start of the Task.
 GITHUB_REPOSITORY = re.compile(
-    r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?/?"
+    r"https://github\.com/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}(\.git)?/?"
 )
-REPOSITORY_URL_MAX_CHARS = 200
 MAX_SESSIONS = 200
 MAX_TASKS_PER_SESSION = 50
 MAX_BODY_BYTES = 64 * 1024

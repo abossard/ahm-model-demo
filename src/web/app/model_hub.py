@@ -66,6 +66,13 @@ def status_of(error):
     return getattr(error, "status_code", None) or getattr(getattr(error, "response", None), "status_code", None)
 
 
+def retry_after(error):
+    """The seconds the service asked to wait, when the client shows its Retry-After header as a number."""
+    headers = getattr(getattr(error, "response", None), "headers", None) or {}
+    value = headers.get("Retry-After")
+    return int(value) if isinstance(value, str) and value.isdigit() else None
+
+
 def credential_problem(error):
     """The exchange or the sign-in of the viewer that was reading failed: another viewer can read instead."""
     return isinstance(error, (InteractionRequired, ConsentRequired, ClientAuthenticationError)) or (
@@ -153,6 +160,7 @@ class Hub:
         self.known_annotations = set()
         self.last_transition = {}
         self.pending_tail = set()
+        self.tail_not_before = 0.0
         self.annotations_at = 0.0
         self.checked_at = manager.clock()
         self.ready = asyncio.Event()
@@ -161,8 +169,10 @@ class Hub:
         self.stop_handle = None
         self.wake = asyncio.Event()
         self.polling = asyncio.Lock()
-        # A write by this app changed the model, and the refresh that should show it failed: do not serve the snapshot.
+        # A write by this app changed the model and no read since has shown it: do not serve the snapshot.
         self.dirty = False
+        # Counts those writes. A read that began before the latest one may predate it and cannot clear `dirty`.
+        self.generation = 0
 
     # ----- viewers -----
 
@@ -312,6 +322,7 @@ class Hub:
 
     async def poll(self, reader):
         read = self.manager.read_state
+        started = self.generation
         async with self.manager.semaphore:
             inventory, structure = await asyncio.to_thread(read, reader.user, self.selection)
         self.observed = self.wall()
@@ -333,7 +344,8 @@ class Hub:
         if not live_data.empty_timeline(timeline):
             payload["timeline"] = {part: rows for part, rows in timeline.items() if rows}
         self.inventory, self.structure = inventory, structure
-        self.dirty = False
+        if started == self.generation:
+            self.dirty = False
         if payload:
             payload["observedAt"] = inventory["observedAt"]
             self.publish(payload)
@@ -341,6 +353,7 @@ class Hub:
     async def refresh(self, user):
         """Reads the model now, as the viewer who just wrote to it, and pushes what changed. False when the read failed: the snapshot is then not served until a read succeeds."""
         self.dirty = True
+        self.generation += 1
         try:
             async with self.polling:
                 await self.poll(SimpleNamespace(user=user))
@@ -358,6 +371,9 @@ class Hub:
             return {}
         names = set(live_data.changed_states(old, inventory)) | self.pending_tail
         now = self.manager.clock()
+        if now < self.tail_not_before:
+            self.pending_tail = names
+            return {}
         want_annotations = now - self.annotations_at >= self.settings.annotation_seconds
         if not names and not want_annotations:
             return {}
@@ -373,6 +389,8 @@ class Hub:
             if credential_problem(error):
                 raise
             self.pending_tail = names
+            if status_of(error) in (429, 503):
+                self.tail_not_before = now + min(self.settings.max_backoff_seconds, max(retry_after(error) or 0, BUSY_BACKOFF_SECONDS))
             return {}
         self.pending_tail = set()
         if want_annotations:
@@ -449,6 +467,9 @@ class ModelHub:
             if hub.inventory is None and not hub.members:
                 hub.stop()
             raise error if error is not None else Refusal(503, "live_unavailable", "Live updates are unavailable.")
+        if hub.dirty:  # the snapshot is the model before a write of this app that no read has shown yet
+            hub.leave(member)
+            raise Refusal(503, "live_unavailable", "The model was just changed and is being read again. Try again in a moment.")
         initial = hub.catch_up(last_id)
         member.live = True
         return Subscription(hub, member, initial)

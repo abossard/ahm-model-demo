@@ -161,6 +161,8 @@ export interface ApiError {
   readonly retryable: boolean;
   readonly operationId: string | null;
   readonly requestId?: string | null;
+  /** The HTTP status of the answer; absent when no answer came. */
+  readonly status?: number;
   /** The claims a Conditional Access policy asks for, on `interaction_required`. */
   readonly claims?: string | null;
 }

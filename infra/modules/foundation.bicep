@@ -60,6 +60,14 @@ resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' 
   tags: tags
 }
 
+// The MCP server is reachable from the internet and built from a branch, so it gets an identity of its own: it only
+// pulls its image and signs the on-behalf-of exchange of its app registration.
+resource mcpIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-${namePrefix}-mcp'
+  location: location
+  tags: tags
+}
+
 resource registry 'Microsoft.ContainerRegistry/registries@2025-11-01' = {
   name: 'acrahm${resourceToken}'
   location: location
@@ -144,6 +152,9 @@ resource containerEnvironment 'Microsoft.App/managedEnvironments@2025-10-02-prev
 output identityId string = identity.id
 output identityClientId string = identity.properties.clientId
 output identityPrincipalId string = identity.properties.principalId
+output mcpIdentityId string = mcpIdentity.id
+output mcpIdentityClientId string = mcpIdentity.properties.clientId
+output mcpIdentityPrincipalId string = mcpIdentity.properties.principalId
 output vnetId string = vnet.id
 output privateEndpointSubnetId string = '${vnet.id}/subnets/${privateEndpointSubnetName}'
 output registryName string = registry.name

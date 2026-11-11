@@ -181,6 +181,21 @@ describe("loadTimelineOverview", () => {
     expect(useStore.getState().timelineStatus).toBe("ready");
   });
 
+  it("a live change that arrived while the answer was on its way is in the timeline once it answers", async () => {
+    const slow = pending<TimelineResponse>();
+    vi.mocked(api.fetchTimeline).mockReturnValueOnce(slow.promise);
+    const loading = actions.loadTimelineOverview();
+    const answer = FIXTURE.overview(NOW - 5 * DAY, NOW);
+    const name = answer.entities[0]?.name ?? "";
+    const t = NOW + 1000;
+    useStore.setState({ timelineHeld: [{ timeline: { transitions: [{ entity: name, t, from: 1, to: 3, reason: "SignalTransition" }] }, observed: t }] });
+
+    slow.resolve(answer);
+    await loading;
+
+    expect(useStore.getState().timelineData.states[name]?.transitions.at(-1)).toMatchObject({ t, to: 3 });
+  });
+
   it("an answer that arrives after a reset is dropped", async () => {
     const late = pending<TimelineResponse>();
     vi.mocked(api.fetchTimeline).mockReturnValueOnce(late.promise);
@@ -276,6 +291,7 @@ describe("loadTimelineSignals", () => {
 
   it("refresh reads the overview and the newest minutes of the open lanes", async () => {
     await overview();
+    actions.openTimeline();
     const keys = allKeys(FIXTURE.entities).filter((key) => key.endsWith(RESOURCE.name));
     expect(keys.length).toBeGreaterThan(0);
     actions.expandTimelineEntities(keys);
@@ -287,6 +303,18 @@ describe("loadTimelineSignals", () => {
     expect(calls[0]?.include).toEqual(["states", "annotations", "reports"]);
     expect(calls[1]).toMatchObject({ include: ["signals"], entities: [RESOURCE.name], to: NOW });
     expect((calls[1]?.to ?? 0) - (calls[1]?.from ?? 0)).toBeLessThanOrEqual(20 * 60_000);
+  });
+});
+
+describe("refreshTimeline while the timeline is closed", () => {
+  it("reads nothing: it is read afresh when it opens", async () => {
+    serve();
+    await actions.loadTimelineOverview();
+    vi.mocked(api.fetchTimeline).mockClear();
+
+    await actions.refreshTimeline();
+
+    expect(api.fetchTimeline).not.toHaveBeenCalled();
   });
 });
 

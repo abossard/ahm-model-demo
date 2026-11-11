@@ -46,8 +46,14 @@ describe("repositoryProblem", () => {
     { url: "https://github.com/octo/repo/tree/main", valid: false },
     { url: "https://github.com.evil.io/octo/repo", valid: false },
     { url: "github.com/octo/repo", valid: false },
-    { url: `https://github.com/octo/${"r".repeat(200 - "https://github.com/octo/".length)}`, valid: true },
-    { url: `https://github.com/octo/${"r".repeat(201 - "https://github.com/octo/".length)}`, valid: false },
+    { url: `https://github.com/${"o".repeat(39)}/repo`, valid: true },
+    { url: `https://github.com/${"o".repeat(40)}/repo`, valid: false },
+    { url: `https://github.com/octo/${"r".repeat(100)}`, valid: true },
+    { url: `https://github.com/octo/${"r".repeat(101)}`, valid: false },
+    { url: "https://github.com/oc_to/repo", valid: false },
+    { url: "https://github.com/-octo/repo", valid: false },
+    { url: "https://github.com/octo/.repo", valid: false },
+    { url: "https://github.com/octo/-repo", valid: false },
   ])("accepts '$url': $valid", ({ url, valid }) => {
     expect(repositoryProblem(url) === null).toBe(valid);
   });

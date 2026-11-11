@@ -338,8 +338,11 @@ interface StubTask {
 }
 
 export interface ApplyReply {
-  readonly status: number;
+  /** The status of the answer, or "dropped" when the connection ends without one. */
+  readonly status: number | "dropped";
   readonly body: unknown;
+  /** What the app writes although its answer does not arrive; the history of the Diff holds it. */
+  readonly wrote?: ApplyOutcome;
 }
 
 export interface WorkspaceOptions {
@@ -603,12 +606,13 @@ export class WorkspaceStub {
     this.applies.push({ sessionId: record.task.sessionId, seq: record.task.seq, changeIds });
     const reply = this.applyReplies.shift();
     if (reply) {
-      const body = reply.body as ApplyOutcome;
-      if (reply.status === 200 && record.diff) {
-        record.diff = { ...record.diff, applies: [...record.diff.applies, { ...body, at: new Date().toISOString(), changeIds }] };
+      const recorded = reply.status === 200 ? (reply.body as ApplyOutcome) : reply.wrote;
+      if (recorded && record.diff) {
+        record.diff = { ...record.diff, applies: [...record.diff.applies, { ...recorded, at: new Date().toISOString(), changeIds }] };
         this.appliedOnce = true;
       }
-      await this.json(route, reply.status, reply.body);
+      if (reply.status === "dropped") await route.abort("connectionreset");
+      else await this.json(route, reply.status, reply.body);
       return;
     }
     if (this.appliedOnce) {

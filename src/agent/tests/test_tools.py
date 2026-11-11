@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -312,6 +313,35 @@ class ShellRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(time.monotonic() - started, 3)
         self.assertEqual(run.output, b"hi\n")
 
+    async def test_what_a_command_leaves_running_is_killed_when_its_call_ends(self):
+        cases = [
+            ("a job that closed its output", "nohup sleep 30 >/dev/null 2>&1 & echo $! > pid", 10, 0),
+            ("a job that holds the output", "sleep 30 & echo $! > pid", 10, 0),
+            ("a job of a command that times out", "sleep 30 >/dev/null 2>&1 & echo $! > pid; sleep 30", 1, None),
+        ]
+        for label, command, timeout, exit_code in cases:
+            with self.subTest(label):
+                started = time.monotonic()
+
+                run = await run_command(command, self.folder, timeout)
+
+                self.assertEqual(run.exit_code, exit_code)
+                self.assertLess(time.monotonic() - started, 4)
+                self.assertTrue(await job_gone(self.folder))
+
+    async def test_what_a_cancelled_command_started_is_killed_with_it(self):
+        call = asyncio.create_task(run_command("sleep 30 >/dev/null 2>&1 & echo $! > pid; sleep 30", self.folder, 60))
+        for _ in range(100):
+            if (self.folder / "pid").is_file() and (self.folder / "pid").read_text().strip():
+                break
+            await asyncio.sleep(0.05)
+
+        call.cancel()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await call
+        self.assertTrue(await job_gone(self.folder))
+
 
 class ShellSandboxTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -404,7 +434,23 @@ class ShellSandboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(process_alive(pid))
 
 
+async def job_gone(folder):
+    """Is the job whose pid the command wrote to `pid` gone, within two seconds?"""
+    pid = int((folder / "pid").read_text())
+    for _ in range(40):
+        if not process_alive(pid):
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
 def process_alive(pid):
+    if not Path("/proc").is_dir():
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
     except OSError:

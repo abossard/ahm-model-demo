@@ -8,7 +8,7 @@ import json
 from collections.abc import Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
-from grounding import listing, proposed_edges
+from grounding import listing, proposed_edges, signals_of
 
 if TYPE_CHECKING:
     from tools import RunRecord
@@ -118,8 +118,60 @@ def discovered_problems(changes: list[Mapping[str, Any]], record: RunRecord) -> 
     ]
 
 
+def definitions_used(properties: Mapping[str, Any] | None) -> set[str]:
+    """The signal definitions the signals of an entity name."""
+    return {signal["signalDefinitionName"] for signal in signals_of(properties) if isinstance(signal.get("signalDefinitionName"), str) and signal["signalDefinitionName"]}
+
+
+def definition_problems(result: Mapping[str, Any], record: RunRecord) -> list[str]:
+    """Every signal definition an entity names exists in the model once the result is applied. The run knows the definitions
+    the entities it read use and the ones the result adds or removes; without a read entity it knows none. The entities of the
+    model read are named in lower case, as `record.entities` has them."""
+    if not record.entities:
+        return []
+    known = {key(name) for properties in record.entities.values() for name in definitions_used(properties)}
+    entities = {name: (name, properties) for name, properties in record.entities.items()}
+    for change in result["changes"]:
+        if change["kind"] == "signalDefinition" and change["op"] == "remove":
+            known.discard(key(change["name"]))
+        elif change["kind"] == "signalDefinition":
+            known.add(key(change["name"]))
+        elif change["kind"] == "entity" and change["op"] == "remove":
+            entities.pop(change["name"].lower(), None)
+        elif change["kind"] == "entity":
+            entities[change["name"].lower()] = (change["name"], change["after"] or {})
+    return [
+        f"entity '{name}' uses signal definition '{definition}', which does not exist in the proposed model; "
+        "add the signal definition or stop using it"
+        for name, properties in sorted(entities.values(), key=lambda entity: entity[0])
+        for definition in sorted(definitions_used(properties), key=key)
+        if key(definition) not in known
+    ]
+
+
+def duplicate_problems(result: Mapping[str, Any], record: RunRecord) -> list[str]:
+    """A relationship is the only one between its parent and child: not a second name for a pair the model has, and not two
+    relationships of the result for one pair."""
+    proposed = proposed_edges(result, record)
+    touched = {change["name"].lower(): change["name"] for change in result["changes"] if change["kind"] == "relationship"}
+    problems = []
+    for number, change in enumerate(result["changes"]):
+        if change["kind"] != "relationship" or change["op"] == "remove":
+            continue
+        name = change["name"].lower()
+        twins = [other for other, ends in proposed.items() if ends == proposed.get(name) and other != name]
+        existing = [other for other in twins if other not in touched]
+        label = f"{label_of(number, change)} repeats {change['after'].get('parentEntityName')} -> {change['after'].get('childEntityName')}"
+        if existing:
+            problems.append(f"{label}, which already exists as '{existing[0]}'; use the existing name '{existing[0]}' instead of adding another relationship")
+        elif twins:
+            problems.append(f"{label}, also used by '{touched[twins[0]]}'; keep only one")
+    return problems
+
+
 def web_problems(result: Mapping[str, Any], record: RunRecord) -> list[str]:
-    """What the web app would answer to this diff: too many changes alone, else size, scope, action groups, discovery."""
+    """What the web app would answer to this diff: too many changes alone, else size, scope, action groups, discovery, the
+    signal definitions the signals name and the relationships that repeat a pair."""
     if result["kind"] != "diff":
         return []
     changes = result["changes"]
@@ -131,6 +183,8 @@ def web_problems(result: Mapping[str, Any], record: RunRecord) -> list[str]:
         + scope_problems(changes, record.scope, present)
         + action_group_problems(changes, present)
         + discovered_problems(changes, record)
+        + definition_problems(result, record)
+        + duplicate_problems(result, record)
     )
 
 
