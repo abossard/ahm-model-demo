@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { healthModel, installStubs } from "./fixture";
+import { healthModel, installStubs, liveShapeModel } from "./fixture";
 import { getBezierPath, getSmoothStepPath, Position } from "@xyflow/react";
 import { DENSE_SEED, denseModel, realAnbomovModel } from "./denseModel";
 
@@ -108,17 +108,23 @@ test("AC2 — switching layout repositions every node and flips the graph orient
   expect(await relation()).toEqual({ below: false, right: true });
 });
 
-test("AC5 — the sort control offers three keys and a reversible direction toggle", async ({ page }) => {
+test("AC5 — the order control offers the shortest connections first and three explicit keys with a reversible direction toggle", async ({ page }) => {
   await boot(page);
   const key = page.getByTestId("sort-key");
   const reverse = page.getByTestId("sort-reverse");
 
   expect(await key.evaluate((el) => el.tagName)).toBe("SELECT");
   expect(await key.locator("option").evaluateAll((els) => els.map((el) => el.getAttribute("value")))).toEqual([
+    "shortest",
     "name",
     "observed",
     "health",
   ]);
+  await expect(key).toHaveValue("shortest");
+  await expect(reverse).toBeDisabled();
+
+  await key.selectOption("name");
+  await expect(reverse).toBeEnabled();
   await expect(reverse).toHaveAttribute("aria-pressed", "false");
   await reverse.click();
   await expect(reverse).toHaveAttribute("aria-pressed", "true");
@@ -126,6 +132,8 @@ test("AC5 — the sort control offers three keys and a reversible direction togg
 
 test("AC5b — reversing the order mirrors the rank sequence on screen", async ({ page }) => {
   await boot(page);
+  await page.getByTestId("sort-key").selectOption("name");
+  await page.waitForTimeout(900);
   const rankOrder = async (): Promise<string[]> => {
     const items = await boxes(page);
     const top = Math.min(...items.map((item) => item.y));
@@ -141,6 +149,20 @@ test("AC5b — reversing the order mirrors the rank sequence on screen", async (
   await page.getByTestId("sort-reverse").click();
   await page.waitForTimeout(900);
   expect(await rankOrder()).toEqual([...forward].reverse());
+});
+
+test("AC5c — the default order puts parents over their children and shared children between their parents", async ({ page }) => {
+  await boot(page);
+  await page.waitForTimeout(900);
+  const items = await boxes(page);
+  const centre = (id: string): number => {
+    const item = items.find((entry) => entry.id === id) as Box;
+    return item.x + item.width / 2;
+  };
+
+  // svc-a has two children and svc-c has two parents: each sits in the middle of its relatives.
+  expect(centre("svc-a")).toBeCloseTo((centre("svc-b") + centre("svc-d")) / 2, 0);
+  expect(centre("svc-c")).toBeCloseTo((centre("svc-b") + centre("svc-d")) / 2, 0);
 });
 
 test("AC9 + AC10 + AC12 — collapsing hides the subtree behind a counted disclosure toggle", async ({ page }) => {
@@ -318,14 +340,15 @@ test("AC21 — layout, collapse and search changes are announced politely", asyn
 });
 
 /**
- * Verbatim copy of `PARENT_SECURITY_POLICY` in `src/web/app/config.py`. The Playwright preview server
+ * Verbatim copy of `SECURITY_POLICY` in `src/web/app/config.py`. The Playwright preview server
  * serves no CSP header of its own, so without injecting the real policy this test would pass on an
  * unprotected page and prove nothing.
  */
 const SERVED_CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self'; " +
-  "img-src 'self' data:; connect-src 'self'; base-uri 'none'; " +
-  "frame-src 'self'; frame-ancestors 'none'";
+  "default-src 'self'; script-src 'self'; " +
+  "style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; " +
+  "img-src 'self' data:; connect-src 'self' https://login.microsoftonline.com; base-uri 'none'; " +
+  "frame-ancestors 'none'";
 
 test("AC23 — the built app runs clean under the policy the server actually sends", async ({ page }) => {
   const violations: string[] = [];
@@ -346,14 +369,51 @@ test("AC23 — the built app runs clean under the policy the server actually sen
     await route.fulfill({ response, headers });
   });
 
+  await page.addInitScript(() => {
+    (window as unknown as { __violations: string[] }).__violations = [];
+    document.addEventListener("securitypolicyviolation", (event) => {
+      (window as unknown as { __violations: string[] }).__violations.push(
+        `${event.violatedDirective} ${event.blockedURI}`,
+      );
+    });
+  });
+
   await boot(page);
   await chooseLayout(page, "elk-layered");
   await chooseLayout(page, "d3-force");
   await openSearch(page);
   await page.getByTestId("search-input").fill("Service");
   await page.keyboard.press("Escape");
+  await expect(page.getByTestId("search-overlay")).toHaveCount(0);
+
+  // Every Fluent surface inserts its styles at runtime: the picker's listbox, the health popover,
+  // a tooltip, the entity drawer with its form and a message bar.
+  await page.getByTestId("model-picker-search").click();
+  await expect(page.getByRole("listbox", { name: "Health model" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByTestId("health-filter-toggle").click();
+  await expect(page.getByTestId("health-filter-popup")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByTestId("theme-toggle").hover();
+  await chooseLayout(page, "dagre-tb");
+  await page.locator('.react-flow__node[data-id="svc-a"] .entity-node').click();
+  await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await page.getByTestId("quick-send-Degraded").click();
+  await expect(page.getByTestId("report-confirmation")).toBeVisible();
+
+  // The policy must not have silently dropped the theme: its custom properties are on the shell.
+  const theme = await page.getByTestId("app-shell").evaluate((shell) => {
+    const style = getComputedStyle(shell);
+    return {
+      surface: style.getPropertyValue("--colorNeutralBackground1").trim(),
+      healthy: style.getPropertyValue("--healthy-fill").trim(),
+      background: style.backgroundColor,
+    };
+  });
+  expect(theme).toEqual({ surface: "#ffffff", healthy: "#f2f8f2", background: "rgb(255, 255, 255)" });
 
   expect(violations).toEqual([]);
+  expect(await page.evaluate(() => (window as unknown as { __violations: string[] }).__violations)).toEqual([]);
 });
 
 test("AC23b — the injected policy is real enough to block a violation", async ({ page }) => {
@@ -1346,7 +1406,7 @@ interface Separation {
 /** The toolbar occupies its own row: a control surface that overlays the canvas can swallow a click. */
 async function toolbarSeparation(page: Page): Promise<Separation> {
   return page.evaluate(() => {
-    const toolbar = (document.querySelector(".graph-toolbar") as HTMLElement).getBoundingClientRect();
+    const toolbar = (document.querySelector('[data-testid="graph-toolbar"]') as HTMLElement).getBoundingClientRect();
     const canvas = (document.querySelector(".react-flow") as HTMLElement).getBoundingClientRect();
     return {
       intersects:
@@ -1392,7 +1452,7 @@ async function disclosureProbes(page: Page): Promise<DisclosureProbe[]> {
   return page.evaluate(() => {
     const tolerance = 0.5;
     const view = (document.querySelector(".react-flow") as HTMLElement).getBoundingClientRect();
-    const toolbar = (document.querySelector(".graph-toolbar") as HTMLElement).getBoundingClientRect();
+    const toolbar = (document.querySelector('[data-testid="graph-toolbar"]') as HTMLElement).getBoundingClientRect();
     const cards = [...document.querySelectorAll(".react-flow__node .entity-node")].map(
       (card) => [card, card.getBoundingClientRect()] as const,
     );
@@ -1575,7 +1635,14 @@ test("C4-2b — a 22-node graph keeps every visible disclosure clickable from de
   page,
 }) => {
   // The deployed model's shape: 22 cards and 24 relationships, fitted below zoom 1 on first paint.
-  await installStubs(page, { healthModelFails: false, model: denseModel(DENSE_SEED, 22, 24) });
+  const model = denseModel(DENSE_SEED, 22, 24);
+  // Collapsing a card hides something only when it has a child no other parent reaches.
+  const hides = new Set(
+    model.entities
+      .filter((item) => item.children.some((child) => model.entities.find((other) => other.name === child)?.parents.length === 1))
+      .map((item) => item.name),
+  );
+  await installStubs(page, { healthModelFails: false, model });
   await page.goto("/");
   await page.waitForSelector(".react-flow__node .entity-node");
   await expect(page.locator(".react-flow__node")).toHaveCount(22);
@@ -1599,7 +1666,7 @@ test("C4-2b — a 22-node graph keeps every visible disclosure clickable from de
   await page.waitForTimeout(400);
   const probes = await disclosureProbes(page);
   const target = probes.find((probe) => probe.fullyVisible && probe.id === "n0") ??
-    (probes.find((probe) => probe.fullyVisible) as DisclosureProbe);
+    (probes.find((probe) => probe.fullyVisible && hides.has(probe.id)) as DisclosureProbe);
   const toggle = page.locator(
     `.react-flow__node[data-id="${target.id}"] [data-testid="collapse-toggle"]`,
   );
@@ -1615,4 +1682,28 @@ test("C4-2b — a 22-node graph keeps every visible disclosure clickable from de
   );
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator(".react-flow__node")).toHaveCount(22);
+});
+
+test("C12 — connection labels of the live model do not overlap in any hierarchy layout", async ({ page }) => {
+  await installStubs(page, { healthModelFails: false, model: liveShapeModel });
+  await page.goto("/");
+  await page.waitForSelector(".react-flow__node .entity-node");
+
+  for (const id of ["dagre-tb", "dagre-bt", "dagre-lr", "dagre-rl"]) {
+    await chooseLayout(page, id);
+    const labels = await page.locator(".react-flow__edge-textbg").evaluateAll((rects) =>
+      rects.map((rect) => {
+        const box = rect.getBoundingClientRect();
+        return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+      }),
+    );
+    expect(labels.length).toBeGreaterThan(10);
+    const clashes = labels.flatMap((one, index) =>
+      labels
+        .slice(index + 1)
+        .filter((other) => one.left < other.right && other.left < one.right && one.top < other.bottom && other.top < one.bottom)
+        .map(() => id),
+    );
+    expect(clashes, `overlapping labels under ${id}`).toEqual([]);
+  }
 });

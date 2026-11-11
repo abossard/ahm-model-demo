@@ -1,7 +1,8 @@
 import type { GraphLayout, NodeSize, Point } from "./layout";
 import type { Entity, HealthState } from "./types";
 
-export type SortKey = "name" | "observed" | "health";
+/** "shortest" leaves the order inside ranks to the arrangement; the others force it. */
+export type SortKey = "shortest" | "name" | "observed" | "health";
 
 export type RankAxis = "x" | "y" | null;
 
@@ -14,6 +15,7 @@ export const HEALTH_SORT_ORDER: readonly HealthState[] = [
 ];
 
 export const SORT_CHOICES: readonly { readonly key: SortKey; readonly label: string }[] = [
+  { key: "shortest", label: "Shortest connections" },
   { key: "name", label: "Name" },
   { key: "observed", label: "Last observed" },
   { key: "health", label: "Health state" },
@@ -46,13 +48,13 @@ export function orderEntities(
   const sortable = key === "observed" ? entities.filter((item) => !isUndated(item)) : [...entities];
 
   sortable.sort((left, right) => {
-    if (key === "name") return byName(left, right);
+    if (key === "name" || key === "shortest") return byName(left, right);
     if (key === "health") return severityOf(left) - severityOf(right) || byName(left, right);
     const compared = (right.latestEvaluationAt ?? "").localeCompare(left.latestEvaluationAt ?? "");
     return compared || byName(left, right);
   });
 
-  if (reversed) sortable.reverse();
+  if (reversed && key !== "shortest") sortable.reverse();
   return [...sortable, ...undated.sort(byName)];
 }
 

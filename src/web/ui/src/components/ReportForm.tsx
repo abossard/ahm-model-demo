@@ -1,19 +1,52 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { FormEvent, JSX } from "react";
+import {
+  Button,
+  Field,
+  MessageBar,
+  MessageBarBody,
+  Select,
+  Textarea,
+  makeStyles,
+  mergeClasses,
+  shorthands,
+  tokens,
+  type GriffelStyle,
+} from "@fluentui/react-components";
 import type {
   HealthReportBody,
   HealthState,
   ReportOptions,
   SignalValue,
 } from "../model/types";
-import { tokensFor } from "../model/palette";
-import { useAppDispatch, useAppSelector } from "../store/store";
-import { selectReportResult } from "../store/selectors";
-import { resetReport, submitHealthReport } from "../store/reportSlice";
+import { accessMessage } from "../model/errors";
+import { reportTokens, type ReportState, type ReportTokens } from "../model/palette";
+import { actions, useStore } from "../store/store";
 
 const CUSTOM_PRESET = "custom";
 const REASON_MIN = 1;
 const REASON_MAX = 280;
+
+function quickSendStyle(token: ReportTokens): GriffelStyle {
+  const colours = { backgroundColor: token.actionFill, color: token.actionInk };
+  return {
+    ...colours,
+    ...shorthands.borderColor(token.actionFill),
+    ":hover": { ...colours, filter: "brightness(1.12)" },
+    ":hover:active": { ...colours, filter: "brightness(0.92)" },
+  };
+}
+
+const stateStyles = Object.fromEntries(
+  Object.entries(reportTokens).map(([state, token]) => [state, quickSendStyle(token)]),
+) as Record<ReportState, GriffelStyle>;
+
+const useStyles = makeStyles({
+  form: { display: "flex", flexDirection: "column", rowGap: tokens.spacingVerticalM },
+  quickSend: { display: "flex", flexWrap: "wrap", gap: tokens.spacingHorizontalXS },
+  submit: { alignSelf: "flex-start" },
+  ...stateStyles,
+});
 
 interface ReportFormProps {
   readonly entityName: string;
@@ -25,8 +58,8 @@ function valueLabel(value: SignalValue): string {
 }
 
 export function ReportForm({ entityName, options }: ReportFormProps): JSX.Element {
-  const dispatch = useAppDispatch();
-  const result = useAppSelector(selectReportResult);
+  const styles = useStyles();
+  const result = useStore((state) => state.report);
 
   const [healthState, setHealthState] = useState<HealthState>(
     options.healthStates[0] ?? "Healthy",
@@ -39,10 +72,6 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
   const [customReason, setCustomReason] = useState("");
   const [reasonError, setReasonError] = useState<string | null>(null);
 
-  useEffect(() => {
-    dispatch(resetReport());
-  }, [dispatch, entityName]);
-
   const send = (state: HealthState): void => {
     if (reasonPreset === CUSTOM_PRESET) {
       const trimmed = customReason.trim();
@@ -52,16 +81,15 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
       }
     }
     setReasonError(null);
-    const value = options.values[valueIndex] ?? null;
     const body: HealthReportBody = {
       signalName: options.signalName,
       healthState: state,
-      value,
+      value: options.values[valueIndex] ?? null,
       expiresInMinutes,
       reasonPreset,
       ...(reasonPreset === CUSTOM_PRESET ? { customReason: customReason.trim() } : {}),
     };
-    void dispatch(submitHealthReport({ name: entityName, body }));
+    void actions.submitHealthReport(entityName, body);
   };
 
   const submit = (event: FormEvent): void => {
@@ -70,77 +98,70 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
   };
 
   return (
-    <form className="report-form" onSubmit={submit} aria-label="Submit a health report">
-      <div className="quick-send" data-testid="quick-send" role="group" aria-label="Quick send">
+    <form className={styles.form} onSubmit={submit} aria-label="Submit a health report">
+      <div className={styles.quickSend} data-testid="quick-send" role="group" aria-label="Quick send">
         {options.healthStates.map((state) => (
-          <button
+          <Button
             key={state}
-            type="button"
-            className="quick-send__button"
+            size="small"
+            appearance="primary"
+            className={mergeClasses(styles[state in reportTokens ? (state as ReportState) : "Unknown"])}
             data-testid={`quick-send-${state}`}
-            style={{
-              backgroundColor: tokensFor(state).actionFill,
-              color: tokensFor(state).actionInk,
-            }}
             onClick={() => send(state)}
           >
             {state}
-          </button>
+          </Button>
         ))}
       </div>
 
-      <div className="field">
-        <label htmlFor="report-state">Health state</label>
-        <select
+      <Field label="Health state">
+        <Select
           id="report-state"
           value={healthState}
-          onChange={(event) => setHealthState(event.target.value as HealthState)}
+          onChange={(_, data) => setHealthState(data.value as HealthState)}
         >
           {options.healthStates.map((state) => (
             <option key={state} value={state}>
               {state}
             </option>
           ))}
-        </select>
-      </div>
+        </Select>
+      </Field>
 
-      <div className="field">
-        <label htmlFor="report-value">Value</label>
-        <select
+      <Field label="Value">
+        <Select
           id="report-value"
           value={valueIndex}
-          onChange={(event) => setValueIndex(Number(event.target.value))}
+          onChange={(_, data) => setValueIndex(Number(data.value))}
         >
           {options.values.map((value, index) => (
             <option key={index} value={index}>
               {valueLabel(value)}
             </option>
           ))}
-        </select>
-      </div>
+        </Select>
+      </Field>
 
-      <div className="field">
-        <label htmlFor="report-expiry">Expires in (minutes)</label>
-        <select
+      <Field label="Expires in (minutes)">
+        <Select
           id="report-expiry"
           value={expiresInMinutes}
-          onChange={(event) => setExpiresInMinutes(Number(event.target.value))}
+          onChange={(_, data) => setExpiresInMinutes(Number(data.value))}
         >
           {options.expiries.map((minutes) => (
             <option key={minutes} value={minutes}>
               {minutes}
             </option>
           ))}
-        </select>
-      </div>
+        </Select>
+      </Field>
 
-      <div className="field">
-        <label htmlFor="report-reason">Reason</label>
-        <select
+      <Field label="Reason">
+        <Select
           id="report-reason"
           value={reasonPreset}
-          onChange={(event) => {
-            setReasonPreset(event.target.value);
+          onChange={(_, data) => {
+            setReasonPreset(data.value);
             setReasonError(null);
           }}
         >
@@ -149,39 +170,42 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
               {preset.label}
             </option>
           ))}
-        </select>
-      </div>
+        </Select>
+      </Field>
 
       {reasonPreset === CUSTOM_PRESET ? (
-        <div className="field">
-          <label htmlFor="report-custom-reason">Custom reason</label>
-          <textarea
+        <Field
+          label="Custom reason"
+          validationState={reasonError ? "error" : "none"}
+          validationMessage={
+            reasonError ? { id: "report-custom-reason-error", children: reasonError } : null
+          }
+        >
+          <Textarea
             id="report-custom-reason"
+            resize="vertical"
             value={customReason}
-            onChange={(event) => setCustomReason(event.target.value)}
-            aria-invalid={reasonError !== null}
-            aria-describedby="report-custom-reason-error"
+            onChange={(_, data) => setCustomReason(data.value)}
           />
-          <p id="report-custom-reason-error" className="field-error" role="alert">
-            {reasonError ?? ""}
-          </p>
-        </div>
+        </Field>
       ) : null}
 
-      <button type="submit" className="primary">
+      <Button type="submit" appearance="primary" className={styles.submit} data-testid="report-submit">
         Submit report
-      </button>
+      </Button>
 
       {result.kind === "success" ? (
-        <p className="report-confirmation" data-testid="report-confirmation" role="status">
-          Report <strong data-testid="report-id">{result.value.reportId}</strong> accepted,
-          expires at <time data-testid="report-expires">{result.value.expiresAt}</time>.
-        </p>
+        <MessageBar intent="success" role="status" data-testid="report-confirmation">
+          <MessageBarBody>
+            Report <strong data-testid="report-id">{result.value.reportId}</strong> accepted,
+            expires at <time data-testid="report-expires">{result.value.expiresAt}</time>.
+          </MessageBarBody>
+        </MessageBar>
       ) : null}
       {result.kind === "failure" ? (
-        <p className="report-error" role="alert">
-          {result.error.message}
-        </p>
+        <MessageBar intent="error" role="alert">
+          <MessageBarBody>{accessMessage(result.error, "report")}</MessageBarBody>
+        </MessageBar>
       ) : null}
     </form>
   );

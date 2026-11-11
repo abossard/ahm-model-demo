@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
+import { makeStyles, mergeClasses, tokens } from "@fluentui/react-components";
 import { ReactFlow, ReactFlowProvider, Background, useReactFlow } from "@xyflow/react";
 import type { EdgeTypes, NodeTypes, NodeChange } from "@xyflow/react";
-import type { Entity, HealthState, Relationship } from "../model/types";
+import type { Entity, HealthModelSnapshot, HealthState, Relationship } from "../model/types";
 import {
   LAYOUT_ENGINES,
   anchorLayout,
@@ -20,37 +21,74 @@ import {
   type Rect,
 } from "../model/edgeRouting";
 import { orderEntities, orderWithinRanks } from "../model/ordering";
+import type { ChangeBadge } from "../model/changes";
 import { collapseControls, visibleGraph } from "../model/collapse";
 import { cardTokens, tokensFor } from "../model/palette";
-import { useAppDispatch, useAppSelector } from "../store/store";
-import {
-  selectCollapsed,
-  selectConnectionPolicy,
-  selectEdgeStyle,
-  selectFocusNames,
-  selectFocusSeq,
-  selectHighlightedName,
-  selectLayoutId,
-  selectExcludedEntityMode,
-  selectSelectedHealth,
-  selectSelectedName,
-  selectSortKey,
-  selectSortReversed,
-} from "../store/selectors";
-import { announce } from "../store/uiSlice";
+import { actions, useStore } from "../store/store";
 import { EntityNode, estimateNodeSize, type EntityRfNode } from "./EntityNode";
 import { FloatingEdge, type FloatingRfEdge } from "./FloatingEdge";
-import { GraphToolbar } from "./GraphToolbar";
-import { SearchOverlay } from "./SearchOverlay";
 
 interface TopologyProps {
+  /** Prefix of this instance's DOM id and test id, so that two graphs can share a page. */
+  readonly idPrefix: string;
+  readonly label?: string;
   readonly entities: readonly Entity[];
   readonly relationships: readonly Relationship[];
+  /** Change badges and marks of a compared Health model diff, keyed by lower-cased entity name. */
+  readonly badges?: ReadonlyMap<string, ChangeBadge>;
+  readonly marked?: ReadonlySet<string>;
+  /** How far the graph may zoom out; a narrow canvas needs more than the default to fit a wide graph. */
+  readonly minZoom?: number;
+  /**
+   * The graph this one is arranged with. Two graphs that share a basis put the same entity in the
+   * same relation to the others, so one can be read against the other.
+   */
+  readonly basis?: HealthModelSnapshot;
 }
+
+const useStyles = makeStyles({
+  root: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 0,
+    position: "relative",
+    display: "flex",
+    flexDirection: "column",
+  },
+  // The canvas owns the space the toolbar leaves, so no card can ever render under the toolbar.
+  label: {
+    flex: "0 0 auto",
+    padding: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalM}`,
+    fontSize: tokens.fontSizeBase200,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground2,
+    backgroundColor: tokens.colorNeutralBackground2,
+    borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  canvas: {
+    flex: 1,
+    minHeight: 0,
+    position: "relative",
+    overflow: "hidden",
+    "@media (max-width: 720px)": { flex: "1 0 320px" },
+  },
+  empty: {
+    position: "absolute",
+    inset: 0,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: tokens.spacingHorizontalL,
+    textAlign: "center",
+    color: tokens.colorNeutralForeground2,
+    pointerEvents: "none",
+  },
+});
 
 const nodeTypes: NodeTypes = { entity: EntityNode };
 const edgeTypes: EdgeTypes = { floating: FloatingEdge };
 
+const DEFAULT_MIN_ZOOM = 0.5;
 export const LAYOUT_TRANSITION_MS = 500;
 export const FOCUS_TRANSITION_MS = 750;
 const EMPTY_LAYOUT: GraphLayout = { positions: new Map(), width: 0, height: 0 };
@@ -209,20 +247,31 @@ export function buildEdges(
   return edges;
 }
 
-function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element {
-  const dispatch = useAppDispatch();
-  const selectedName = useAppSelector(selectSelectedName);
-  const highlightedName = useAppSelector(selectHighlightedName);
-  const layoutId = useAppSelector(selectLayoutId);
-  const edgeStyle = useAppSelector(selectEdgeStyle);
-  const connectionPolicy = useAppSelector(selectConnectionPolicy);
-  const sortKey = useAppSelector(selectSortKey);
-  const sortReversed = useAppSelector(selectSortReversed);
-  const collapsed = useAppSelector(selectCollapsed);
-  const selectedHealth = useAppSelector(selectSelectedHealth);
-  const excludedEntityMode = useAppSelector(selectExcludedEntityMode);
-  const focusNames = useAppSelector(selectFocusNames);
-  const focusSeq = useAppSelector(selectFocusSeq);
+function TopologyCanvas({
+  idPrefix,
+  label,
+  entities,
+  relationships,
+  badges,
+  marked,
+  minZoom = DEFAULT_MIN_ZOOM,
+  basis,
+}: TopologyProps): JSX.Element {
+  const styles = useStyles();
+  const selectedName = useStore((state) => state.selectedName);
+  const highlightedName = useStore((state) => state.highlightedName);
+  const layoutId = useStore((state) => state.layoutId);
+  const edgeStyle = useStore((state) => state.edgeStyle);
+  const connectionPolicy = useStore((state) => state.connectionPolicy);
+  const sortKey = useStore((state) => state.sortKey);
+  const sortReversed = useStore((state) => state.sortReversed);
+  const workspaceFrame = useStore((state) => (state.workspaceOpen ? state.workspaceWidth : 0));
+  const collapsed = useStore((state) => state.collapsed);
+  const selectedHealth = useStore((state) => state.selectedHealth);
+  const excludedEntityMode = useStore((state) => state.excludedEntityMode);
+  const focusNames = useStore((state) => state.focusNames);
+  const focusSeq = useStore((state) => state.focusSeq);
+  const chainNames = useStore((state) => state.chainNames);
   const { fitView } = useReactFlow();
   const fitViewRef = useRef(fitView);
   fitViewRef.current = fitView;
@@ -264,6 +313,27 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
       ),
     [visible, measuredCards],
   );
+
+  // What the arrangement runs on: this graph, or the basis it shares, drawn with this graph's sizes
+  // where it has the entity and estimated ones where it has not.
+  const arranged = useMemo(() => {
+    if (!basis) return { visible, sizes };
+    const shared = visibleGraph(basis.entities, basis.relationships, new Set(collapsed), {
+      selectedHealth: new Set(selectedHealth),
+      excludedEntityMode,
+    });
+    const sharedSizes = new Map(sizes);
+    for (const item of shared.entities) {
+      if (sharedSizes.has(item.name)) continue;
+      sharedSizes.set(
+        item.name,
+        shared.dotNames.has(item.name)
+          ? estimateNodeSize(item, false, "dot")
+          : estimateNodeSize(item, (shared.hiddenCounts.get(item.name) ?? 0) > 0),
+      );
+    }
+    return { visible: shared, sizes: sharedSizes };
+  }, [basis, visible, sizes, collapsed, selectedHealth, excludedEntityMode]);
 
   const [layout, setLayout] = useState<GraphLayout>(EMPTY_LAYOUT);
   const liveSession = useRef<LiveLayoutSession | null>(null);
@@ -310,6 +380,7 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
 
   useEffect(() => {
     const engine = LAYOUT_ENGINES[layoutId];
+    const shortest = sortKey === "shortest";
     const order = orderEntities(visible.entities, sortKey, sortReversed).map((item) => item.name);
     const orderedEntities = order.map((name) => visible.entities.find((entity) => entity.name === name) as Entity);
     const signature = layoutMaterialSignature(fitOn, order, visible.relationships, sizes);
@@ -342,7 +413,7 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
             );
             settled.current = { key: fitOnRef.current, positions: new Map(fallback.positions) };
             setLayout(fallback);
-            dispatch(announce("Live force layout failed. Showing latest stable placement."));
+            actions.announce("Live force layout failed. Showing latest stable placement.");
           },
         });
         liveSession.current = currentSession;
@@ -375,7 +446,7 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
         );
         settled.current = { key: fitOnRef.current, positions: new Map(fallback.positions) };
         setLayout(fallback);
-        dispatch(announce("Live force layout failed. Showing latest stable placement."));
+        actions.announce("Live force layout failed. Showing latest stable placement.");
       }
       if (lastFitOn.current !== fitOn) {
         lastFitOn.current = fitOn;
@@ -412,12 +483,18 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
     const generation = staticGeneration.current;
 
     void engine
-      .run(visible.entities, visible.relationships, (item) =>
-        sizes.get(item.name) ?? estimateNodeSize(item),
+      .run(
+        arranged.visible.entities,
+        arranged.visible.relationships,
+        (item) => arranged.sizes.get(item.name) ?? estimateNodeSize(item),
+        shortest,
       )
-      .then((next) => {
+      .then((whole) => {
         if (cancelled || generation !== staticGeneration.current) return;
-        const ordered = orderWithinRanks(next, order, engine.rankAxis, sizes);
+        const own = new Map<string, Point>();
+        for (const item of visible.entities) own.set(item.name, whole.positions.get(item.name) ?? { x: 0, y: 0 });
+        const next = basis ? { positions: own, ...boundsOf(own, sizes) } : whole;
+        const ordered = shortest ? next : orderWithinRanks(next, order, engine.rankAxis, sizes);
         const current = settled.current;
         const remembered = current && current.key === fitOn ? current.positions : null;
         const placed = remembered ? anchorLayout(ordered, remembered, sizes) : ordered;
@@ -437,13 +514,13 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
         const fallback = fallbackLayout(orderedEntities, sizes, remembered);
         settled.current = { key: fitOnRef.current, positions: new Map(fallback.positions) };
         setLayout(fallback);
-        dispatch(announce("Layout failed. Showing latest stable placement."));
+        actions.announce("Layout failed. Showing latest stable placement.");
       });
 
     return () => {
       cancelled = true;
     };
-  }, [layoutId, sortKey, sortReversed, visible, sizes, fitOn, dispatch, reducedMotion]);
+  }, [layoutId, sortKey, sortReversed, visible, sizes, arranged, basis, fitOn, reducedMotion]);
 
   useEffect(
     () => () => {
@@ -455,6 +532,14 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
     [],
   );
 
+  // A side panel opening or resizing changes what the canvas can show, so the graph fits it again.
+  const lastFrame = useRef(workspaceFrame);
+  useEffect(() => {
+    if (lastFrame.current === workspaceFrame) return;
+    lastFrame.current = workspaceFrame;
+    setFitToken((current) => current + 1);
+  }, [workspaceFrame]);
+
   useEffect(() => {
     if (fitToken === 0) return;
     // The very first fit lands the graph on screen; animating it only delays first paint.
@@ -465,6 +550,8 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
     return () => cancelAnimationFrame(frame);
   }, [fitToken]);
 
+  const visibleNames = useMemo(() => new Set(visible.entities.map((item) => item.name)), [visible]);
+
   useEffect(() => {
     const pending = pendingFocus.current;
     if (!pending) return;
@@ -472,15 +559,20 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
       pendingFocus.current = null;
       return;
     }
-    if (!pending.names.every((name) => rememberedFromLayout.current.has(name))) return;
+    // Another graph may show entities this one does not; a name this graph never draws is no reason to wait.
+    const names = pending.names.filter((name) => visibleNames.has(name));
+    if (!names.every((name) => rememberedFromLayout.current.has(name))) return;
     pendingFocus.current = null;
     lastFocus.current = pending.seq;
+    if (names.length === 0) return;
     void fitViewRef.current({
-      nodes: pending.names.map((name) => ({ id: name })),
+      nodes: names.map((name) => ({ id: name })),
       duration: motionDuration(FOCUS_TRANSITION_MS),
       maxZoom: 1.4,
     });
-  }, [layout, fitToken, focusSeq]);
+  }, [layout, fitToken, focusSeq, visibleNames]);
+
+  const chain = useMemo(() => new Set(chainNames.map((name) => name.toLowerCase())), [chainNames]);
 
   const nodes = useMemo<EntityRfNode[]>(
     () =>
@@ -507,10 +599,13 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
               ? visible.hiddenCounts.get(entity.name) ?? 0
               : controls.get(entity.name)?.hiddenCount ?? 0,
             hiddenStates: visible.hiddenStates.get(entity.name) ?? EMPTY_STATES,
+            badge: badges?.get(entity.name.toLowerCase()) ?? null,
+            marked: marked?.has(entity.name.toLowerCase()) ?? false,
+            inChain: chain.has(entity.name.toLowerCase()),
           },
         };
       }),
-    [visible, layout, sizes, selectedName, highlightedName, collapsed, controls],
+    [visible, layout, sizes, selectedName, highlightedName, collapsed, controls, badges, marked, chain],
   );
 
   const rects = useMemo<ReadonlyMap<string, Rect>>(() => {
@@ -538,21 +633,17 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
   );
 
   return (
-    <div id="topology" className="topology">
-      {/*
-       * The toolbar takes its own row above the canvas instead of floating over it. An overlay
-       * toolbar sits between the pointer and whatever the graph paints underneath, so an ordinary
-       * zoom could park a card's header disclosure under it and swallow every click on it.
-       */}
-      <GraphToolbar visibleCount={visible.entities.length} />
-      <div className="topology__canvas">
+    <div id={idPrefix} data-testid={idPrefix} className={mergeClasses("topology", styles.root)}>
+      {label ? <div className={styles.label}>{label}</div> : null}
+      <div className={styles.canvas}>
         <ReactFlow
+          id={idPrefix}
           nodes={nodes}
           edges={edges}
           nodeOrigin={[0, 0]}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
-          minZoom={0.5}
+          minZoom={minZoom}
           nodesDraggable={layoutId === "d3-force-adaptive"}
           nodesConnectable={false}
           nodesFocusable={false}
@@ -589,10 +680,14 @@ function TopologyCanvas({ entities, relationships }: TopologyProps): JSX.Element
           }}
           proOptions={{ hideAttribution: false }}
         >
-          <Background />
+          <Background id={idPrefix} />
         </ReactFlow>
+        {entities.length === 0 ? (
+          <div className={styles.empty} data-testid="graph-empty" data-graph={idPrefix}>
+            {label ? `The ${label} has no entities.` : "This health model has no entities."}
+          </div>
+        ) : null}
       </div>
-      <SearchOverlay entities={entities} relationships={relationships} />
     </div>
   );
 }

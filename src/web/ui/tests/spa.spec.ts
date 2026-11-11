@@ -1,9 +1,10 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import {
+  SUBSCRIPTION_A,
+  SUBSCRIPTION_B,
   healthModel,
   installStubs,
-  journeyResponse,
   modelCatalog,
   paymentsHealthModel,
   reportResponse,
@@ -18,6 +19,13 @@ const STATE_PALETTE: Readonly<
   "svc-d": { border: "rgb(200, 198, 196)", fill: "rgb(246, 246, 245)", word: "Unknown" },
   "svc-e": { border: "rgb(134, 97, 197)", fill: "rgb(244, 240, 251)", word: "Standby" },
 };
+
+/** What the picker shows for one model: its name and group, then the short subscription hint. */
+function optionText(model: (typeof modelCatalog.models)[number]): string {
+  return `${model.name} (${model.resourceGroup}) ${model.subscriptionId.slice(0, 8)}`;
+}
+
+const MODEL_OPTIONS = '[data-testid^="model-picker-option-"]';
 
 function validRelationships(): readonly { parent: string; child: string; label: string | null }[] {
   const names = new Set(healthModel.entities.map((entity) => entity.name));
@@ -80,7 +88,7 @@ test("AC3 — each card carries the portal state design and pill word", async ({
         fill: cs.backgroundColor,
       };
     });
-    expect(style.radius, `${name} radius`).toBe("10px");
+    expect(style.radius, `${name} radius`).toBe("8px");
     expect(style.width, `${name} border width`).toBe("2px");
     expect(style.border, `${name} border color`).toBe(pair.border);
     expect(style.fill, `${name} fill`).toBe(pair.fill);
@@ -116,7 +124,12 @@ test("AC6 — activating a node opens the detail panel by pointer and keyboard",
     (req) => new URL(req.url()).pathname === "/api/entities/svc-a" && req.method() === "GET",
   );
   await page.locator(`.react-flow__node[data-id="svc-a"] .entity-node`).click();
-  expect(new URL((await pointerRequest).url()).searchParams.get("model")).toBe("hm-demo");
+  const pointerParams = new URL((await pointerRequest).url()).searchParams;
+  expect([
+    pointerParams.get("model"),
+    pointerParams.get("resourceGroup"),
+    pointerParams.get("subscription"),
+  ]).toEqual(["hm-demo", "rg-demo", SUBSCRIPTION_A]);
   await expect(page.getByTestId("entity-panel")).toBeVisible();
   await expect(page.getByTestId("entity-name")).toHaveText("Service A");
 
@@ -177,8 +190,9 @@ test("each edge is stroked with its child entity health colour", async ({ page }
 
 test("cards of different heights on the same rank are top aligned", async ({ page }) => {
   await bootTopology(page);
+  // svc-f has no relationship and goes on a shelf of its own, so it is not on this rank.
   const boxes = await Promise.all(
-    ["svc-a", "svc-e", "svc-f"].map((name) =>
+    ["svc-a", "svc-e"].map((name) =>
       page.locator(`.react-flow__node[data-id="${name}"]`).boundingBox(),
     ),
   );
@@ -205,7 +219,13 @@ test("report submission posts the exact body and shows the receipt", async ({ pa
       new URL(req.url()).pathname === "/api/entities/svc-a/health-reports" && req.method() === "POST",
   );
   await page.getByRole("button", { name: "Submit report" }).click();
-  const body = (await postRequest).postDataJSON();
+  const posted = await postRequest;
+  expect([...new URL(posted.url()).searchParams]).toEqual([
+    ["model", "hm-demo"],
+    ["resourceGroup", "rg-demo"],
+    ["subscription", SUBSCRIPTION_A],
+  ]);
+  const body = posted.postDataJSON();
 
   expect(body).toEqual({
     signalName: "web-ui-health-report",
@@ -243,95 +263,6 @@ test("empty custom reason blocks submission and announces the error", async ({ p
   expect(postCount).toBe(0);
 });
 
-test("the request-journey control posts and renders all three fields", async ({ page }) => {
-  await bootTopology(page);
-
-  await expect(page.getByTestId("journey-description")).toContainText(
-    "enqueues first, then writes PostgreSQL, then peeks",
-  );
-  await expect(page.getByTestId("journey-scope")).toContainText(
-    "configured application workload",
-  );
-
-  const journeyRequest = page.waitForRequest(
-    (req) => req.url().endsWith("/api/demo-request") && req.method() === "POST",
-  );
-  await page.getByRole("button", { name: "Run request journey" }).click();
-  await journeyRequest;
-
-  await expect(page.getByTestId("journey-request-id")).toHaveText(journeyResponse.request_id);
-  await expect(page.getByTestId("journey-message-id")).toHaveText(
-    journeyResponse.just_enqueued.message_id,
-  );
-  await expect(page.getByTestId("journey-queue-head-label")).toHaveText(
-    journeyResponse.queue_head?.label ?? "oldest visible / best-effort FIFO",
-  );
-  await expect(page.getByTestId("journey-queue-head")).toHaveText(
-    journeyResponse.queue_head?.request_id ?? "none",
-  );
-  await expect(page.getByTestId("journey-row-count")).toHaveText(String(journeyResponse.row_count));
-});
-
-test("request-journey fallback displays an empty queue head when the API returns null", async ({
-  page,
-}) => {
-  await bootTopology(page);
-  await page.route("**/api/demo-request", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ ...journeyResponse, queue_head: null }),
-    });
-  });
-  await page.getByRole("button", { name: "Run request journey" }).click();
-  await expect(page.getByTestId("journey-queue-head-label")).toHaveText(
-    "oldest visible / best-effort FIFO",
-  );
-  await expect(page.getByTestId("journey-queue-head")).toHaveText("none");
-});
-
-test("request-journey failure shows side-effect warning and server request/operation IDs", async ({
-  page,
-}) => {
-  await bootTopology(page);
-  await page.route("**/api/demo-request", async (route) => {
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      headers: {
-        "x-request-id": "req-header",
-        "x-operation-id": "op-header",
-      },
-      body: JSON.stringify({
-        request_id: "req-body",
-        operation_id: "op-body",
-        status: "failed",
-        error: "RuntimeError",
-      }),
-    });
-  });
-  await page.getByRole("button", { name: "Run request journey" }).click();
-  const alert = page.getByRole("alert");
-  await expect(alert).toContainText("Request failed with status 503.");
-  await expect(alert).toContainText("Earlier queue/database side effects may already exist.");
-  await expect(alert).toContainText("Retry when ready.");
-  await expect(alert).toContainText("Request req-body.");
-  await expect(alert).toContainText("Operation op-body.");
-});
-
-test("request-journey network failure remains retryable and warns about partial side effects", async ({
-  page,
-}) => {
-  await bootTopology(page);
-  await page.route("**/api/demo-request", async (route) => {
-    await route.abort("failed");
-  });
-  await page.getByRole("button", { name: "Run request journey" }).click();
-  const alert = page.getByRole("alert");
-  await expect(alert).toContainText("Failed to fetch");
-  await expect(alert).toContainText("Earlier queue/database side effects may already exist.");
-});
-
 test("health-model failure shows error and retry recovers the topology", async ({ page }) => {
   const state = { healthModelFails: true };
   await installStubs(page, state);
@@ -350,41 +281,52 @@ test("health-model failure shows error and retry recovers the topology", async (
   await expect(page.locator(".react-flow__node")).toHaveCount(healthModel.entities.length);
 });
 
+const SELECTED_KEY = `${SUBSCRIPTION_A}/rg-demo/hm-demo`;
+
+function modelNamed(name: string): (typeof modelCatalog.models)[number] {
+  return modelCatalog.models.find((item) => item.name === name)!;
+}
+
 test("AC8 — the status bar lists every discoverable model with the active one selected", async ({ page }) => {
   await bootTopology(page);
 
   const picker = page.getByTestId("model-picker-search");
   await expect(picker).toBeVisible();
   await picker.click();
-  const options = page.locator(".model-picker__list [role='option']");
+  const options = page.locator(MODEL_OPTIONS);
   await expect(options).toHaveCount(modelCatalog.models.length);
-  const expected = [...modelCatalog.models]
-    .sort((left, right) =>
-      left.name.toLowerCase() === right.name.toLowerCase()
-        ? left.resourceGroup.toLowerCase().localeCompare(right.resourceGroup.toLowerCase())
-        : left.name.toLowerCase().localeCompare(right.name.toLowerCase()),
-    )
-    .map((item) => `${item.name} (${item.resourceGroup})`);
+  // Two subscriptions are listed, so the options are grouped by subscription with the default one
+  // first, and sorted by name inside each group.
   await expect(options).toHaveText(
-    expected,
+    ["hm-demo", "hm-payments", "hm-eu"].map((name) => optionText(modelNamed(name))),
   );
-  await expect(page.getByTestId("model-picker")).toHaveValue("rg-demo/hm-demo");
+  for (const subscription of [SUBSCRIPTION_A, SUBSCRIPTION_B]) {
+    await expect(
+      page.getByRole("group", { name: `Subscription ${subscription.slice(0, 8)}` }),
+    ).toHaveCount(1);
+  }
+  await expect(page.getByTestId("model-picker")).toHaveValue(SELECTED_KEY);
   await expect(page.getByTestId("model-picker-selected")).toContainText("hm-demo (rg-demo)");
   await expect(page.getByTestId("model-name")).toHaveText(healthModel.model.name);
 });
 
-test("model picker search filters by model and group, then restores full list", async ({ page }) => {
+test("model picker search filters by model, group and subscription, then restores full list", async ({ page }) => {
   await bootTopology(page);
   const search = page.getByTestId("model-picker-search");
   await search.click();
-  const options = page.locator(".model-picker__list [role='option']");
+  const options = page.locator(MODEL_OPTIONS);
 
   await search.fill("eu");
   await expect(options).toHaveCount(1);
-  await expect(options.first()).toHaveText("hm-eu (rg-eu)");
+  await expect(options.first()).toHaveText(optionText(modelNamed("hm-eu")));
 
   await search.fill("RG-DEMO");
   await expect(options).toHaveCount(2);
+  // Only one subscription is left, so the group headings go away.
+  await expect(page.getByRole("listbox", { name: "Health model" }).getByRole("group")).toHaveCount(0);
+
+  await search.fill(SUBSCRIPTION_B.slice(0, 8));
+  await expect(options).toHaveCount(1);
 
   await search.fill("");
   await expect(options).toHaveCount(modelCatalog.models.length);
@@ -396,17 +338,54 @@ test("model picker no-results keeps the selected model unchanged", async ({ page
   await search.click();
   await search.fill("no-such-model");
   await expect(page.getByTestId("model-picker-empty")).toBeVisible();
-  await expect(page.getByTestId("model-picker")).toHaveValue("rg-demo/hm-demo");
+  await expect(page.getByTestId("model-picker")).toHaveValue(SELECTED_KEY);
   await expect(page.getByTestId("model-picker-selected")).toContainText("hm-demo (rg-demo)");
   await expect(page.getByTestId("model-name")).toHaveText(healthModel.model.name);
 });
 
+test("model picker renders a capped, filterable list for a few hundred models", async ({ page }) => {
+  const many = Array.from({ length: 300 }, (_, index) => ({
+    ...modelCatalog.models[0]!,
+    name: `hm-${String(index).padStart(3, "0")}`,
+    id: `/many/${index}`,
+    subscriptionId: index % 2 === 0 ? SUBSCRIPTION_A : SUBSCRIPTION_B,
+  }));
+  await installStubs(page, {
+    catalog: {
+      models: many,
+      default: { name: "hm-000", resourceGroup: "rg-demo", subscriptionId: SUBSCRIPTION_A },
+    },
+  });
+  await page.goto("/");
+  await page.waitForSelector(".react-flow__node .entity-node");
+
+  const search = page.getByTestId("model-picker-search");
+  await search.click();
+  await expect(page.locator(MODEL_OPTIONS)).toHaveCount(50);
+  await expect(page.getByTestId("model-picker-capped")).toHaveText(
+    "Showing 50 of 300. Type to narrow the list.",
+  );
+
+  await search.fill("hm-299");
+  await expect(page.locator(MODEL_OPTIONS)).toHaveCount(1);
+  await expect(page.getByTestId("model-picker-capped")).toHaveCount(0);
+});
+
 test("deep-linked unavailable selection shows a fallback notice", async ({ page }) => {
   await installStubs(page, {});
-  await page.goto("/?model=hm-missing&resourceGroup=rg-missing");
-  await expect(page.getByTestId("model-picker")).toHaveValue("rg-demo/hm-demo");
+  await page.goto(`/?model=hm-missing&resourceGroup=rg-missing&subscription=${SUBSCRIPTION_A}`);
+  await expect(page.getByTestId("model-picker")).toHaveValue(SELECTED_KEY);
   await expect(page.getByTestId("model-picker-unavailable-selection")).toContainText(
     "Requested hm-missing (rg-missing) is unavailable.",
+  );
+});
+
+test("a deep link to the right model in the wrong subscription is unavailable", async ({ page }) => {
+  await installStubs(page, {});
+  await page.goto(`/?model=hm-demo&resourceGroup=rg-demo&subscription=${SUBSCRIPTION_B}`);
+  await expect(page.getByTestId("model-picker")).toHaveValue(SELECTED_KEY);
+  await expect(page.getByTestId("model-picker-unavailable-selection")).toContainText(
+    "Requested hm-demo (rg-demo) is unavailable.",
   );
 });
 
@@ -443,16 +422,13 @@ test("model picker keyboard navigation selects entries and does not break graph 
   await expect(page.getByTestId("search-overlay")).toHaveCount(0);
 });
 
-test("Escape closes model picker without closing chat", async ({ page }) => {
+test("Escape closes the model picker list", async ({ page }) => {
   await bootTopology(page);
-  await page.getByTestId("chat-toggle").click();
-  await expect(page.getByTestId("chat-panel")).toBeVisible();
   const search = page.getByTestId("model-picker-search");
   await search.click();
-  await expect(page.locator(".model-picker__list")).toBeVisible();
+  await expect(page.getByRole("listbox", { name: "Health model" })).toBeVisible();
   await search.press("Escape");
-  await expect(page.locator(".model-picker__list")).toHaveCount(0);
-  await expect(page.getByTestId("chat-panel")).toBeVisible();
+  await expect(page.getByRole("listbox", { name: "Health model" })).toHaveCount(0);
 });
 
 test("theme toggle persists an explicit choice across reload", async ({ page }) => {
@@ -567,8 +543,8 @@ for (const theme of ["light", "dark"] as const) {
       const card = document.querySelector(".entity-node") as HTMLElement;
       const cardName = card.querySelector(".entity-node__name") as HTMLElement;
       const rowValue = card.querySelector(".entity-node__row-value") as HTMLElement;
-      const pill = document.querySelector(".state-pill") as HTMLElement;
-      const button = document.querySelector(".primary") as HTMLElement;
+      const pill = document.querySelector('[data-testid="health-badge"]') as HTMLElement;
+      const button = document.querySelector('[data-testid="report-submit"]') as HTMLElement;
       const quickSend = document.querySelector(
         '[data-testid="quick-send-Healthy"]',
       ) as HTMLElement;
@@ -614,6 +590,7 @@ test("AC9 — choosing a model refetches it, closes the entity panel and redraws
   const url = new URL((await refetch).url());
   expect(url.searchParams.get("model")).toBe("hm-payments");
   expect(url.searchParams.get("resourceGroup")).toBe("rg-demo");
+  expect(url.searchParams.get("subscription")).toBe(SUBSCRIPTION_A);
 
   await expect(page.getByTestId("entity-panel")).toHaveCount(0);
   await expect(page.getByTestId("model-name")).toHaveText(paymentsHealthModel.model.name);
@@ -632,7 +609,9 @@ test("AC10 — the selected model round-trips through the URL on reload", async 
   await expect(page.getByTestId("model-name")).toHaveText(paymentsHealthModel.model.name);
 
   const shared = page.url();
-  expect(new URL(shared).search).toBe("?model=hm-payments&resourceGroup=rg-demo");
+  expect(new URL(shared).search).toBe(
+    `?model=hm-payments&resourceGroup=rg-demo&subscription=${SUBSCRIPTION_A}`,
+  );
 
   const requests: string[] = [];
   page.on("request", (req) => {
@@ -647,6 +626,7 @@ test("AC10 — the selected model round-trips through the URL on reload", async 
   const first = new URL(requests[0]!);
   expect(first.searchParams.get("model")).toBe("hm-payments");
   expect(first.searchParams.get("resourceGroup")).toBe("rg-demo");
+  expect(first.searchParams.get("subscription")).toBe(SUBSCRIPTION_A);
   await expect(page.locator(".react-flow__node")).toHaveCount(paymentsHealthModel.entities.length);
 });
 
@@ -655,7 +635,6 @@ const QUICK_SEND_COLOURS: Readonly<Record<string, string>> = {
   Degraded: "rgb(138, 75, 0)",
   Unhealthy: "rgb(155, 17, 30)",
   Unknown: "rgb(95, 93, 91)",
-  Deleted: "rgb(91, 58, 143)",
 };
 
 async function openReportForm(page: Page): Promise<void> {
@@ -744,7 +723,7 @@ test("an in-flight refresh shows the indicator and keeps the topology rendered",
   await page.getByTestId("refresh-now").click();
   await expect(page.getByTestId("refresh-indicator")).toBeVisible();
   await expect(page.locator(".react-flow__node")).toHaveCount(healthModel.entities.length);
-  await expect(page.locator("#topology.topology--empty")).toHaveCount(0);
+  await expect(page.getByTestId("topology-placeholder")).toHaveCount(0);
 
   release?.();
   await expect(page.getByTestId("refresh-indicator")).toBeHidden();
@@ -865,6 +844,7 @@ test("switching models does not leave the previous model on screen while loading
   await expect(page.getByTestId("refresh-indicator")).toBeVisible();
   await expect(page.getByTestId("model-name")).not.toHaveText(healthModel.model.name);
   await expect(page.locator(".react-flow__node")).toHaveCount(0);
+  await expect(page.getByTestId("topology-placeholder")).toBeVisible();
 
   release?.();
   await expect(page.getByTestId("model-name")).toHaveText(paymentsHealthModel.model.name);
@@ -887,7 +867,7 @@ test("an unrecognised health state does not unmount the app", async ({ page }) =
   await page.waitForSelector(".react-flow__node .entity-node");
   await page.locator(`.react-flow__node[data-id="svc-a"] .entity-node`).click();
 
-  await expect(page.locator(".app-shell")).toBeVisible();
+  await expect(page.getByTestId("app-shell")).toBeVisible();
   await expect(page.locator(`[data-testid="quick-send"] button`)).toHaveCount(
     exotic.reportOptions.healthStates.length,
   );

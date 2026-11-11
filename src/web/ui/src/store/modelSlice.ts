@@ -1,63 +1,50 @@
-import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
-import type { Draft } from "@reduxjs/toolkit";
+import type { StateCreator } from "zustand";
 import type { ApiError, AsyncState, HealthModel } from "../model/types";
-import type { RootState } from "./store";
-import { chooseModel } from "./catalogSlice";
 import * as api from "./api";
+import { IDLE, LOADING, settle } from "./asyncState";
+import type { Store } from "./store";
 
-interface ModelState {
-  readonly data: AsyncState<HealthModel>;
+export interface ModelState {
+  readonly model: AsyncState<HealthModel>;
   readonly lastObservedAt: string | null;
   readonly refreshing: boolean;
+  /** Why the last reload failed while an earlier observation is still on screen; null otherwise. */
+  readonly refreshError: ApiError | null;
 }
 
-const initialState: ModelState = {
-  data: { kind: "idle" },
+export interface ModelActions {
+  readonly loadHealthModel: () => Promise<void>;
+}
+
+export const modelSlice: StateCreator<Store, [], [], ModelState & ModelActions> = (set, get) => ({
+  model: IDLE,
   lastObservedAt: null,
   refreshing: false,
-};
+  refreshError: null,
 
-export const loadHealthModel = createAsyncThunk<
-  HealthModel,
-  void,
-  { state: RootState; rejectValue: ApiError }
->("model/load", async (_arg, { getState, rejectWithValue }) => {
-  try {
-    return await api.fetchHealthModel(getState().catalog.selected);
-  } catch (error) {
-    return rejectWithValue(error as ApiError);
-  }
-});
-
-const modelSlice = createSlice({
-  name: "model",
-  initialState,
-  reducers: {},
-  extraReducers: (builder) => {
-    builder
-      .addCase(chooseModel, (state) => {
-        state.data = { kind: "loading" };
-      })
-      .addCase(loadHealthModel.pending, (state) => {
-        state.refreshing = true;
-        if (state.data.kind !== "success") state.data = { kind: "loading" };
-      })
-      .addCase(loadHealthModel.fulfilled, (state, action) => {
-        state.refreshing = false;
-        state.data = { kind: "success", value: action.payload as Draft<HealthModel> };
-        state.lastObservedAt = action.payload.observedAt;
-      })
-      .addCase(loadHealthModel.rejected, (state, action) => {
-        state.refreshing = false;
-        const error: ApiError = action.payload ?? {
-          code: "unknown",
-          message: action.error.message ?? "The health model could not be loaded.",
-          retryable: true,
-          operationId: null,
-        };
-        state.data = { kind: "failure", error };
-      });
+  loadHealthModel: async () => {
+    const { selected } = get();
+    set((state) => ({
+      refreshing: true,
+      model: state.model.kind === "success" ? state.model : LOADING,
+    }));
+    const model = await settle(
+      api.fetchHealthModel(selected),
+      "The health model could not be loaded.",
+    );
+    // A response for a model that is no longer selected must not replace the one on screen.
+    if (get().selected !== selected) return;
+    // A reload that fails keeps the last observation on screen, so a Task result open beside the graph keeps its marks.
+    const shown = get().model;
+    if (model.kind === "failure" && shown.kind === "success") {
+      set({ refreshing: false, refreshError: model.error });
+      return;
+    }
+    set({
+      model,
+      refreshing: false,
+      refreshError: null,
+      ...(model.kind === "success" ? { lastObservedAt: model.value.observedAt } : {}),
+    });
   },
 });
-
-export const modelReducer = modelSlice.reducer;

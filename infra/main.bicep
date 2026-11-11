@@ -6,61 +6,30 @@ targetScope = 'subscription'
 param environmentName string
 
 @minLength(1)
-@description('Primary Azure region for the demo workload.')
+@description('Region of every resource. Use swedencentral: Foundry hosted agents are not available in northeurope.')
 param location string
 
-@description('Object ID of the principal running the deployment. Becomes the PostgreSQL Entra administrator.')
+@description('Object ID of the principal running the deployment. Becomes Foundry Project Manager on the project.')
 param principalId string
 
-@description('UPN of the principal running the deployment.')
-param adminUpn string
-
-@description('Single IPv4 address allowed to reach PostgreSQL for the postprovision bootstrap.')
-param adminIpAddress string
-
-@description('Compute SKU for PostgreSQL.')
-param postgresSkuName string = 'Standard_B1ms'
-
-@description('Compute tier for PostgreSQL.')
-param postgresSkuTier string = 'Burstable'
-
-@allowed([
-  'ConsumptionOnly'
-  'WorkloadProfiles'
-])
-@description('Container Apps environment type. WorkloadProfiles uses only the Consumption profile.')
-param containerAppsEnvironmentMode string = 'ConsumptionOnly'
-
-@description('Existing Container Apps subnet NSG resource ID. Empty leaves the subnet unattached.')
-param containerAppsSubnetNsgId string = ''
-
-@description('Existing private endpoint subnet NSG resource ID. Empty leaves the subnet unattached.')
-param privateEndpointSubnetNsgId string = ''
-
-@description('Region hosting the Azure Health Model.')
+@description('Region hosting the Azure Health Models.')
 param healthModelLocation string = location
-
-@description('Region hosting the Foundry account and its hosted agent. North Europe cannot host agents.')
-param foundryLocation string = 'swedencentral'
 
 @minValue(1)
 @description('Tokens-per-minute capacity of the model deployment, in thousands.')
-param modelDeploymentCapacity int = 10
+param modelDeploymentCapacity int = 500
 
 @description('Image published by "azd deploy web". Empty until the first deploy.')
 param webImage string = ''
 
-@description('Image published by "azd deploy agent-web". Empty until the first deploy.')
-param agentWebImage string = ''
+@description('Let the Azure CLI request tokens for the web API without a browser sign-in of the app, for unattended checks as a signed-in developer. Any user in the tenant can then script the API as themselves, so it stays off by default. The MCP scope is never opened to it.')
+param entraAllowAzureCli bool = false
 
-@description('Image published by "azd deploy agent-app". Empty until the first deploy.')
-param agentAppImage string = ''
+@description('Image published by "azd deploy mcp". Empty until the first deploy.')
+param mcpImage string = ''
 
-@description('Image published by "azd deploy survey". Empty until the first deploy.')
-param surveyImage string = ''
-
-@description('Filming-only availability test that writes through the full request journey.')
-param journeyAvailabilityTestEnabled bool = false
+@description('Object ID of the hosted agent identity. Empty until the agent exists: the agent deploy script sets it as an azd environment value, and the web app uses it to recognise the agent\'s token requests.')
+param foundryAgentPrincipalId string = ''
 
 var tags = {
   'azd-env-name': environmentName
@@ -70,12 +39,10 @@ var resourceToken = uniqueString(subscription().id, environmentName)
 var namePrefix = environmentName
 var placeholderImage = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 var webAppName = 'ca-${namePrefix}-web'
-var agentWebAppName = 'ca-${namePrefix}-agent-web'
-var agentAppName = 'ca-${namePrefix}-agent-app'
+var mcpAppName = 'ca-${namePrefix}-mcp'
 var healthModelName = 'hm-${namePrefix}'
-var shopHealthModelName = 'hm-${namePrefix}-shop'
-var surveyHealthModelName = 'hm-${namePrefix}-survey'
 var designHealthModelName = 'hm-${namePrefix}-design'
+var foundryAgentName = 'health-model-agent'
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-11-01' = {
   name: 'rg-${environmentName}'
@@ -90,17 +57,14 @@ module foundation 'modules/foundation.bicep' = {
     location: location
     resourceToken: resourceToken
     namePrefix: namePrefix
-    adminObjectId: principalId
-    adminUpn: adminUpn
-    adminIpAddress: adminIpAddress
-    postgresSkuName: postgresSkuName
-    postgresSkuTier: postgresSkuTier
-    containerAppsEnvironmentMode: containerAppsEnvironmentMode
-    containerAppsSubnetNsgId: containerAppsSubnetNsgId
-    privateEndpointSubnetNsgId: privateEndpointSubnetNsgId
     tags: tags
   }
 }
+
+// A Container App named N is reachable at N.<environment default domain>, so both URLs are known before the apps exist.
+// The Entra redirect URI and the agent egress allow-list need them, and the apps need the Entra client ids.
+var webFqdn = '${webAppName}.${foundation.outputs.environmentDefaultDomain}'
+var mcpFqdn = '${mcpAppName}.${foundation.outputs.environmentDefaultDomain}'
 
 module storage 'modules/storage.bicep' = {
   scope: rg
@@ -108,31 +72,19 @@ module storage 'modules/storage.bicep' = {
   params: {
     location: location
     resourceToken: resourceToken
+    namePrefix: namePrefix
+    vnetId: foundation.outputs.vnetId
+    privateEndpointSubnetId: foundation.outputs.privateEndpointSubnetId
     workspaceId: foundation.outputs.workspaceId
     tags: tags
   }
 }
 
-module queuePrivateEndpoint 'modules/queue-private-endpoint.bicep' = {
-  scope: rg
-  name: 'queue-private-endpoint'
-  params: {
-    location: location
-    namePrefix: namePrefix
-    storageId: storage.outputs.storageId
-    subnetId: foundation.outputs.privateEndpointSubnetId
-    privateDnsZoneId: foundation.outputs.queuePrivateDnsZoneId
-    tags: tags
-  }
-}
-
 module subscriptionMonitoring 'modules/subscription-monitoring.bicep' = {
-  name: 'subscription-monitoring'
+  name: 'subscription-monitoring-${deployment().location}'
   params: {
     diagnosticSettingName: 'diag-${namePrefix}-activity'
     logAnalyticsWorkspaceId: foundation.outputs.workspaceId
-    taskResourceGroupId: rg.id
-    environmentName: environmentName
   }
 }
 
@@ -140,14 +92,28 @@ module foundry 'modules/foundry.bicep' = {
   scope: rg
   name: 'foundry'
   params: {
-    location: foundryLocation
+    location: location
     accountName: 'aif-${namePrefix}-${resourceToken}'
     projectName: 'proj-${namePrefix}'
     modelDeploymentCapacity: modelDeploymentCapacity
+    registryName: foundation.outputs.registryName
     identityId: foundation.outputs.identityId
     identityPrincipalId: foundation.outputs.identityPrincipalId
     deployerPrincipalId: principalId
+    webFqdn: webFqdn
+    mcpFqdn: mcpFqdn
     tags: tags
+  }
+}
+
+module entra 'modules/entra.bicep' = {
+  scope: rg
+  name: 'entra'
+  params: {
+    environmentName: environmentName
+    webUrl: 'https://${webFqdn}/'
+    identityPrincipalId: foundation.outputs.identityPrincipalId
+    allowAzureCli: entraAllowAzureCli
   }
 }
 
@@ -157,18 +123,12 @@ module rbac 'modules/rbac.bicep' = {
   params: {
     registryName: foundation.outputs.registryName
     storageName: storage.outputs.storageName
-    queueName: storage.outputs.queueName
+    sessionsContainerName: storage.outputs.sessionsContainerName
     applicationInsightsName: foundation.outputs.applicationInsightsName
     identityId: foundation.outputs.identityId
     identityPrincipalId: foundation.outputs.identityPrincipalId
-    modelWriterRoleDefinitionId: subscriptionMonitoring.outputs.modelWriterRoleDefinitionId
   }
 }
-
-var containerEnvironmentDomain = foundation.outputs.environmentDefaultDomain
-var agentWebOrigin = 'https://${agentWebAppName}.internal.${containerEnvironmentDomain}'
-var agentAppUrl = 'https://${agentAppName}.internal.${containerEnvironmentDomain}/'
-var webUrl = 'https://${webAppName}.${containerEnvironmentDomain}/'
 
 module web 'modules/container-app.bicep' = {
   scope: rg
@@ -191,22 +151,6 @@ module web 'modules/container-app.bicep' = {
       {
         name: 'AZURE_CLIENT_ID'
         value: foundation.outputs.identityClientId
-      }
-      {
-        name: 'QUEUE_URL'
-        value: rbac.outputs.queueUrl
-      }
-      {
-        name: 'POSTGRES_HOST'
-        value: foundation.outputs.postgresHost
-      }
-      {
-        name: 'POSTGRES_DATABASE'
-        value: foundation.outputs.postgresDatabase
-      }
-      {
-        name: 'POSTGRES_USER'
-        value: foundation.outputs.identityName
       }
       {
         name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
@@ -241,132 +185,111 @@ module web 'modules/container-app.bicep' = {
         value: healthModelLocation
       }
       {
-        name: 'HEALTH_COPILOT_ENABLED'
-        value: 'true'
+        name: 'HEALTH_MODEL_DESIGN_NAME'
+        value: designHealthModelName
       }
       {
-        name: 'AGENT_WEB_ORIGIN'
-        value: agentWebOrigin
+        name: 'SESSIONS_CONTAINER_URL'
+        value: rbac.outputs.sessionsContainerUrl
+      }
+      {
+        name: 'FOUNDRY_PROJECT_ENDPOINT'
+        value: foundry.outputs.projectEndpoint
+      }
+      {
+        name: 'FOUNDRY_AGENT_NAME'
+        value: foundryAgentName
+      }
+      {
+        name: 'FOUNDRY_AGENT_PRINCIPAL_ID'
+        value: foundryAgentPrincipalId
+      }
+      {
+        name: 'ENTRA_TENANT_ID'
+        value: entra.outputs.tenantId
+      }
+      {
+        name: 'ENTRA_CLIENT_ID'
+        value: entra.outputs.webClientId
+      }
+      {
+        name: 'ENTRA_API_SCOPE'
+        value: entra.outputs.webApiScope
+      }
+      {
+        name: 'MCP_SCOPE'
+        value: entra.outputs.mcpScope
+      }
+      {
+        name: 'MCP_URL'
+        value: 'https://${mcpFqdn}/'
       }
     ]
   }
 }
 
-module agentWeb 'modules/container-app.bicep' = {
+// The Azure tools of the agent. It exchanges each caller's token for ARM and Log Analytics tokens itself (on behalf
+// of the user), so it needs no Azure role. External ingress because the hosted agent calls it from Foundry's network.
+// The flags that make it read-only and pick its tools live in src/mcp/Dockerfile.
+module mcp 'modules/container-app.bicep' = {
   scope: rg
-  name: 'container-app-agent-web'
+  name: 'container-app-mcp'
   params: {
-    name: agentWebAppName
+    name: mcpAppName
     location: location
-    serviceName: 'agent-web'
+    serviceName: 'mcp'
     environmentId: foundation.outputs.environmentId
     identityId: foundation.outputs.identityId
     registryLoginServer: rbac.outputs.registryLoginServer
-    image: agentWebImage
+    image: mcpImage
     placeholderImage: placeholderImage
-    targetPort: 3000
-    external: false
+    targetPort: 8080
+    external: true
     cpu: '0.5'
     memory: '1Gi'
     tags: tags
     env: [
       {
-        name: 'AGENT_URL'
-        value: agentAppUrl
+        name: 'AzureAd__Instance'
+        value: environment().authentication.loginEndpoint
       }
       {
-        name: 'COPILOTKIT_TELEMETRY_DISABLED'
-        value: 'true'
+        name: 'AzureAd__TenantId'
+        value: entra.outputs.tenantId
       }
-    ]
-  }
-}
-
-module agentApp 'modules/container-app.bicep' = {
-  scope: rg
-  name: 'container-app-agent-app'
-  params: {
-    name: agentAppName
-    location: location
-    serviceName: 'agent-app'
-    environmentId: foundation.outputs.environmentId
-    identityId: foundation.outputs.identityId
-    registryLoginServer: rbac.outputs.registryLoginServer
-    image: agentAppImage
-    placeholderImage: placeholderImage
-    targetPort: 8000
-    external: false
-    cpu: '0.5'
-    memory: '1Gi'
-    tags: tags
-    env: [
       {
-        name: 'AZURE_CLIENT_ID'
+        name: 'AzureAd__ClientId'
+        value: entra.outputs.mcpClientId
+      }
+      {
+        name: 'AzureAd__ClientCredentials__0__SourceType'
+        value: 'SignedAssertionFromManagedIdentity'
+      }
+      {
+        name: 'AzureAd__ClientCredentials__0__ManagedIdentityClientId'
         value: foundation.outputs.identityClientId
       }
       {
-        name: 'AZURE_OPENAI_ENDPOINT'
-        value: foundry.outputs.openAiEndpoint
+        name: 'AzureAd__ClientCredentials__0__TokenExchangeUrl'
+        value: 'api://AzureADTokenExchange'
+      }
+      // The ingress terminates TLS and forwards plain HTTP, so redirecting to HTTPS would loop, and the server reads
+      // the original scheme from X-Forwarded-Proto for its OAuth metadata.
+      {
+        name: 'AZURE_MCP_DANGEROUSLY_DISABLE_HTTPS_REDIRECTION'
+        value: 'true'
       }
       {
-        name: 'AZURE_OPENAI_CHAT_DEPLOYMENT_NAME'
-        value: foundry.outputs.modelDeploymentName
+        name: 'AZURE_MCP_DANGEROUSLY_ENABLE_FORWARDED_HEADERS'
+        value: 'true'
       }
+      // Its telemetry exporter has no credential and Application Insights here accepts only Entra tokens. Off also
+      // keeps product telemetry from leaving the deployment.
       {
-        name: 'HEALTH_APP_BASE_URL'
-        value: webUrl
-      }
-      {
-        name: 'HEALTH_API_TIMEOUT_SECONDS'
-        value: '8'
-      }
-      {
-        name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-        value: rbac.outputs.applicationInsightsConnectionString
-      }
-      {
-        name: 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING'
-        value: 'Authorization=AAD;ClientId=${foundation.outputs.identityClientId}'
-      }
-      {
-        name: 'OTEL_SERVICE_NAME'
-        value: 'ahm-health-copilot'
+        name: 'AZURE_MCP_COLLECT_TELEMETRY'
+        value: 'false'
       }
     ]
-  }
-}
-
-module survey 'modules/survey-platform.bicep' = {
-  scope: rg
-  name: 'survey-platform'
-  params: {
-    name: 'ca-${namePrefix}-survey'
-    location: location
-    environmentId: foundation.outputs.environmentId
-    identityId: foundation.outputs.identityId
-    identityClientId: foundation.outputs.identityClientId
-    identityName: foundation.outputs.identityName
-    registryLoginServer: rbac.outputs.registryLoginServer
-    image: surveyImage
-    placeholderImage: placeholderImage
-    postgresHost: foundation.outputs.postgresHost
-    postgresDatabase: foundation.outputs.postgresDatabase
-    applicationInsightsConnectionString: rbac.outputs.applicationInsightsConnectionString
-    tags: tags
-  }
-}
-
-module surveyHealthModel 'modules/survey-health-model.bicep' = {
-  scope: rg
-  name: 'survey-health-model'
-  params: {
-    modelName: surveyHealthModelName
-    healthModelLocation: healthModelLocation
-    containerAppId: survey.outputs.containerAppId
-    postgresId: foundation.outputs.postgresId
-    workspaceId: foundation.outputs.workspaceId
-    applicationInsightsId: foundation.outputs.applicationInsightsId
-    tags: tags
   }
 }
 
@@ -378,7 +301,7 @@ module availabilityTests 'modules/availability-tests.bicep' = {
     namePrefix: namePrefix
     applicationInsightsName: foundation.outputs.applicationInsightsName
     appUrl: 'https://${web.outputs.fqdn}/'
-    journeyAvailabilityTestEnabled: journeyAvailabilityTestEnabled
+    mcpHealthUrl: 'https://${mcp.outputs.fqdn}/health'
     tags: tags
   }
 }
@@ -390,8 +313,6 @@ module healthModel 'modules/health-model.bicep' = {
     modelName: healthModelName
     healthModelLocation: healthModelLocation
     namePrefix: namePrefix
-    appIdentityPrincipalId: foundation.outputs.identityPrincipalId
-    healthReportRoleDefinitionId: subscriptionMonitoring.outputs.healthReportRoleDefinitionId
     tags: tags
   }
 }
@@ -403,11 +324,10 @@ module healthModelAccess 'modules/health-model-access.bicep' = {
     modelPrincipalId: healthModel.outputs.modelPrincipalId
     monitoredResources: {
       containerApp: web.outputs.containerAppId
-      postgres: foundation.outputs.postgresId
-      storage: storage.outputs.storageId
-      agentWebApp: agentWeb.outputs.containerAppId
-      agentApp: agentApp.outputs.containerAppId
+      mcpApp: mcp.outputs.containerAppId
+      foundryProject: foundry.outputs.projectId
       foundryAccount: foundry.outputs.accountId
+      sessionsBlobService: storage.outputs.blobServiceId
       logAnalyticsWorkspace: foundation.outputs.workspaceId
       applicationInsights: foundation.outputs.applicationInsightsId
     }
@@ -423,6 +343,7 @@ module healthModelEntities 'modules/health-model-entities.bicep' = {
     rootActionGroupId: healthModel.outputs.rootActionGroupId
     monitoredResources: healthModelAccess.outputs.monitoredResources
     availabilityTestName: availabilityTests.outputs.availabilityTestName
+    mcpAvailabilityTestName: availabilityTests.outputs.mcpAvailabilityTestName
   }
 }
 
@@ -446,20 +367,6 @@ module healthModelDiscovery 'modules/health-model-discovery.bicep' = {
   }
 }
 
-module shopHealthModel 'modules/shop-health-model.bicep' = {
-  scope: rg
-  name: 'shop-health-model'
-  params: {
-    modelName: shopHealthModelName
-    healthModelLocation: healthModelLocation
-    containerAppId: web.outputs.containerAppId
-    postgresId: foundation.outputs.postgresId
-    storageId: storage.outputs.storageId
-    workspaceId: foundation.outputs.workspaceId
-    tags: tags
-  }
-}
-
 module designHealthModel 'modules/design-health-model.bicep' = {
   scope: rg
   name: 'design-health-model'
@@ -474,44 +381,29 @@ output AZURE_CONTAINER_REGISTRY_ENDPOINT string = rbac.outputs.registryLoginServ
 output AZURE_CONTAINER_REGISTRY_NAME string = foundation.outputs.registryName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = foundation.outputs.environmentId
 output AZURE_RESOURCE_GROUP string = rg.name
-output AZURE_IDENTITY_NAME string = foundation.outputs.identityName
-output AZURE_IDENTITY_CLIENT_ID string = foundation.outputs.identityClientId
-output AZURE_IDENTITY_PRINCIPAL_ID string = foundation.outputs.identityPrincipalId
-output AZURE_QUEUE_URL string = rbac.outputs.queueUrl
-output AZURE_POSTGRES_HOST string = foundation.outputs.postgresHost
-output AZURE_POSTGRES_DATABASE string = foundation.outputs.postgresDatabase
 output AZURE_SUBSCRIPTION_ID string = subscription().subscriptionId
 output AZURE_SUBSCRIPTION_NAME string = subscription().displayName
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = rbac.outputs.applicationInsightsConnectionString
-output AZURE_OPENAI_ENDPOINT string = foundry.outputs.openAiEndpoint
-output AZURE_OPENAI_CHAT_DEPLOYMENT_NAME string = foundry.outputs.modelDeploymentName
+output SESSIONS_CONTAINER_URL string = rbac.outputs.sessionsContainerUrl
 output FOUNDRY_ACCOUNT_NAME string = foundry.outputs.accountName
 output FOUNDRY_PROJECT_NAME string = foundry.outputs.projectName
 output FOUNDRY_PROJECT_ENDPOINT string = foundry.outputs.projectEndpoint
 output FOUNDRY_MODEL_DEPLOYMENT_NAME string = foundry.outputs.modelDeploymentName
 output FOUNDRY_AGENT_EGRESS_POLICY_ID string = foundry.outputs.agentEgressPolicyId
-output HEALTH_MODEL_READER_ROLE_ID string = subscriptionMonitoring.outputs.modelReaderRoleDefinitionId
-output AZURE_HEALTH_MODEL_NAME string = healthModel.outputs.modelName
-output HEALTH_REPORT_ROLE_NAME string = subscriptionMonitoring.outputs.healthReportRoleName
-output HEALTH_MODEL_LOCATION string = healthModelLocation
-output SERVICE_WEB_NAME string = web.outputs.containerAppName
-output SERVICE_WEB_FQDN string = web.outputs.fqdn
-output SERVICE_WEB_ID string = web.outputs.containerAppId
-output SERVICE_AGENT_WEB_NAME string = agentWeb.outputs.containerAppName
-output SERVICE_AGENT_APP_NAME string = agentApp.outputs.containerAppName
-output HEALTH_MODEL_ID string = healthModel.outputs.modelId
+output FOUNDRY_AGENT_NAME string = foundryAgentName
 output HEALTH_MODEL_NAME string = healthModel.outputs.modelName
+output HEALTH_MODEL_LOCATION string = healthModelLocation
+output HEALTH_MODEL_DESIGN_NAME string = designHealthModel.outputs.modelName
 output HEALTH_MODEL_ENTITY_COUNT int = healthModelEntities.outputs.deterministicEntityCount
 output HEALTH_MODEL_RELATIONSHIP_COUNT int = healthModelRelationships.outputs.deterministicRelationshipCount
 output HEALTH_MODEL_DISCOVERY_RULE_ID string = healthModelDiscovery.outputs.discoveryRuleId
-output AVAILABILITY_TEST_NAME string = availabilityTests.outputs.availabilityTestName
-output AVAILABILITY_TEST_URL string = availabilityTests.outputs.availabilityTestUrl
-output SHOP_HEALTH_MODEL_NAME string = shopHealthModel.outputs.modelName
-output SHOP_HEALTH_MODEL_ID string = shopHealthModel.outputs.modelId
-output SERVICE_SURVEY_NAME string = survey.outputs.containerAppName
-output SERVICE_SURVEY_ID string = survey.outputs.containerAppId
-output SERVICE_SURVEY_FQDN string = survey.outputs.fqdn
-output SURVEY_HEALTH_MODEL_NAME string = surveyHealthModel.outputs.modelName
-output SURVEY_HEALTH_MODEL_ID string = surveyHealthModel.outputs.modelId
-output HEALTH_MODEL_DESIGN_NAME string = designHealthModel.outputs.modelName
-output HEALTH_MODEL_DESIGN_ID string = designHealthModel.outputs.modelId
+output SERVICE_WEB_FQDN string = web.outputs.fqdn
+output SERVICE_WEB_NAME string = web.outputs.containerAppName
+output SERVICE_MCP_FQDN string = mcp.outputs.fqdn
+output ENTRA_TENANT_ID string = entra.outputs.tenantId
+output ENTRA_CLIENT_ID string = entra.outputs.webClientId
+output ENTRA_API_SCOPE string = entra.outputs.webApiScope
+output ENTRA_MCP_CLIENT_ID string = entra.outputs.mcpClientId
+output MCP_SCOPE string = entra.outputs.mcpScope
+output MCP_URL string = 'https://${mcp.outputs.fqdn}/'
+output FOUNDRY_AGENT_PRINCIPAL_ID string = foundryAgentPrincipalId

@@ -1,0 +1,849 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Properties of the Microsoft.CloudHealth resources a change carries in `after` (API 2026-11-01)",
+  "$defs": {
+    "armName": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{1,258}[a-zA-Z0-9]$"
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 260
+    },
+    "interval": {
+      "enum": [
+        "PT1M",
+        "PT5M",
+        "PT10M",
+        "PT15M",
+        "PT30M",
+        "PT1H",
+        "PT2H"
+      ]
+    },
+    "tags": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operator"
+      ],
+      "properties": {
+        "operator": {
+          "enum": [
+            "Dynamic",
+            "Equal",
+            "GreaterThan",
+            "GreaterThanOrEqual",
+            "LessThan",
+            "LessThanOrEqual",
+            "NotEqual"
+          ]
+        },
+        "threshold": {
+          "type": "number"
+        },
+        "sensitivity": {
+          "enum": [
+            "Low",
+            "Medium",
+            "High"
+          ]
+        }
+      }
+    },
+    "evaluationRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unhealthyRule"
+      ],
+      "properties": {
+        "degradedRule": {
+          "$ref": "#/$defs/rule"
+        },
+        "unhealthyRule": {
+          "$ref": "#/$defs/rule"
+        }
+      }
+    },
+    "metricSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "signalKind"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/armName"
+        },
+        "signalKind": {
+          "const": "AzureResourceMetric"
+        },
+        "signalDefinitionName": {
+          "$ref": "#/$defs/armName"
+        },
+        "displayName": {
+          "$ref": "#/$defs/displayName"
+        },
+        "dataUnit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "timeGrain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "refreshInterval": {
+          "$ref": "#/$defs/interval"
+        },
+        "evaluationRules": {
+          "$ref": "#/$defs/evaluationRules"
+        },
+        "status": {
+          "type": "object"
+        },
+        "metricNamespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "metricName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "aggregationType": {
+          "enum": [
+            "Average",
+            "Count",
+            "Maximum",
+            "Minimum",
+            "None",
+            "Total"
+          ]
+        },
+        "dimensionFilter": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        }
+      },
+      "if": {
+        "not": {
+          "required": [
+            "signalDefinitionName"
+          ]
+        }
+      },
+      "then": {
+        "required": [
+          "metricNamespace",
+          "metricName",
+          "aggregationType",
+          "timeGrain",
+          "evaluationRules"
+        ]
+      }
+    },
+    "logSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "signalKind"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/armName"
+        },
+        "signalKind": {
+          "const": "LogAnalyticsQuery"
+        },
+        "signalDefinitionName": {
+          "$ref": "#/$defs/armName"
+        },
+        "displayName": {
+          "$ref": "#/$defs/displayName"
+        },
+        "dataUnit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "timeGrain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "refreshInterval": {
+          "$ref": "#/$defs/interval"
+        },
+        "evaluationRules": {
+          "$ref": "#/$defs/evaluationRules"
+        },
+        "status": {
+          "type": "object"
+        },
+        "queryText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000
+        },
+        "valueColumnName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      },
+      "if": {
+        "not": {
+          "required": [
+            "signalDefinitionName"
+          ]
+        }
+      },
+      "then": {
+        "required": [
+          "queryText",
+          "evaluationRules"
+        ]
+      }
+    },
+    "promSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "signalKind"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/armName"
+        },
+        "signalKind": {
+          "const": "PrometheusMetricsQuery"
+        },
+        "signalDefinitionName": {
+          "$ref": "#/$defs/armName"
+        },
+        "displayName": {
+          "$ref": "#/$defs/displayName"
+        },
+        "dataUnit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "timeGrain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "refreshInterval": {
+          "$ref": "#/$defs/interval"
+        },
+        "evaluationRules": {
+          "$ref": "#/$defs/evaluationRules"
+        },
+        "status": {
+          "type": "object"
+        },
+        "queryText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000
+        }
+      },
+      "if": {
+        "not": {
+          "required": [
+            "signalDefinitionName"
+          ]
+        }
+      },
+      "then": {
+        "required": [
+          "queryText",
+          "evaluationRules"
+        ]
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "displayName": {
+          "$ref": "#/$defs/displayName"
+        },
+        "icon": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "iconName"
+          ],
+          "properties": {
+            "iconName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "customData": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 5000
+            }
+          }
+        },
+        "healthObjective": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "impact": {
+          "enum": [
+            "Limited",
+            "Standard",
+            "Suppressed"
+          ]
+        },
+        "canvasPosition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          }
+        },
+        "alerts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "degraded": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "severity"
+              ],
+              "properties": {
+                "severity": {
+                  "enum": [
+                    "Sev0",
+                    "Sev1",
+                    "Sev2",
+                    "Sev3",
+                    "Sev4"
+                  ]
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "actionGroupIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "unhealthy": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "severity"
+              ],
+              "properties": {
+                "severity": {
+                  "enum": [
+                    "Sev0",
+                    "Sev1",
+                    "Sev2",
+                    "Sev3",
+                    "Sev4"
+                  ]
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "actionGroupIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "signalGroups": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "azureResource": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authenticationSetting",
+                "azureResourceId"
+              ],
+              "properties": {
+                "authenticationSetting": {
+                  "$ref": "#/$defs/armName"
+                },
+                "azureResourceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "signals": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/metricSignal"
+                  }
+                },
+                "azureResourceKind": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "resourceHealth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "enum": [
+                        "Disabled",
+                        "Enabled"
+                      ]
+                    },
+                    "signalName": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            },
+            "azureLogAnalytics": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authenticationSetting",
+                "logAnalyticsWorkspaceResourceId"
+              ],
+              "properties": {
+                "authenticationSetting": {
+                  "$ref": "#/$defs/armName"
+                },
+                "logAnalyticsWorkspaceResourceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "signals": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/logSignal"
+                  }
+                }
+              }
+            },
+            "azureMonitorWorkspace": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authenticationSetting",
+                "azureMonitorWorkspaceResourceId"
+              ],
+              "properties": {
+                "authenticationSetting": {
+                  "$ref": "#/$defs/armName"
+                },
+                "azureMonitorWorkspaceResourceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "signals": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/promSignal"
+                  }
+                }
+              }
+            },
+            "dependencies": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "aggregationType"
+              ],
+              "properties": {
+                "aggregationType": {
+                  "enum": [
+                    "BestOf",
+                    "MaxNotHealthy",
+                    "MinHealthy",
+                    "WorstOf"
+                  ]
+                },
+                "ignoreUnknown": {
+                  "type": "boolean"
+                },
+                "degradedThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "unhealthyThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "unit": {
+                  "enum": [
+                    "Absolute",
+                    "Percentage"
+                  ]
+                }
+              }
+            },
+            "external": {
+              "type": "object"
+            }
+          }
+        },
+        "signalAggregationGroups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/armName"
+              },
+              "displayName": {
+                "$ref": "#/$defs/displayName"
+              },
+              "members": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/armName"
+                }
+              },
+              "aggregationType": {
+                "enum": [
+                  "BestOf",
+                  "MaxNotHealthy",
+                  "MinHealthy",
+                  "WorstOf"
+                ]
+              },
+              "ignoreUnknown": {
+                "type": "boolean"
+              },
+              "degradedThreshold": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "unhealthyThreshold": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "unit": {
+                "enum": [
+                  "Absolute",
+                  "Percentage"
+                ]
+              },
+              "aggregatedHealthState": {
+                "type": "string"
+              },
+              "unresolvedMembers": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
+        "provisioningState": {
+          "type": "string"
+        },
+        "healthState": {
+          "type": "string"
+        },
+        "discoveredBy": {}
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parentEntityName",
+        "childEntityName"
+      ],
+      "properties": {
+        "parentEntityName": {
+          "$ref": "#/$defs/armName"
+        },
+        "childEntityName": {
+          "$ref": "#/$defs/armName"
+        },
+        "displayName": {
+          "$ref": "#/$defs/displayName"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
+        "provisioningState": {
+          "type": "string"
+        }
+      }
+    },
+    "metricDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signalKind",
+        "evaluationRules",
+        "metricNamespace",
+        "metricName",
+        "aggregationType",
+        "timeGrain"
+      ],
+      "properties": {
+        "signalKind": {
+          "const": "AzureResourceMetric"
+        },
+        "displayName": {
+          "$ref": "#/$defs/displayName"
+        },
+        "dataUnit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "timeGrain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "refreshInterval": {
+          "$ref": "#/$defs/interval"
+        },
+        "evaluationRules": {
+          "$ref": "#/$defs/evaluationRules"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
+        "metricNamespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "metricName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "aggregationType": {
+          "enum": [
+            "Average",
+            "Count",
+            "Maximum",
+            "Minimum",
+            "None",
+            "Total"
+          ]
+        },
+        "dimensionFilter": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "provisioningState": {
+          "type": "string"
+        }
+      }
+    },
+    "logDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signalKind",
+        "evaluationRules",
+        "queryText"
+      ],
+      "properties": {
+        "signalKind": {
+          "const": "LogAnalyticsQuery"
+        },
+        "displayName": {
+          "$ref": "#/$defs/displayName"
+        },
+        "dataUnit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "timeGrain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "refreshInterval": {
+          "$ref": "#/$defs/interval"
+        },
+        "evaluationRules": {
+          "$ref": "#/$defs/evaluationRules"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
+        "queryText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000
+        },
+        "valueColumnName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "provisioningState": {
+          "type": "string"
+        }
+      }
+    },
+    "promDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signalKind",
+        "evaluationRules",
+        "queryText"
+      ],
+      "properties": {
+        "signalKind": {
+          "const": "PrometheusMetricsQuery"
+        },
+        "displayName": {
+          "$ref": "#/$defs/displayName"
+        },
+        "dataUnit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "timeGrain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "refreshInterval": {
+          "$ref": "#/$defs/interval"
+        },
+        "evaluationRules": {
+          "$ref": "#/$defs/evaluationRules"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
+        "queryText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000
+        },
+        "provisioningState": {
+          "type": "string"
+        }
+      }
+    },
+    "signalDefinition": {
+      "type": "object",
+      "required": [
+        "signalKind"
+      ],
+      "properties": {
+        "signalKind": {
+          "enum": [
+            "AzureResourceMetric",
+            "LogAnalyticsQuery",
+            "PrometheusMetricsQuery"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "signalKind": {
+                "const": "AzureResourceMetric"
+              }
+            },
+            "required": [
+              "signalKind"
+            ]
+          },
+          "then": {
+            "$ref": "#/$defs/metricDefinition"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "signalKind": {
+                "const": "LogAnalyticsQuery"
+              }
+            },
+            "required": [
+              "signalKind"
+            ]
+          },
+          "then": {
+            "$ref": "#/$defs/logDefinition"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "signalKind": {
+                "const": "PrometheusMetricsQuery"
+              }
+            },
+            "required": [
+              "signalKind"
+            ]
+          },
+          "then": {
+            "$ref": "#/$defs/promDefinition"
+          }
+        }
+      ]
+    }
+  }
+}

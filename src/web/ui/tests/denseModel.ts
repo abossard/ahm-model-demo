@@ -97,7 +97,7 @@ export function denseModel(seed: number, nodes = 12, edges = 18): HealthModel {
     relationships,
     reportOptions: {
       signalName: "web-ui-health-report",
-      healthStates: ["Healthy", "Degraded", "Unhealthy", "Unknown", "Deleted"],
+      healthStates: ["Healthy", "Degraded", "Unhealthy", "Unknown"],
       values: [null, 0, 0.5, 1],
       expiries: [15],
       reasonPresets: [{ value: "demo-test", label: "Demo test" }],
@@ -218,7 +218,7 @@ export function realAnbomovModel(): HealthModel {
     relationships,
     reportOptions: {
       signalName: "web-ui-health-report",
-      healthStates: ["Healthy", "Degraded", "Unhealthy", "Unknown", "Deleted"],
+      healthStates: ["Healthy", "Degraded", "Unhealthy", "Unknown"],
       values: [null, 0, 0.5, 1],
       expiries: [15],
       reasonPresets: [{ value: "demo-test", label: "Demo test" }],

@@ -21,7 +21,7 @@ def set_span_attribute(span, key, value):
         span.set_attribute(key, value)
 
 
-def error_response(status, code, message, retryable, operation_id_value=None):
+def error_response(status, code, message, retryable, operation_id_value=None, **details):
     return JSONResponse(
         {
             "error": {
@@ -29,6 +29,7 @@ def error_response(status, code, message, retryable, operation_id_value=None):
                 "message": message,
                 "retryable": retryable,
                 "operationId": operation_id_value or operation_id(),
+                **details,
             }
         },
         status_code=status,
@@ -47,23 +48,6 @@ def validation_error(code, message, status=400):
     )
 
 
-def invalid_format_response():
-    current = operation_id()
-    logger.info(
-        "compatibility format rejected operation_id=%s",
-        current,
-    )
-    response = error_response(
-        400,
-        "invalid_format",
-        "Format must be exactly json or html.",
-        False,
-        operation_id_value=current,
-    )
-    response.headers["X-Operation-ID"] = current
-    return response
-
-
 def sdk_error_response(error, operation):
     status = getattr(error, "status_code", None)
     if status is None:
@@ -77,9 +61,9 @@ def sdk_error_response(error, operation):
             False,
         ),
         403: (
-            503,
-            "health_model_access_unavailable",
-            "Health Model access is unavailable.",
+            403,
+            "forbidden",
+            "Your account does not have the Azure role for that on the selected Health Model.",
             False,
         ),
         404: (404, "not_found", "The requested Health Model resource was not found.", False),
@@ -114,19 +98,15 @@ def sdk_error_response(error, operation):
     return error_response(*result, operation_id_value=current)
 
 
-def agent_error(status, code, retryable):
+def store_error_response(operation):
     current = operation_id()
-    logger.warning(
-        "agent proxy failed code=%s operation_id=%s",
-        code,
-        current,
-    )
-    response = error_response(
-        status,
-        code,
-        "Health copilot is temporarily unavailable.",
-        retryable,
+    logger.warning("sessions store failed operation=%s operation_id=%s", operation, current)
+    span = trace.get_current_span()
+    span.set_status(Status(StatusCode.ERROR, "Sessions store failed"))
+    return error_response(
+        503,
+        "sessions_unavailable",
+        "Sessions are temporarily unavailable.",
+        True,
         operation_id_value=current,
     )
-    response.headers["X-Operation-ID"] = current
-    return response

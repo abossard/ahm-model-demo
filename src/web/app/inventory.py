@@ -1,47 +1,66 @@
+import logging
 from datetime import datetime, timezone
 
 from config import (
+    ARM_NAME,
     CANONICAL_SIGNAL_NAME,
+    GUID,
     HEALTH_STATES,
     REASON_PRESETS,
     REPORT_EXPIRIES,
     REPORT_VALUES,
+    RESOURCE_GROUP_NAME,
 )
-from dto import entity_dto, entity_order, field, relationship_dto, scalar
+from dto import field, graph_dto, scalar
+from obo import ConsentRequired, InteractionRequired
 
 
-SELECTOR_KEYS = ("model", "resourceGroup")
+SELECTOR_KEYS = ("model", "resourceGroup", "subscription")
+
+logger = logging.getLogger("ahm-demo")
 
 
-def resource_group_from_id(resource_id):
+def segment_after(resource_id, segment):
     if not isinstance(resource_id, str):
         return None
     parts = resource_id.split("/")
     for index in range(len(parts) - 1):
-        if parts[index].casefold() == "resourcegroups":
+        if parts[index].casefold() == segment:
             return parts[index + 1] or None
     return None
 
 
-def model_ref(item):
-    resource_id = field(item, "id")
-    properties = field(item, "properties")
+def resource_group_from_id(resource_id):
+    return segment_after(resource_id, "resourcegroups")
+
+
+def subscription_from_id(resource_id):
+    return segment_after(resource_id, "subscriptions")
+
+
+def model_ref(row):
+    resource_id = field(row, "id")
+    name = field(row, "name")
+    subscription_id = subscription_from_id(resource_id)
+    resource_group = resource_group_from_id(resource_id)
+    if not (name and subscription_id and resource_group):
+        return None
     return {
         "id": resource_id,
-        "name": field(item, "name"),
-        "resourceGroup": resource_group_from_id(resource_id),
-        "location": field(item, "location"),
-        "provisioningState": scalar(
-            field(properties, "provisioning_state", "provisioningState")
-        ),
+        "name": name,
+        "resourceGroup": resource_group,
+        "subscriptionId": subscription_id,
+        "location": field(row, "location"),
+        "provisioningState": field(row, "provisioningState") or None,
     }
 
 
-def fallback_ref(resource_group, model_name):
+def fallback_ref(subscription_id, resource_group, model_name):
     return {
         "id": None,
         "name": model_name,
         "resourceGroup": resource_group,
+        "subscriptionId": subscription_id,
         "location": None,
         "provisioningState": None,
     }
@@ -53,40 +72,44 @@ def sort_refs(refs):
         key=lambda item: (
             (item["name"] or "").casefold(),
             (item["resourceGroup"] or "").casefold(),
+            (item["subscriptionId"] or "").casefold(),
         ),
     )
 
 
-def list_models(health_client, resource_group, model_name):
-    fallback = [fallback_ref(resource_group, model_name)]
+def list_models(health, default):
+    fallback = [fallback_ref(*default)]
     try:
-        items = list(health_client.health_models.list_by_subscription())
-    except Exception:
+        rows = health.query_models()
+    except (InteractionRequired, ConsentRequired):
+        raise
+    except Exception as error:
+        logger.warning("model catalog query failed error_type=%s", type(error).__name__)
         return fallback
-    refs = [
-        model_ref(item)
-        for item in items
-        if field(item, "name") and resource_group_from_id(field(item, "id"))
-    ]
+    refs = [ref for ref in map(model_ref, rows) if ref]
     return sort_refs(refs) or fallback
 
 
-def resolve_selection(query_params, list_models_now, resource_group, model_name):
+def well_formed(requested):
+    return (
+        (not requested["subscription"] or GUID.fullmatch(requested["subscription"]) is not None)
+        and RESOURCE_GROUP_NAME.fullmatch(requested["resourceGroup"]) is not None
+        and ARM_NAME.fullmatch(requested["model"]) is not None
+    )
+
+
+def resolve_selection(query_params, model_exists, default):
     requested = {key: query_params.get(key) for key in SELECTOR_KEYS}
     if not any(requested.values()):
-        return (resource_group, model_name), None
-    match = next(
-        (
-            item
-            for item in list_models_now()
-            if item["name"] == requested["model"]
-            and item["resourceGroup"] == requested["resourceGroup"]
-        ),
-        None,
+        return default, None
+    selection = (
+        requested["subscription"] or default[0],
+        requested["resourceGroup"],
+        requested["model"],
     )
-    if match is None:
+    if not all(selection) or not well_formed(requested) or not model_exists(*selection):
         return None, "unknown_model"
-    return (match["resourceGroup"], match["name"]), None
+    return selection, None
 
 
 def read_inventory(health_client, resource_group, model_name):
@@ -94,34 +117,13 @@ def read_inventory(health_client, resource_group, model_name):
     entities = list(
         health_client.entities.list_by_health_model(resource_group, model_name)
     )
-    relationships = [
-        relationship_dto(item)
-        for item in health_client.relationships.list_by_health_model(
-            resource_group, model_name
-        )
-    ]
-    order = entity_order(entities, relationships, model_name)
-    entity_by_name = {field(item, "name"): item for item in entities}
-    parent_names = {name: [] for name in entity_by_name}
-    child_names = {name: [] for name in entity_by_name}
-    for relation in relationships:
-        parent = relation["parentEntityName"]
-        child = relation["childEntityName"]
-        if parent in child_names and child in parent_names:
-            child_names[parent].append(child)
-            parent_names[child].append(parent)
-    entity_dtos = [
-        entity_dto(entity_by_name[name], parent_names[name], child_names[name])
-        for name in order
-    ]
-    order_index = {name: index for index, name in enumerate(order)}
-    relationships.sort(
-        key=lambda item: (
-            order_index.get(item["parentEntityName"], 10_000),
-            order_index.get(item["childEntityName"], 10_000),
-            (item["name"] or "").casefold(),
-        )
+    graph = graph_dto(
+        entities,
+        health_client.relationships.list_by_health_model(resource_group, model_name),
+        model_name,
     )
+    entity_dtos = graph["entities"]
+    relationships = graph["relationships"]
     model_properties = field(model, "properties")
     root_state = next(
         (

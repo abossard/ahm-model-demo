@@ -18,6 +18,8 @@ export default defineConfig({
     baseURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
+    // A deployment that signs users in needs the cookies of a signed-in browser (see tests/live-experience.spec.ts).
+    ...(process.env.LIVE_STORAGE_STATE ? { storageState: process.env.LIVE_STORAGE_STATE } : {}),
   },
   grep: includeMutations ? /@live-(readonly|mutation)/ : /@live-readonly/,
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],

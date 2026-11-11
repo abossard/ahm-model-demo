@@ -1,0 +1,77 @@
+import type { StateCreator } from "zustand";
+import { workspaceFromSearch } from "../model/selection";
+import type { AsyncState, SessionDetail, SessionSummary } from "../model/types";
+import * as api from "./api";
+import { IDLE, LOADING, settle } from "./asyncState";
+import type { Store } from "./store";
+
+export interface SessionsState {
+  readonly sessions: AsyncState<readonly SessionSummary[]>;
+  readonly sessionId: string | null;
+  readonly sessionDetail: AsyncState<SessionDetail>;
+  readonly creatingSession: AsyncState<SessionSummary>;
+}
+
+export interface SessionsActions {
+  readonly loadSessions: () => Promise<void>;
+  readonly createSession: (title?: string) => Promise<void>;
+  /** Opens a Session, or the Session list when the id is null. */
+  readonly openSession: (id: string | null) => Promise<void>;
+  /** Reloads the open Session so its Task list shows current statuses. */
+  readonly refreshSession: () => Promise<void>;
+  /** Opens the Session and Task an address names. */
+  readonly restoreWorkspace: (search: string) => Promise<void>;
+}
+
+export const sessionsSlice: StateCreator<Store, [], [], SessionsState & SessionsActions> = (
+  set,
+  get,
+) => ({
+  sessions: IDLE,
+  sessionId: null,
+  sessionDetail: IDLE,
+  creatingSession: IDLE,
+
+  loadSessions: async () => {
+    if (get().sessions.kind !== "success") set({ sessions: LOADING });
+    const sessions = await settle(api.fetchSessions(), "The Sessions could not be listed.");
+    set({ sessions });
+  },
+
+  createSession: async (title) => {
+    set({ creatingSession: LOADING });
+    const created = await settle(api.createSession(title), "The Session could not be created.");
+    set({ creatingSession: created.kind === "success" ? IDLE : created });
+    if (created.kind !== "success") return;
+    void get().loadSessions();
+    // A Session without Tasks has nothing to list, so it opens on the form.
+    set({ workspaceTab: "new" });
+    await get().openSession(created.value.id);
+  },
+
+  openSession: async (id) => {
+    get().openTask(null);
+    set({ sessionId: id, sessionDetail: id === null ? IDLE : LOADING });
+    if (id === null) {
+      set({ workspaceTab: "tasks" });
+      return;
+    }
+    const detail = await settle(api.fetchSession(id), "The Session could not be opened.");
+    if (get().sessionId === id) set({ sessionDetail: detail });
+  },
+
+  refreshSession: async () => {
+    const id = get().sessionId;
+    if (id === null) return;
+    const detail = await settle(api.fetchSession(id), "The Session could not be opened.");
+    if (get().sessionId === id && detail.kind === "success") set({ sessionDetail: detail });
+  },
+
+  restoreWorkspace: async (search) => {
+    const { session, task } = workspaceFromSearch(search);
+    if (session === null) return;
+    set({ workspaceOpen: true });
+    await get().openSession(session);
+    if (task !== null) await get().openTask(task);
+  },
+});

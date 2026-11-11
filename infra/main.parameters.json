@@ -11,44 +11,20 @@
     "principalId": {
       "value": "${AZURE_PRINCIPAL_ID}"
     },
-    "adminUpn": {
-      "value": "${ADMIN_UPN}"
-    },
-    "adminIpAddress": {
-      "value": "${ADMIN_IP_ADDRESS}"
-    },
-    "postgresSkuName": {
-      "value": "${AZURE_POSTGRES_SKU_NAME:-Standard_B1ms}"
-    },
-    "postgresSkuTier": {
-      "value": "${AZURE_POSTGRES_SKU_TIER:-Burstable}"
-    },
-    "containerAppsEnvironmentMode": {
-      "value": "${AZURE_CONTAINER_APPS_ENVIRONMENT_MODE:-ConsumptionOnly}"
-    },
-    "containerAppsSubnetNsgId": {
-      "value": "${AZURE_CONTAINER_APPS_SUBNET_NSG_ID:-}"
-    },
-    "privateEndpointSubnetNsgId": {
-      "value": "${AZURE_PRIVATE_ENDPOINT_SUBNET_NSG_ID:-}"
-    },
-    "healthModelLocation": {
-      "value": "${HEALTH_MODEL_LOCATION:-northeurope}"
-    },
-    "foundryLocation": {
-      "value": "${AZURE_FOUNDRY_LOCATION:-swedencentral}"
+    "modelDeploymentCapacity": {
+      "value": "${AZURE_MODEL_CAPACITY:-500}"
     },
     "webImage": {
       "value": "${SERVICE_WEB_IMAGE_NAME}"
     },
-    "agentWebImage": {
-      "value": "${SERVICE_AGENT_WEB_IMAGE_NAME}"
+    "mcpImage": {
+      "value": "${SERVICE_MCP_IMAGE_NAME}"
     },
-    "agentAppImage": {
-      "value": "${SERVICE_AGENT_APP_IMAGE_NAME}"
+    "entraAllowAzureCli": {
+      "value": "${ENTRA_ALLOW_AZURE_CLI:-false}"
     },
-    "surveyImage": {
-      "value": "${SERVICE_SURVEY_IMAGE_NAME}"
+    "foundryAgentPrincipalId": {
+      "value": "${FOUNDRY_AGENT_PRINCIPAL_ID}"
     }
   }
 }

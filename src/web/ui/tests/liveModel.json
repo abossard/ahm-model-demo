@@ -1,0 +1,193 @@
+{
+  "entities": [
+    {
+      "name": "hm-contosodemo",
+      "displayName": "Health Pulse",
+      "healthState": "Healthy",
+      "signals": 0
+    },
+    {
+      "name": "discover-app-insights",
+      "displayName": "Application Insights topology",
+      "healthState": "Healthy",
+      "signals": 0
+    },
+    {
+      "name": "81db2f7a-697d-c4ed-5d5f-251344a971fe",
+      "displayName": "contosodemo",
+      "healthState": "Healthy",
+      "signals": 1
+    },
+    {
+      "name": "platform-context",
+      "displayName": "Azure Platform Context",
+      "healthState": "Healthy",
+      "signals": 3
+    },
+    {
+      "name": "discovered-app-topology",
+      "displayName": "Discovered Application Topology",
+      "healthState": "Unknown",
+      "signals": 0
+    },
+    {
+      "name": "flow-run-agent-tasks",
+      "displayName": "Run agent tasks",
+      "healthState": "Healthy",
+      "signals": 0
+    },
+    {
+      "name": "flow-send-health-reports",
+      "displayName": "Send Health Reports",
+      "healthState": "Healthy",
+      "signals": 0
+    },
+    {
+      "name": "flow-view-health-model",
+      "displayName": "View Health Model",
+      "healthState": "Healthy",
+      "signals": 0
+    },
+    {
+      "name": "system-agent-runtime",
+      "displayName": "Agent Runtime",
+      "healthState": "Healthy",
+      "signals": 0
+    },
+    {
+      "name": "system-ai-inference",
+      "displayName": "AI Inference",
+      "healthState": "Healthy",
+      "signals": 0
+    },
+    {
+      "name": "system-app-hosting",
+      "displayName": "App Hosting",
+      "healthState": "Healthy",
+      "signals": 0
+    },
+    {
+      "name": "system-session-store",
+      "displayName": "Session Store",
+      "healthState": "Healthy",
+      "signals": 0
+    },
+    {
+      "name": "2cfe8745-bb71-b592-3736-7d3343a007dc",
+      "displayName": "stcontosodemo00001",
+      "healthState": "Healthy",
+      "signals": 3
+    },
+    {
+      "name": "foundry-account",
+      "displayName": "Foundry Account",
+      "healthState": "Healthy",
+      "signals": 3
+    },
+    {
+      "name": "hosted-agent",
+      "displayName": "Foundry Hosted Agent",
+      "healthState": "Healthy",
+      "signals": 2
+    },
+    {
+      "name": "session-storage",
+      "displayName": "Session Storage",
+      "healthState": "Healthy",
+      "signals": 2
+    },
+    {
+      "name": "container-app",
+      "displayName": "Web Container App",
+      "healthState": "Healthy",
+      "signals": 6
+    }
+  ],
+  "relationships": [
+    {
+      "parentEntityName": "hm-contosodemo",
+      "childEntityName": "platform-context",
+      "displayName": "observes platform context"
+    },
+    {
+      "parentEntityName": "hm-contosodemo",
+      "childEntityName": "discovered-app-topology",
+      "displayName": "supplements with discovery"
+    },
+    {
+      "parentEntityName": "hm-contosodemo",
+      "childEntityName": "flow-run-agent-tasks",
+      "displayName": "serves"
+    },
+    {
+      "parentEntityName": "hm-contosodemo",
+      "childEntityName": "flow-send-health-reports",
+      "displayName": "serves"
+    },
+    {
+      "parentEntityName": "hm-contosodemo",
+      "childEntityName": "flow-view-health-model",
+      "displayName": "serves"
+    },
+    {
+      "parentEntityName": "discover-app-insights",
+      "childEntityName": "81db2f7a-697d-c4ed-5d5f-251344a971fe",
+      "displayName": null
+    },
+    {
+      "parentEntityName": "81db2f7a-697d-c4ed-5d5f-251344a971fe",
+      "childEntityName": "2cfe8745-bb71-b592-3736-7d3343a007dc",
+      "displayName": null
+    },
+    {
+      "parentEntityName": "flow-run-agent-tasks",
+      "childEntityName": "system-agent-runtime",
+      "displayName": "reasons through"
+    },
+    {
+      "parentEntityName": "flow-run-agent-tasks",
+      "childEntityName": "system-ai-inference",
+      "displayName": "infers through"
+    },
+    {
+      "parentEntityName": "flow-run-agent-tasks",
+      "childEntityName": "system-app-hosting",
+      "displayName": "runs on"
+    },
+    {
+      "parentEntityName": "flow-run-agent-tasks",
+      "childEntityName": "system-session-store",
+      "displayName": "keeps sessions in"
+    },
+    {
+      "parentEntityName": "flow-send-health-reports",
+      "childEntityName": "system-app-hosting",
+      "displayName": "runs on"
+    },
+    {
+      "parentEntityName": "flow-view-health-model",
+      "childEntityName": "system-app-hosting",
+      "displayName": "runs on"
+    },
+    {
+      "parentEntityName": "system-agent-runtime",
+      "childEntityName": "hosted-agent",
+      "displayName": "hosted by"
+    },
+    {
+      "parentEntityName": "system-ai-inference",
+      "childEntityName": "foundry-account",
+      "displayName": "backed by"
+    },
+    {
+      "parentEntityName": "system-app-hosting",
+      "childEntityName": "container-app",
+      "displayName": "hosted by"
+    },
+    {
+      "parentEntityName": "system-session-store",
+      "childEntityName": "session-storage",
+      "displayName": "backed by"
+    }
+  ]
+}

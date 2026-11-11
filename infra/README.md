@@ -1,311 +1,269 @@
 # Infrastructure
 
-`main.bicep` provisions the whole demo at subscription scope: the resource group, the workload, a
-Foundry project for the task agent, and four Azure Health Models.
+`main.bicep` provisions the whole demo at subscription scope, in one region: the resource group, a small virtual
+network, a web Container App and an Azure MCP server Container App, two Entra app registrations, a Foundry account
+with a project and a model, a private blob store for Sessions, and two Azure Health Models.
 
-## The health models
+- Set `AZURE_LOCATION` to `swedencentral` before the first provision. Foundry hosted agents are not available
+  in North Europe, and every resource uses `location`. A region cannot change in place.
+- Bicep does not create the hosted agent. The deploy hook does (see Hosted agent deploy); its Entra identity exists
+  only after that.
 
-| Model | Module | What it describes |
-|-------|--------|-------------------|
-| `hm-<env>` | `modules/health-model.bicep` + `health-model-entities.bicep` + `health-model-relationships.bicep` + `health-model-discovery.bicep` | The real application: 18 authored entities over live metrics, log queries, availability tests, submitted health reports, and an Application Insights discovery rule. This is the model the web app selects by default. |
-| `hm-<env>-shop` | `modules/shop-health-model.bicep` | A fictional shop with 17 entities, 21 relationships, and no discovery. |
-| `hm-<env>-survey` | `modules/survey-health-model.bicep` | Survey authoring, joining/answering, and public results over real resources; no discovery or constant-healthy signals. |
-| `hm-<env>-design` | `modules/design-health-model.bicep` | Empty until a Design task's approved changes are applied to it. |
+## Resources
 
-All live in the same resource group, and `azd provision` creates them together.
+| Resource | Module | Notes |
+|----------|--------|-------|
+| Container App `ca-<env>-web` in environment `cae-<env>` | `container-app.bicep`, `foundation.bicep` | Workload profiles environment with only the Consumption profile, joined to the VNet, one replica. Serves the FastAPI app and the SPA. |
+| Container App `ca-<env>-mcp` | `container-app.bicep` | The Azure MCP server (`src/mcp`), external ingress, one replica. See Azure MCP server. |
+| App registrations `ahm-<env>-web` and `ahm-<env>-mcp` with their service principals and federated credentials | `entra.bicep` | See Sign-in and on-behalf-of. |
+| Virtual network `vnet-<env>` | `foundation.bicep` | Two subnets, one for the environment and one for private endpoints. See Network. |
+| Identity `id-<env>-app` | `foundation.bicep` | The web app's workload identity. |
+| Container registry (Basic) | `foundation.bicep` | Holds the web, MCP and hosted agent images. |
+| Log Analytics, Application Insights, availability tests | `foundation.bicep`, `availability-tests.bicep` | One test GETs the home page and one GETs `/health` of the MCP server, each every 5 minutes. |
+| Storage account with the `sessions` container, its private endpoint and private DNS zone | `storage.bicep` | Session store. |
+| Foundry account, project `proj-<env>`, model, egress policy | `foundry.bicep` | See Foundry. |
+| `hm-<env>`, `hm-<env>-design` | `health-model*.bicep`, `design-health-model.bicep` | See Health models. |
+| Activity log diagnostics | `subscription-monitoring.bicep` | Subscription scope. |
+
+## Network
+
+- `vnet-<env>` is `10.42.0.0/25` with two subnets and nothing else: no network security group, route table or gateway.
+  - `snet-container-apps` (`10.42.0.0/26`) is delegated to `Microsoft.App/environments` and holds only the Container
+    Apps environment. A workload profiles environment needs at least a /27, and its subnet size cannot change after
+    creation, so the /26 leaves room for the extra addresses a revision change uses.
+  - `snet-private-endpoints` (`10.42.0.64/29`) holds the session store's private endpoint.
+- `cae-<env>` joins the first subnet with `internal: false`. The web app stays reachable from the internet through the
+  environment's public IP, and outbound internet access is the platform default.
+- Keep the VNet clear of the address ranges Container Apps reserves, listed in
+  [custom virtual networks](https://learn.microsoft.com/azure/container-apps/custom-virtual-networks).
+- An environment created without a VNet cannot be joined to one. Delete the web app and `cae-<env>`, then provision.
+
+## Session store
+
+- Storage account `stahm<token>`: Entra only (`allowSharedKeyAccess: false`), no public blob access, TLS 1.2, and
+  `publicNetworkAccess: Disabled`. A governance policy forces public network access off on storage accounts, so the web
+  app reaches the store through a private endpoint.
+- `pe-<env>-blob` is a `blob` private endpoint in `snet-private-endpoints`. The private DNS zone
+  `privatelink.blob.<storage suffix>` is linked to the VNet, and a zone group on the endpoint fills it, so inside the
+  VNet `<account>.blob.core.windows.net` resolves to the endpoint's private address.
+- One private container, `sessions`. The workload identity has Storage Blob Data Contributor on that container only.
+- Output and web env var `SESSIONS_CONTAINER_URL`: `https://<account>.blob.core.windows.net/sessions`. It is the
+  public host name, which resolves privately only inside the VNet.
+- Nothing outside the VNet reaches the store, so `make dev` exports `SESSIONS_CONTAINER_URL=memory:` and keeps
+  Sessions in process memory.
+- Blob diagnostics go to Log Analytics. The agent never touches the store, so its egress policy has no blob host.
 
 ## Foundry
 
-`modules/foundry.bicep` creates the AIServices account, project `proj-<env>`, the `gpt-5.4-mini`
-deployment and the `agent-egress` RAI policy in `foundryLocation` (default `swedencentral`; North
-Europe cannot host agents). The policy denies all session egress except the listed hosts. Each
-agent version must reference `FOUNDRY_AGENT_EGRESS_POLICY_ID`; a missing reference fails open.
+- `foundry.bicep` creates the AIServices account, the project, the `gpt-5.4-mini` deployment (GlobalStandard) and
+  the `agent-egress` RAI policy. The deployment capacity is in thousands of tokens per minute:
+  `AZURE_MODEL_CAPACITY`, default 500. A Task sends 200k to 780k tokens (mostly cached), so 100 answered 429 when
+  runs started under 90 s apart or two people used the app at once. If quota is short, lower it with
+  `azd env set AZURE_MODEL_CAPACITY <n>` before `azd provision`; fewer concurrent Tasks fit then.
+- The policy lists the Microsoft.DefaultV2 content filters explicitly, because the service rejects a custom policy
+  without them and an empty list would carry none.
+- Check quota before provisioning: `az cognitiveservices usage list -l swedencentral`, row
+  `OpenAI.GlobalStandard.gpt-5.4-mini` (`currentValue` plus the new capacity must stay under `limit`).
+- The policy denies all session egress except exact hosts: this account's own `<account>.services.ai.azure.com`,
+  `<account>.openai.azure.com` and `<account>.cognitiveservices.azure.com`, the web app, the MCP server, `github.com`
+  and `codeload.github.com`. The web and MCP hosts are the apps' names on the environment's default domain, so they are
+  known before the apps exist. ARM, Entra login and `api.loganalytics.io` are not listed: the agent holds no Azure
+  token, and the MCP server exchanges the user's token itself. There are no wildcards: they would also match other
+  tenants, and Application Insights ingestion with a foreign key needs no authentication, so it would be an
+  exfiltration route. The project has no Application Insights connection, and Foundry's required platform
+  connectivity is allowed separately. Each agent version must reference `FOUNDRY_AGENT_EGRESS_POLICY_ID`; a missing
+  reference fails open.
+- Roles in Bicep: the project identity gets Foundry User on the account and AcrPull on the registry. The web
+  identity gets Foundry Agent Consumer on the project. The deployer (`principalId`) gets Foundry Project Manager.
+- The hosted agent runs under its own Entra agent identity and has no Azure role. Its tools run in the MCP server as
+  the signed-in user.
 
-A hosted agent runs under its own Entra agent identity, created with the agent. Bicep cannot grant
-it roles, so the agent deploy step assigns Reader, Monitoring Reader, Log Analytics Reader and
-`HEALTH_MODEL_READER_ROLE_ID` on the resource group. The project identity only gets Foundry User.
-The web app identity gets Foundry Agent Consumer on the project and the Health Model Writer role on
-the resource group, which changes entities, signal definitions and relationships but never models.
+## Image-based hosted agent
 
-## Survey ownership
+The agent ships as a container image from the registry, because its `azmcp` binary is over the 250 MB ZIP limit.
 
-The survey adds its own `survey` Container App and survey health model. It reuses the unchanged
-`container-app.bicep`, existing environment, ACR, user-assigned workload identity, PostgreSQL
-`demo` database, Application Insights, and workspace. No additional AI, database server, standalone
-identity, telemetry component, or availability-test resource is provisioned.
-The new Container App and model evaluations can incur cost. Template changes are not deployment
-permission; inspect current images, layouts and grants before an authorized provision.
+- The project identity pulls the image. The registry is Basic and pinned to `LegacyRegistryPermissions` mode,
+  where AcrPull is the pull role. Container Registry Repository Reader is the pull role for registries in ABAC mode
+  (`AbacRepositoryPermissions`), which this template does not use.
+- The registry keeps `azureADAuthenticationAsArmPolicy` enabled. Do not disable it.
+- The image is `linux/amd64`, built in the registry by the deploy hook.
+- If a version fails with `image_pull_failed`, check the two settings above and the image tag. The azd agent path
+  also grants AcrPull to the agent's own identity at deploy time; do the same if the project identity is not enough.
 
-The azd image input is `SERVICE_SURVEY_IMAGE_NAME`. Outputs provide `SERVICE_SURVEY_NAME`,
-`SERVICE_SURVEY_ID`, `SERVICE_SURVEY_FQDN`, `SURVEY_HEALTH_MODEL_NAME` and
-`SURVEY_HEALTH_MODEL_ID`. URLs and resource leaves derive from these outputs.
+## Hosted agent deploy
 
-The existing postprovision hook applies `src/survey/migrations/001_initial.sql` as the PostgreSQL
-administrator. Its transaction and advisory lock record version 1 in `survey.schema_migrations`;
-repeat/concurrent runs are safe and failure rolls back. Runtime requests never execute DDL.
-For survey-only administrator maintenance, `scripts/hooks/postprovision.sh --survey-only` uses
-the operator's `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, TLS/credential environment, and
-`AZURE_IDENTITY_NAME`. It never runs the old demo bootstrap or Azure CLI. It adds schema USAGE,
-table DML, and migration-version SELECT without changing old data or grants. Future migrations
-need new numbered versions; do not edit an already-applied migration to upgrade a deployment.
+The `postdeploy` hook in `azure.yaml` runs `src/agent/deploy/deploy-agent.sh` once, after `azd deploy` or `azd up` has
+deployed every service. azd exports the environment values to it. Run it alone with `azd hooks run postdeploy`.
 
-The reused identity retains old Queue and `public.request_events` permissions. Schema-qualified,
-bound survey SQL confines application effects; this is not privilege isolation. There is no queue
-or health-report client in the survey process.
+- It builds the image in the registry (`az acr build`) and creates the agent or a new version through the Foundry REST
+  API with `FOUNDRY_AGENT_EGRESS_POLICY_ID` as the egress policy. If a new version does not reference the policy, the
+  run deletes it and fails, because its sessions would have open egress. Then it waits until the version is active.
+  A version still provisioning from an earlier run is reused, not duplicated.
+- Then it hands the agent identity to the web app, which uses it to recognise the agent's token requests. Two commands,
+  the second one so that no second provision is needed:
 
-Survey telemetry uses the stable role `ahm-survey` and allowlisted operation/status/duration
-metadata only. HTTP/SQL/credential auto-instrumentation and access logging are disabled. No bodies,
-answers, capabilities, query strings, client IPs, or SQL parameters are exported. Four legacy
-workspace log queries exclude `AppRoleName == "ahm-survey"` while retaining all other or missing
-roles. Classic Application Insights equivalents use `cloud_RoleName`; old producers are not retagged.
-Shared physical-resource metrics and outages are still shared. Existing resource-level Insights
-discovery cannot be partitioned by a role filter and remains an unverified, deferred limitation.
+  ```bash
+  azd env set FOUNDRY_AGENT_PRINCIPAL_ID "$PRINCIPAL_ID"
+  az containerapp update --subscription "$AZURE_SUBSCRIPTION_ID" --resource-group "$AZURE_RESOURCE_GROUP" --name "$SERVICE_WEB_NAME" --set-env-vars "FOUNDRY_AGENT_PRINCIPAL_ID=$PRINCIPAL_ID" --output none
+  ```
 
-Survey logical nodes roll up `WorstOf` with `ignoreUnknown: false`. Operation success queries
-require recent samples; empty/stale traffic yields no healthy row. The model's system identity
-receives the existing access-module read grants before resource-bound entities are created.
-Five signal-only operation-evidence leaves carry the author, join, ballot, results and readiness
-queries. Their system flows depend on those leaves as well as the real resources. Keeping the
-operation query separate prevents resource health from masking its Unknown input inside the
-same entity. It does not by itself prove that the native dependency aggregator propagates
-Unknown to a mixed Healthy/Unknown parent. The survey graph has 18 entities and 25 relationships; no extra Azure platform
-resource or permission is required. Verify native propagation rather than inferring root health
-from the query result or compiled settings.
-The model/authentication, access grants, and `survey-health-entities.bicep` child deployment are
-separate ARM validation boundaries. CloudHealth validates signal-bearing children only after
-the new model and its read grants exist. Native provider validation is still required: a successful
-Bicep compilation does not validate signal names or KQL functions.
-`GET /api/ready` checks `SELECT 1` and migration version without writes. No continuous write probe
-or automatic survey discovery is added. Actual evaluator timestamps and Azure ingestion still
-require authorized deployed read-back. Use Designer initially; existing catalog permissions do
-not guarantee survey visibility, and no subscription permission is broadened.
+  `FOUNDRY_AGENT_PRINCIPAL_ID` is a `main.bicep` parameter (empty by default) that the web app's environment carries,
+  so the next `azd provision` keeps the value. The second command starts a new web revision.
+- The deployer needs Foundry Project Manager on the project (Bicep grants it to `principalId`), and Contributor or
+  Container Registry Tasks Contributor on the registry for the build. Right after provisioning Foundry may answer 403
+  while that role propagates; the script retries for a while. The machine needs `az`, `jq`, `curl` and `git`.
+- A deleted and recreated agent gets a new identity: run the hook again so the web app learns it.
+- The agent name is `FOUNDRY_AGENT_NAME`, the name the web app calls. Optional overrides, set with `azd env set` or in
+  the shell: `AGENT_NAME` (replaces the name, so the web app would not call that agent), `ACTIVATION_TIMEOUT_SECONDS`
+  (600), `POLL_INTERVAL_SECONDS` (5) and `FORBIDDEN_RETRY_SECONDS` (180).
 
-### Scoped survey deployment
+## Health models
 
-For an existing environment, use the resource-group-scoped
-`modules/survey-deployment.bicep`, not a full-stack provision. It takes the existing environment,
-identity, registry, PostgreSQL, Insights and workspace names as parameters and derives IDs and
-settings from those existing resources. It adds only the survey Container App, health model,
-children and model read grants. Pass a previously built and locally verified linux/amd64 image
-by immutable registry digest. Run property-level `az deployment group what-if` against the
-intended subscription and resource group before `az deployment group create`.
+| Model | What it describes |
+|-------|-------------------|
+| `hm-<env>` | The app: 15 authored entities and 16 relationships over live metrics, log queries and the availability tests, plus an Application Insights discovery rule. The web app selects it by default. |
+| `hm-<env>-design` | Empty until a Design task's approved changes are applied. It has its own identity with Reader and Monitoring Reader. |
 
-Snapshot current app images/revisions, authored model properties, grants and demo data first.
-If live legacy queries or layouts differ from source, update only the four approved operational
-query clauses in their actual live entity. Do not redeploy the old entity from the source template
-or reconcile missing models. Apply the administrator's survey-only migration, never the old demo
-bootstrap. Keep authentication tokens and telemetry settings out of command output and files.
+`hm-<env>` topology, top to bottom:
 
-The readiness endpoint is GET-only. A deployed smoke survey is a separate authorized data write;
-use one dedicated survey, keep capabilities only in process/browser memory, and clear its answers
-through its response API afterward. Do not delete it with SQL or exercise old report/journey
-mutation endpoints. Verify the actual active digest/revision, public flows, telemetry role and
-native evaluator timestamps. Initial model read grants can need an evaluation interval to
-propagate; Unknown or a query error is not proof of Healthy.
+- Root `Health Pulse` alerts at Sev2 when Unhealthy.
+- User flows: View Health Model, Send Health Reports, Run agent tasks.
+- System components: App Hosting (shared by all three flows), then Agent Runtime, AI Inference and Session Store
+  (under Run agent tasks). Agent Runtime holds the hosted agent and the Azure MCP server.
+- Resources hold every signal:
 
-## The shop model
+| Entity | Bound to | Signals |
+|--------|----------|---------|
+| `container-app` | The web Container App | CPU, memory, response time (5 minute grain: it reports only for minutes with requests). Failed requests (HTTP 5xx only, not 4xx), exceptions, home page availability. Resource Health is off: Container Apps do not support it (HTTP 422). |
+| `hosted-agent` | The Foundry project | `agent-task-failures` (degraded above 0, unhealthy above 2 in 15 minutes) and `agent-task-latency` (p95 over 15 minutes, degraded above 120 s, unhealthy above 300 s), both over the web app's `foundry.agent.*` spans in `AppDependencies`. |
+| `mcp-server` | The MCP Container App | CPU, memory, response time (all 5 minute grain; the response time threshold of 10 s is an assumption: no traffic has run through it yet) and the availability of `/health`. No request-based signal: the server's exporter has no credential for the Entra-only Application Insights, so its requests never reach `AppRequests`. Resource Health is off. |
+| `foundry-account` | The Foundry account | Client errors, server errors, throttled requests (`ModelRequests` with `StatusCode eq '429'`, which has no series and reads Unknown until the first 429). |
+| `session-storage` | The blob service of the session store | Availability, end-to-end latency. Storage emits both only for minutes with blob transactions, so they read Unknown while Sessions are idle. |
 
-A compact standard shop: 17 entities and 21 directed relationships, tuned so the Designer's layout
-mechanism has room to work. The root `Contoso Shop` has three flows, each fanning out to services.
+- `platform-context` (Limited impact) reads activity log events. The activity log spans the subscription, so the
+  failed-operations signal counts this resource group only, and the workspace records a failure as `Failure`.
+- `discovered-app-topology` (Suppressed) has no children. The discovery rule builds its own tree (rule entity, the
+  application's role, the storage account) with no parent, so discovered entities never roll up into the root. The rule
+  adds no recommended signals: its storage account defaults (latency above 15 ms is Unhealthy) turned a healthy account Unhealthy.
+- Logical entities roll up `WorstOf` and ignore Unknown children. Every entity has a 99% health objective.
+- The agent signals read telemetry the web app emits: CLIENT spans named `foundry.agent.*` (`foundry.agent.respond`
+  per Task run). With no task in the window the latency query returns no row, so it reads Unknown.
+- A query signal evaluates over its `timeGrain`, which is intersected with the query's own `ago()`. Keep them equal:
+  a 15 minute query on a 5 minute grain answered 33% while its 15 minute run said 40%. A test enforces it.
+- After a monitored resource is deleted and recreated under the same id, its metric signals stay frozen on the old
+  "not found" error until the signal definition changes or the entity is recreated. A provision that changes nothing
+  does not re-arm them: change the grain or another property of each frozen signal, then provision.
+- Turning `addRecommendedSignals` off on a discovery rule does not remove the signals already added to discovered
+  entities. They stay until a PUT of the entity without them.
+- The model identity has Reader and Monitoring Reader on the resource group. The web identity has no health model
+  role: reads, reports and Apply run as the signed-in user.
+- Bicep uses API version `2026-05-01-preview`. The GA `2026-11-01` is registered for all CloudHealth types, but
+  Bicep 0.46 has no types for it and warns on every resource. Switch all of them once `az bicep` is 0.49 or later.
 
-- Shopping covers browsing: Product Catalog and Shopping Cart.
-- Checkout covers paying: Shopping Cart and Payments.
-- Orders covers fulfilment: Order Processing, Inventory, and Analytics.
-- Payments routes to Stripe and PayPal. Both are external-provider simulations that carry the
-  synthetic signal and bind no Azure resource, because the demo integrates no real provider.
+## Sign-in and on-behalf-of
 
-The saved Designer layout places the flows above the services, with Azure resources and simulated
-providers below.
+Users sign in with Entra ID, and the web app and the agent reach Azure as that user (ADR 0006, plan.md). There is no
+catalog scope and no health model role for the app: the model selector lists what the user can read.
 
-The five Azure-resource nodes bind existing resources through module outputs:
+- `entra.bicep` uses the Microsoft Graph Bicep extension (`infra/bicepconfig.json`, Bicep 0.36.1 or later) and creates
+  two single-tenant app registrations with service principals, named `ahm-<env>-web` and `ahm-<env>-mcp`:
+  - `web` is the SPA and its API. Redirect URIs `https://<web host>/` and `http://localhost:8080/`, scope
+    `access_as_user`, token version 2. It needs ARM `user_impersonation`, the `mcp` scope and its own scope.
+  - `mcp` is the Azure MCP server. Scope `Mcp.Tools.ReadWrite`, token version 2, pre-authorizing `web`. It needs ARM
+    `user_impersonation` and Log Analytics `Data.Read`.
+  - Each has a federated credential that trusts the workload identity `id-<env>-app` (subject: its object id, audience
+    `api://AzureADTokenExchange`), so no client secret exists. Both apps sign the on-behalf-of exchange with it.
+- Each app is declared twice in `entra.bicep` with the same `uniqueName`, because identifier URIs and the two apps'
+  references to each other need an application id that exists only after creation. A uniqueName that survives an
+  out-of-band delete conflicts on the next provision (restore the app or purge it from the deleted items), and a new
+  app takes a short while to replicate.
+- On-behalf-of has no consent screen. After `azd provision` the `postprovision` hook
+  (`scripts/hooks/postprovision.sh`) grants tenant-wide admin consent for both apps and waits for replication. A
+  deployer needs Global Administrator, Privileged Role Administrator, Cloud Application Administrator or
+  Application Administrator. Without one the hook fails before it changes anything and prints the manual commands,
+  to be run by an administrator in this order: `az ad app permission admin-consent --id <ENTRA_MCP_CLIENT_ID>`, then
+  `az ad app permission admin-consent --id <ENTRA_CLIENT_ID>`. Until then every token request answers a claims
+  challenge.
+- What users need in Azure RBAC, because every call runs as them: Reader on the resource group or subscription to browse
+  and select a model, and Microsoft.CloudHealth read (included in Reader) for history. Health reports need
+  `Microsoft.CloudHealth/healthmodels/entities/ingestHealthReport/action`, and Apply needs write and delete on the
+  model's entities, relationships and signal definitions (for example Contributor on the group). The agent reads with
+  the same rights as the user, through Monitoring Reader or Reader and Log Analytics Reader for queries.
+- Outputs and web app environment: `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID` (web), `ENTRA_API_SCOPE`
+  (`api://<web id>/access_as_user`), `MCP_SCOPE` (`api://<mcp id>/Mcp.Tools.ReadWrite`), `MCP_URL` (the MCP app's URL;
+  the server answers at `/`) and `FOUNDRY_AGENT_PRINCIPAL_ID`. `ENTRA_MCP_CLIENT_ID` is an output only, for the hook.
+- `ENTRA_ALLOW_AZURE_CLI` (default `false`, `azd env set ENTRA_ALLOW_AZURE_CLI true`, then `azd provision`) pre-authorizes
+  the Azure CLI for the `access_as_user` scope of the web app only, so an unattended check can run
+  `az account get-access-token --scope <ENTRA_API_SCOPE>` as the signed-in developer and call the API with that token,
+  still bounded by the developer's own Azure RBAC. It is off by default because it lets any user in the tenant script
+  the API the same way; the MCP app is never pre-authorized for it, so the MCP scope stays reachable only through the
+  web app's exchange.
+- `AUTH_MODE=local` is what `make dev` exports: no managed identity, so no on-behalf-of. The web app acts as the
+  developer's `az login` identity and nobody signs in. The app refuses this mode inside a Container App.
+- Removing the old grants from an existing environment: incremental deployment does not delete the web identity's
+  custom role assignments, the three custom role definitions, or the agent identity's Azure role assignments. List and
+  delete them with `az role assignment list --all --assignee <principal id>` and `az role definition list
+  --custom-role-only true`, then `az role assignment delete` and `az role definition delete`.
 
-| Entity | Bound resource |
-|--------|----------------|
-| `azure-postgres` | PostgreSQL flexible server (`Microsoft.DBforPostgreSQL/flexibleServers`), catalog and inventory persistence |
-| `azure-web` | Web container app (`Microsoft.App/containerApps`), catalog, cart, payment and order-processing front-end simulation |
-| `azure-queue` | Queue service (`Microsoft.Storage/storageAccounts/queueServices`), named `default` under that account |
-| `azure-storage` | Storage account (`Microsoft.Storage/storageAccounts`), shared cart storage |
-| `azure-workspace` | Log Analytics workspace (`Microsoft.OperationalInsights/workspaces`), analytics backing |
+## Azure MCP server
 
-The module displays each resource's actual name and type. The business responsibilities are fictional:
-deploying this model does not deploy commerce workloads or payment integrations.
-
-### Synthetic demo health
-
-All seven leaves (five Azure resources and two providers) carry one Log Analytics signal,
-`Synthetic demo health (constant 100)`. It runs `print Value = 100`, reads the `Value` column,
-and becomes unhealthy only for `GreaterThan` 100. Query and refresh intervals are both `PT5M`.
-Successful evaluations stay Healthy without workload traffic or expiring health reports.
-
-The signal cannot evaluate Unhealthy while the query succeeds, but it can go Unknown: the model's
-identity losing its workspace read grants, the workspace becoming unavailable, or the evaluator not
-running all produce Unknown rather than Unhealthy. All 10 logical nodes aggregate `WorstOf` with
-`ignoreUnknown: false`, so an Unknown leaf affects the root.
-
-**This signal says nothing about the bound resource's real condition.** The resource binding exists
-so the entity points at a real resource; Azure Resource Health is explicitly `Disabled` on it and no
-resource metrics are attached. Read `hm-<env>` for the application's real health.
-
-The model authenticates with a system-assigned identity and is granted Reader and Monitoring Reader
-on the resource group through `modules/health-model-access.bicep`, the same module the application
-model uses. Signal-bearing entities consume that module's outputs, ordering resource bindings and
-queries after the read grants.
+- `src/mcp/Dockerfile` builds `azmcp` from `AZMCP_REPO` and `AZMCP_REF` (build arg defaults) on the .NET SDK image
+  `AZMCP_SDK`, an exact tag such as `10.0.403`, because the floating `sdk:10.0` tag broke the build. Keep it in step
+  with the `sdk.version` in the `global.json` of `AZMCP_REF`. The runtime is the chiseled `runtime-deps` image, with
+  invariant globalization (no ICU) and a non-root user. To build another source, change the defaults in the
+  Dockerfile: azd passes no build args, and an unset one would blank the default.
+- The container runs `azmcp server start --transport http --outgoing-auth-strategy UseOnBehalfOf --mode all
+  --namespace monitor --namespace group --read-only`. Every request needs a user token for the `mcp` app with the
+  `Mcp.Tools.ReadWrite` scope; the server exchanges it for ARM and Log Analytics tokens as that user.
+- Environment (`AzureAd__*`) comes from `entra.bicep` and the workload identity as a managed identity signed
+  assertion. TLS ends at the ingress, so HTTPS redirection is off and `X-Forwarded-Proto` is trusted. `/health` is
+  anonymous and answers the availability probe. Port 8080, path `/`.
+- Telemetry is off (`AZURE_MCP_COLLECT_TELEMETRY=false`): the server's exporter has no credential, Application Insights
+  here accepts only Entra tokens, and product telemetry stays inside the deployment.
+- External ingress, because the hosted agent calls it from Foundry's network. Every request still needs a token.
+- The first provision runs a placeholder image on the app until `azd deploy mcp` publishes the real one, so the MCP
+  availability signal and the `mcp-server` entity read Unhealthy until then.
 
 ## Deploying
 
 For a first deployment, follow [Get started from scratch](../README.md#get-started-from-scratch).
-Use `azd up` to provision resources and deploy application images.
 
-The provisioning hooks use the selected azd subscription, regardless of Azure CLI's default.
-Preprovision resolves your Entra identity in that subscription's tenant. Conditional Access can
-require a fresh Azure CLI sign-in to that tenant with Microsoft Graph access.
+- `azd up` provisions and deploys. `azd provision` changes infrastructure and then grants admin consent.
+  `azd deploy` publishes the web and MCP images, then runs the agent deploy hook.
+- azd sets `AZURE_PRINCIPAL_ID`, the deployer who becomes Foundry Project Manager.
+- The subscription-scope module is deployed as `subscription-monitoring-<region>`. A deployment record's name is bound to
+  its region, so a bare name collides with an environment in another region (`InvalidDeploymentLocation`).
+- Optional azd environment values: `AZURE_MODEL_CAPACITY`. Set by the deploy hooks: `SERVICE_WEB_IMAGE_NAME`,
+  `SERVICE_MCP_IMAGE_NAME` (azd, after `azd deploy`) and `FOUNDRY_AGENT_PRINCIPAL_ID` (the agent deploy script).
+- Do not provision this template over an environment created by an older version: its region, its Container Apps
+  environment (the VNet cannot be added, changed or removed in place) and its health model entities cannot be updated
+  in place, and incremental deployment does not delete entities or relationships removed from Bicep. Use a new azd
+  environment.
+- Inspect any existing environment before provisioning. Saved Designer layouts and portal edits to Bicep-defined
+  entities are overwritten.
 
-PostgreSQL defaults to `Standard_B1ms` in the `Burstable` tier. Set
-`AZURE_POSTGRES_SKU_NAME` and `AZURE_POSTGRES_SKU_TIER` with
-`azd env set --environment <env>` to override compute for that environment, for example
-`Standard_D2ds_v5` and `GeneralPurpose`. Choose a region-supported pair; catalog support does not
-guarantee allocation capacity. Larger compute costs more. These overrides leave PostgreSQL 16,
-32 GiB storage, the region, and disabled high availability unchanged.
+## Designer layout round-trip
 
-Container Apps defaults to the legacy `ConsumptionOnly` environment type with no subnet
-delegation. Set `AZURE_CONTAINER_APPS_ENVIRONMENT_MODE` to `WorkloadProfiles` with
-`azd env set --environment <env>` to use the current environment type with only a `Consumption`
-profile. This delegates only `snet-container-apps` to `Microsoft.App/environments`; it adds no
-dedicated profile. Changing an existing environment's type requires replacement, not an in-place
-update. Confirm it is empty and obtain approval before deleting that exact environment. The
-environment type does not guarantee regional allocation. See the
-[environment types](https://learn.microsoft.com/en-us/azure/container-apps/environment) and
-[subnet requirements](https://learn.microsoft.com/en-us/azure/container-apps/custom-virtual-networks).
-
-For existing subnet NSG attachments, save their exact resource IDs in the selected environment with
-`azd env set --environment <env>`: `AZURE_CONTAINER_APPS_SUBNET_NSG_ID` and
-`AZURE_PRIVATE_ENDPOINT_SUBNET_NSG_ID`. These inputs retain the
-attachments on reprovision without creating NSGs or changing their rules or routes. They default
-to empty, leaving the subnets unattached. Reprovisioning an existing VNet without its attachment
-IDs clears those bindings, so read the current subnet properties before provisioning.
-Removing AKS from this source does not retire live AKS infrastructure and is not a safe shortcut
-for reprovisioning an existing VNet that still has AKS subnet dependencies.
-
-For infrastructure changes in a configured environment, `azd provision` provisions all models but
-does not deploy application images:
-
-```bash
-azd provision
-```
-
-The shop model alone, against an existing group, without touching anything else:
-
-```bash
-az deployment group create \
-  --subscription <sub> --resource-group rg-<env> \
-  --name shop-health-model --mode Incremental \
-  --template-file infra/modules/shop-health-model.bicep \
-  --parameters modelName=hm-<env>-shop healthModelLocation=northeurope \
-               containerAppId=<id> postgresId=<id> \
-               storageId=<id> workspaceId=<id> \
-               tags='{"azd-env-name":"<env>","workload":"azure-health-model-demo"}'
-```
-
-Pass the same tags `main.bicep` builds, or the model loses them on the next run. Read the four resource
-IDs from the deployment that produced them rather than typing them:
-
-```bash
-az deployment group show --subscription <sub> -g rg-<env> -n container-app-web --query properties.outputs.containerAppId.value -o tsv
-az deployment group show --subscription <sub> -g rg-<env> -n foundation --query properties.outputs.postgresId.value -o tsv
-az deployment group show --subscription <sub> -g rg-<env> -n foundation --query properties.outputs.workspaceId.value -o tsv
-az deployment group show --subscription <sub> -g rg-<env> -n storage --query properties.outputs.storageId.value -o tsv
-```
-
-Preview with `az deployment group what-if` using the same template and parameters. Inspect the
-property-level diff. Only the shop, its children, its identity's read grants, and nested deployment
-records may change. Do not run a full-stack provision against an existing environment to update
-this model: it may overwrite portal edits or redeploy an older saved app image.
-
-What-if can report `Modify` for read-only `properties.healthState`, generated
-`resourceHealth.signalName`, and signal `status`. Distinguish these from authored changes such as
-coordinates, bindings, or query rules. Compare full authored configuration before and after deployment.
-
-The two role assignments can appear as `Unsupported`, because their names come from
-`guid(..., modelPrincipalId, ...)` and what-if cannot resolve a principal the model has not created yet.
-For an existing shop, resolve them against its live principal and compare scope, role, and identity.
-
-### Model catalog access
-
-A fresh deployment grants the app access to its own application model. The provisioning hook prints
-`CATALOG_SCOPE single-model` and the missing role-assignment commands if subscription-wide access is
-absent.
-
-To browse and submit reports across models, review those printed commands before running them:
-`Reader` permits model browsing; the custom `AHM Demo Health Report Operator` role permits reports.
-Both printed grants cover the subscription, including models outside this project. Use them only in
-a subscription where you intend to give the app that access.
-
-If you leave these grants unset, the app continues with its application model as the fallback.
-
-### Reducing an existing shop
-
-Incremental deployment does not remove entities or relationships omitted from Bicep. Before deploying
-a smaller graph, list the target shop's current relationships and entities and follow pagination:
-relationship pages hold 50, so reading only the first page produces a false deletion set.
-
-Build the deletion set as exact full IDs, compare it against the live lists case-insensitively, and
-stop if anything differs from the plan. Delete relationships before entities, because an entity that
-still has an edge cannot be removed:
-
-```bash
-az rest --subscription <sub> --method delete \
-  --url "https://management.azure.com<shop-model-id>/relationships/<name>?api-version=2026-05-01-preview"
-az rest --subscription <sub> --method delete \
-  --url "https://management.azure.com<shop-model-id>/entities/<name>?api-version=2026-05-01-preview"
-```
-
-Delete only shop child definitions. The bound Azure resources, their data, and everything in
-`hm-<env>` stay untouched.
-
-Then run the shop-only incremental deployment above. Repeating it needs no deletions: require the same
-17 names and 21 named endpoint pairs, the same shop principal, and unchanged application-model
-configuration, app images, grants outside the shop, and default selection.
-
-### Designer layout round-trip
-
-Before changing an existing shop, capture its entities and export that model alone as Bicep:
+The `canvasPosition` values in `health-model-entities.bicep` are the saved layout. After Arrange or manual
+positioning, save in Designer, export `hm-<env>` as Bicep, and copy the final coordinates into the module.
+Otherwise the next provision restores the old positions. Coordinates prove placement, not readability.
 
 ```bash
 az group export --subscription <sub> --name rg-<env> \
-  --resource-ids <shop-model-id> --export-format bicep --include-parameter-default-value
+  --resource-ids <model-id> --export-format bicep --include-parameter-default-value
 ```
 
-Decode the returned JSON string to preserve the Bicep bytes. Keep the original export. Seed retained
-entities from its coordinates, rather than an older template. If a layout needs Arrange, open only the
-shop Designer, capture before/after positions, arrange, and save. Export again under a new filename
-and copy all final `canvasPosition` values into this
-module. Preserve fractional coordinates with `json('number')`.
-
-Compile the export and module; compare numeric positions by entity name without rounding. Repeat
-the scoped deployment and compare live ARM coordinates again.
-
-Coordinates prove placement, not readability. A rendered graph in the web app confirms the topology,
-not that the Designer's automatic layout looks good; that remains a manual visual check.
-
 ## Verifying
-
-Use API version `2026-05-01-preview` and follow `nextLink`.
 
 ```bash
 BASE="https://management.azure.com/subscriptions/<sub>/resourceGroups/rg-<env>/providers/Microsoft.CloudHealth/healthmodels"
 
-az rest --subscription <sub> --method get --url "$BASE?api-version=2026-05-01-preview" # four models
-az rest --subscription <sub> --method get --url "$BASE/hm-<env>-shop/entities?api-version=2026-05-01-preview" # 17 entities
-az rest --subscription <sub> --method get --url "$BASE/hm-<env>-shop/relationships?api-version=2026-05-01-preview" # 21 edges
+az rest --subscription <sub> --method get --url "$BASE?api-version=2026-05-01-preview" # two models
+az rest --subscription <sub> --method get --url "$BASE/hm-<env>/entities?api-version=2026-05-01-preview" # 15 plus discovered
+az rest --subscription <sub> --method get --url "$BASE/hm-<env>/relationships?api-version=2026-05-01-preview" # 16 plus discovered
 ```
 
-An entity's `properties.healthState` is `Unknown` until its first evaluation, which lands a few
-minutes after deployment. Once it evaluates, every synthetic signal under
-`properties.signalGroups.azureLogAnalytics.signals[].status` reports `value: 100`,
-`healthState: Healthy`, a fresh `reportedAt`, and no `error`.
-Require all 17 entities Healthy and all seven evaluated signals at 100. Take two samples at least five
-minutes apart, after the final deployment. Each signal timestamp must advance and be no more than
-ten minutes old. Missing data is not a successful health check.
-
-The web app lists every model it can read; pick the shop from its model selector, or request
-`/api/health-model?model=hm-<env>-shop&resourceGroup=rg-<env>`.
+- An entity's `properties.healthState` is `Unknown` until its first evaluation, a few minutes after deployment.
+- Follow `nextLink`: relationship pages hold 50.
+- Missing data is not a successful check. Take two samples at least five minutes apart and require each signal's
+  `reportedAt` to advance.

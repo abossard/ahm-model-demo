@@ -3,11 +3,11 @@ targetScope = 'resourceGroup'
 @description('Container registry the workload identity pulls images from.')
 param registryName string
 
-@description('Storage account owning the request queue.')
+@description('Storage account owning the session store.')
 param storageName string
 
-@description('Queue the workload identity enqueues request events into.')
-param queueName string
+@description('Blob container the workload identity reads and writes Sessions in.')
+param sessionsContainerName string
 
 @description('Application Insights component the workload identity publishes telemetry to.')
 param applicationInsightsName string
@@ -18,10 +18,7 @@ param identityId string
 @description('Principal ID of the workload user-assigned identity.')
 param identityPrincipalId string
 
-@description('Custom role that lets the web app Apply approved changes to health models in this resource group.')
-param modelWriterRoleDefinitionId string
-
-resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+resource registry 'Microsoft.ContainerRegistry/registries@2025-11-01' existing = {
   name: registryName
 }
 
@@ -29,14 +26,14 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageName
 }
 
-resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' existing = {
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' existing = {
   parent: storage
   name: 'default'
 }
 
-resource queue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' existing = {
-  parent: queueService
-  name: queueName
+resource sessionsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' existing = {
+  parent: blobService
+  name: sessionsContainerName
 }
 
 resource applicationInsights 'Microsoft.Insights/components@2020-02-02' existing = {
@@ -56,15 +53,15 @@ resource acrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-resource queueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: queue
-  name: guid(queue.id, identityId, 'Storage Queue Data Contributor')
+resource sessionsContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: sessionsContainer
+  name: guid(sessionsContainer.id, identityId, 'Storage Blob Data Contributor')
   properties: {
     principalId: identityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
-      '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
+      'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
     )
   }
 }
@@ -82,20 +79,11 @@ resource metricsPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01' =
   }
 }
 
-resource modelWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, identityId, modelWriterRoleDefinitionId)
-  properties: {
-    principalId: identityPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: modelWriterRoleDefinitionId
-  }
-}
-
 @description('Registry the identity may now pull from.')
 output registryLoginServer string = registry.properties.loginServer
 
-@description('Queue the identity may now write to.')
-output queueUrl string = 'https://${storage.name}.queue.${environment().suffixes.storage}/${queueName}'
+@description('Session container the identity may now read and write.')
+output sessionsContainerUrl string = 'https://${storage.name}.blob.${environment().suffixes.storage}/${sessionsContainer.name}'
 
 @description('Application Insights endpoint the identity may now publish to.')
 output applicationInsightsConnectionString string = applicationInsights.properties.ConnectionString

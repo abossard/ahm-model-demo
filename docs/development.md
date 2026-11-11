@@ -3,55 +3,77 @@
 ## Start here
 
 Run `azd up` from the repository root for first-time setup.
-It creates the environment and deploys the app. See the [README](../README.md#get-started-from-scratch).
+It provisions Azure, deploys the web app and creates the hosted agent. See the [README](../README.md#get-started-from-scratch).
 
 ## Prerequisites
 
-Use macOS, Linux, or WSL. Install Azure CLI, Azure Developer CLI (`azd`), Git, Bash, `make`, `jq`,
-`curl`, and the PostgreSQL client (`psql` on your PATH). Have Docker available for image workflows.
+- macOS, Linux or WSL.
+- Azure CLI (`az`), Azure Developer CLI (`azd`), Git, Bash, `make`, `jq` and `curl`.
+- You do not need Docker: `azd` builds the web image remotely and the `postdeploy` hook builds the agent image in the container registry.
+- For local development: [Node.js](https://nodejs.org/en/download) (the web image builds the UI on Node 26, see [Dockerfile](../src/web/Dockerfile))
+  and [uv](https://docs.astral.sh/uv/getting-started/installation/), which installs Python 3.14.
+- Sign in with `az login` and `azd auth login` using the same account and tenant. The `postdeploy` hook calls `az` as that account.
+- You need permission to create resources, custom roles and role assignments in the subscription. Owner covers it.
+  [Hosted agent deploy](../infra/README.md#hosted-agent-deploy) lists what the hook needs on top.
+- Quota for the model deployment. The check is in [Foundry](../infra/README.md#foundry).
+- To browse beyond the application model, follow [catalog access](../infra/README.md#model-catalog-access).
 
-For local development, install [Node.js 26+](https://nodejs.org/en/download) and
-[uv](https://docs.astral.sh/uv/getting-started/installation/). `uv` manages Python 3.14.
-The [Makefile](../Makefile) and [agent-web/package.json](../src/agent-web/package.json) hold the runtime
-requirements.
-
-Sign in with `az login` before deployment: the provisioning hook reads your Azure CLI identity.
-Use the same account and tenant when `azd` asks you to sign in. You need permission to create Azure
-resources and assign roles, plus Azure OpenAI quota.
-
-To browse beyond the application model, review the
-[catalog-access instructions](../infra/README.md#model-catalog-access) printed during provisioning.
-
-## Run locally
-
-After that, start local development from the repository root:
-
-```bash
-make dev
-```
-
-To work against another existing environment, run `azd env select <environment>` first.
-
-`make dev` installs dependencies, builds the React UI, and starts three services:
-
-| Service | Local address |
-|---------|---------------|
-| Web app | http://localhost:8080 |
-| Copilot frontend | http://localhost:3000 |
-| Agent backend | http://localhost:8000 |
-
-Use the web app to reach the embedded copilot. Press Ctrl+C to stop the services.
-
-## Useful commands
+## Commands
 
 | Command | Purpose |
 |---------|---------|
-| `make deps` | Install Python and frontend dependencies. |
-| `make ui` | Rebuild the React UI. |
-| `make env` | Print the selected environment's runtime configuration. |
-| `azd hooks run postup` | Print website links again after `azd up`. |
+| `make deps` | Create `.venv-health-ui` (Python 3.14) with the web app requirements. Install the UI packages when `src/web/ui/node_modules` is missing. |
+| `make ui` | Run `make deps`, then build the UI into `src/web/ui/dist`. |
+| `make dev` | Run `make ui`, then serve the web app at http://127.0.0.1:8080 against the selected azd environment. `WEB_PORT` changes the port. |
+| `make env` | Print the variables `make dev` exports. They include the Application Insights connection string. |
+| `azd hooks run postup` | Print the web app links again. |
+| `azd hooks run postdeploy` | Build the agent image if its tag is new, create an agent version when the definition changed and grant any missing read roles. |
 
 Keep `.azure/` and printed connection settings out of commits.
+
+## Run the web app locally
+
+After `azd up`, run `make dev`. To use another existing environment, run `azd env select <environment>` first.
+
+- `scripts/local-env.sh` exports seven variables from the selected environment and sets `SESSIONS_CONTAINER_URL=memory:`.
+  It stops with `LOCAL_ENV_FAIL` when you have not selected an environment (`azd env select <name>`)
+  or an output is missing (`azd provision` writes the outputs back).
+- Sessions stay in process memory and a restart clears them. The session store takes only private endpoint traffic,
+  so a local run cannot reach it ([Session store](../infra/README.md#session-store)).
+- The app runs as your `az login` identity. For the agent and the health models your account needs the access Bicep gives the web identity ([infra/README.md](../infra/README.md)):
+  - Foundry Agent Consumer on the Foundry project
+  - the health model roles
+- Tasks run on the deployed agent and Apply writes live health models. [Without Azure](#without-azure) avoids that.
+
+### Without Azure
+
+`FOUNDRY_PROJECT_ENDPOINT=fake:` replaces the hosted agent with a scripted agent that returns a canned result per Task type.
+It also replaces health model reads and writes with two fixture models named by `HEALTH_MODEL_NAME` and `HEALTH_MODEL_DESIGN_NAME`.
+The app accepts health reports and drops them.
+
+`make dev` exports the endpoint from the azd environment, so start uvicorn yourself with placeholders for the other variables.
+The block keeps Sessions in memory with `SESSIONS_CONTAINER_URL=memory:`, as `make dev` does:
+
+```bash
+export AUTH_MODE=local AZURE_SUBSCRIPTION_ID=00000000-0000-0000-0000-000000000000 AZURE_RESOURCE_GROUP=rg-local \
+  HEALTH_MODEL_NAME=hm-local HEALTH_MODEL_DESIGN_NAME=hm-local-design FOUNDRY_AGENT_NAME=health-model-agent \
+  SESSIONS_CONTAINER_URL=memory: FOUNDRY_PROJECT_ENDPOINT=fake: \
+  'APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=http://127.0.0.1:9/'
+make ui
+.venv-health-ui/bin/python -m uvicorn --app-dir src/web/app --host 127.0.0.1 --port 8080 main:app
+```
+
+The connection string sends telemetry to a closed local port, so nothing leaves the machine. The Azure Monitor exporter logs warnings.
+`src/web/ui/playwright.real.config.ts` runs the app with the same values: change both together.
+
+## Run the agent locally
+
+[src/agent/README.md](../src/agent/README.md) has the steps: build `azmcp` for your machine, set four variables, start the agent on port 8088 and send a Task with `curl`.
+
+- You need the .NET SDK (the image build uses SDK 10.0), `uv` and `az login`.
+- The web app reaches the agent only through the Foundry project endpoint, so a local agent takes `curl` requests. To use an agent change in Tasks, ship it with `azd hooks run postdeploy`.
+- The image tag hashes the agent sources and the resolved `azmcp` commit. An unchanged tag skips the build.
+  See [Hosted agent deploy](../infra/README.md#hosted-agent-deploy).
 
 ## Checks
 
@@ -59,96 +81,52 @@ Keep `.azure/` and printed connection settings out of commits.
 .venv-health-ui/bin/python -m unittest discover -s tests
 npm --prefix src/web/ui run typecheck
 npm --prefix src/web/ui test
+npm --prefix src/web/ui run e2e -- --project=chromium
+npm --prefix src/web/ui run e2e -- --config playwright.real.config.ts
+uv run --project src/agent python -m unittest discover -s src/agent/tests
+az bicep build --file infra/main.bicep --stdout > /dev/null
 ```
 
-The Python suite includes two storyboard checks for the absent `docs/scenes` directory. Those checks
-currently fail.
+- The Python suite needs `.venv-health-ui` (`make deps`). It covers the web app and the infrastructure; `tests/test_infra.py` compiles `infra/main.bicep`.
+- The e2e suite builds the UI, serves it with `vite preview` and stubs the API, so it needs no Azure. The stubs answer `GET /api/config` as `local`: nobody signs in.
+  `tests/entra.spec.ts` runs the real MSAL library through the redirect flow against a stand-in for the Entra endpoints, under the policy the web app sends.
+  Playwright needs its browser once: `npm --prefix src/web/ui exec playwright -- install chromium`.
+- The real-backend run (`tests/real-backend.spec.ts`, 4 tests) builds the UI and starts uvicorn in the offline mode above on a free port.
+  It drives the real web app with the scripted agent and the fixture models, so the run stubs nothing and reaches nothing in Azure. It needs `.venv-health-ui` (`make deps`).
+- The agent suite skips the test that starts the real `azmcp` unless `AZMCP_PATH` points to one.
 
-For graph-layout changes, prefer targeted browser checks before the full suite:
+For graph or workspace changes, run targeted browser checks before the full suite:
 
 ```bash
-npm --prefix src/web/ui run e2e -- tests/adaptive-graph.spec.ts tests/graph-ux.spec.ts tests/spa.spec.ts --project=chromium
+npm --prefix src/web/ui run e2e -- tests/adaptive-graph.spec.ts tests/graph-ux.spec.ts tests/spa.spec.ts tests/workspace.spec.ts --project=chromium
 ```
 
-Run `tests/visual-c1.spec.ts` with the same runner for desktop text-containment and overlap checks
-across all eight layouts. It saves light/dark screenshots and measured reports in
-`.playwright-mcp/visual-c1/`. Cards grow to fit wrapped content; their measured dimensions drive
-layout and edge attachment, while filtered dots stay 12 pixels square.
+`tests/visual-c1.spec.ts` checks text containment and overlap across the layouts. It saves light and dark screenshots
+and measured reports in `.playwright-mcp/visual-c1/`.
+`tests/workspace-visual.spec.ts` saves light and dark screenshots of the Session workspace and phone screenshots in `.playwright-mcp/workspace/`.
+They are evidence for review: no assertion compares pixels.
 
 ## Live Playwright checks
 
-Use the explicit live config in `src/web/ui/playwright.live.config.ts` for deployed read-only
-verification:
+Use the live config in `src/web/ui/playwright.live.config.ts` for read-only checks of a deployed app:
 
 ```bash
 LIVE_BASE_URL=https://<deployed-web-app-url> \
 npm --prefix src/web/ui run e2e -- --config playwright.live.config.ts
 ```
 
-- Default selection runs only `@live-readonly` tests.
-- Live mutation tests are opt-in and gated behind `LIVE_INCLUDE_MUTATION=1`.
-- `LIVE_BASE_URL` is required. The live config has no baked-in deployment fallback.
-- The default local Playwright config excludes `tests/live-experience.spec.ts`.
-- The local suite does not substitute fixtures on successful live paths.
-
-## Survey application
-
-The survey is a separate Container App, not a route in the health app. Its home page offers Create,
-Join, and remembered authors' Edit links. Statements render as text. Drag handles and Up/Down
-controls reorder stable question IDs. Voting locks all existing wording permanently, including
-after every answer has been reset; adding and reordering remain available.
-
-Keep the private editing URL. Its fragment contains a 256-bit capability, removed from the active
-address before API calls. Losing browser storage removes the home-page Edit list; the private URL
-is the recovery mechanism. Author storage failures keep the active session in memory with a
-warning. QR codes contain only the public `/join/{code}` URL.
-
-Response recognition uses a random per-survey localStorage key persisted before the first write.
-There is no fingerprinting or IP recognition. The same key updates one ballot; cleared storage or
-another browser can create another ballot. Storage or authentication failures never silently
-replace a key. Sliders initially display 50 but are unanswered. Deliberately selecting 50 counts;
-Reset/Delete answer removes that answer, restores unanswered 50, and preserves other answers.
-Partial answers autosave with status and retry. Results use each question's answered count.
-
-Codes and results are public, not confidential. Small groups and changes between aggregate reads
-can reveal individual answers. This is not a one-person-one-vote system or a compliance guarantee.
-No expiry or deletion policy is implemented.
-
-Install survey dependencies with `npm --prefix src/survey/ui ci` and
-`uv pip install --python .venv-health-ui/bin/python -r src/survey/requirements.txt`.
-`make survey-dev` builds and serves it at `http://127.0.0.1:8081` against the selected provisioned
-Azure database. This command connects to Azure; it is not an isolated test fixture. It requires the
-administrator migration and existing identity's additive survey grants. It does not change `make dev`.
-
-For isolated verification, use an explicitly disposable local PostgreSQL 16 database and a local
-administrator connection in `SURVEY_TEST_DSN`. Create the test login `survey_test` there first.
-Never point this variable at a shared or deployed database. The tests create/drop only named local
-proof databases and apply the survey migration there.
-
-| Command | Scope |
-|---------|-------|
-| `.venv-health-ui/bin/python -m unittest discover -s src/survey/tests` | Public HTTP, privacy, deployment contracts and (with `SURVEY_TEST_DSN`) real transactions/migrations |
-| `npm --prefix src/survey/ui run typecheck` | Strict frontend types |
-| `npm --prefix src/survey/ui test` | Immutable calculations and save/reset ordering |
-| `npm --prefix src/survey/ui run e2e -- --project chromium` | Real local FastAPI-backed browser flows, requires `SURVEY_TEST_DSN`; no Azure credential or exporter |
-| `npm --prefix src/survey/ui run build` | Production UI |
-
-The built-image checks in `src/survey/tests/test_container_http.py` use
-`SURVEY_CONTAINER_BASE_URL` pointing to an actual production container's HTTP endpoint.
-Run the Dockerfile's normal CMD, not a source-mounted or injected application fixture.
-`container_boundary.py` is an external HTTPS managed-identity/ingestion protocol fixture;
-it requires disposable `SURVEY_BOUNDARY_CERT`/`SURVEY_BOUNDARY_KEY` and records only operation
-names and resource-envelope counts in memory. The production image still uses its normal Azure
-Identity, TLS PostgreSQL and Azure Monitor transport. These local protocol checks do not prove
-Entra grants or native Azure ingestion.
-
-The browser fixture listens only on loopback and disables access logs and telemetry export.
-Its Playwright processes stop automatically. Capabilities must not be captured in persistent
-traces, logs, or screenshots. Database-dependent tests skip if their explicit fixture is absent;
-a skipped test is not passing native PostgreSQL evidence.
+- It runs only `@live-readonly` tests: the shell and its policy, the catalog, every model, layouts, search, the entity panel, the Sessions workspace,
+  finished Tasks, addresses, light and dark and a phone width. They change nothing and cost no model tokens. Each fails on a console error,
+  a security policy violation, a failed request or an unhandled rejection. None clicks Apply.
+- `@live-mutation` tests run only with `LIVE_INCLUDE_MUTATION=1`. They send a health report with a 1 minute expiry on `LIVE_REPORT_ENTITY`
+  (default `session-storage`), create a Session and run an Explain Task, which costs model tokens.
+- The config needs `LIVE_BASE_URL` and has no default.
+- A deployment in Entra mode needs a signed-in browser, which cannot be had unattended. `LIVE_STORAGE_STATE` names a Playwright storage state saved after
+  a sign-in; without it every live test skips and says why. A deployment without sign-in needs neither.
+- The default config ignores `tests/live-experience.spec.ts` and `tests/real-backend.spec.ts`.
 
 ## Local limits
 
-- The request journey needs the private Storage Queue endpoint. Run it through the deployed app.
-- `make dev` stays running if one service exits. Check that service's terminal output.
-- If configuration is missing, check the selected environment and its outputs before provisioning.
+- `make dev` has no auto-reload. Restart it after a change; it rebuilds the UI on start.
+- `make deps` stops with `VENV_MISMATCH` when `.venv-health-ui` runs another Python than 3.14. Remove the directory and run `make deps` again.
+- The local web app never calls a local agent. Tasks in the UI run on the deployed agent or on the scripted one.

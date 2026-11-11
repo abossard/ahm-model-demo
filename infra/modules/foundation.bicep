@@ -9,40 +9,15 @@ param resourceToken string
 @description('Name prefix shared by the regionally scoped resources.')
 param namePrefix string
 
-@description('Object ID of the signed-in Entra user used for PostgreSQL bootstrap.')
-param adminObjectId string
-
-@description('UPN of the signed-in Entra user used for PostgreSQL bootstrap.')
-param adminUpn string
-
-@description('Single IPv4 address allowed to bootstrap PostgreSQL.')
-param adminIpAddress string
-
-@description('Compute SKU for PostgreSQL.')
-param postgresSkuName string = 'Standard_B1ms'
-
-@description('Compute tier for PostgreSQL.')
-param postgresSkuTier string = 'Burstable'
-
-@allowed([
-  'ConsumptionOnly'
-  'WorkloadProfiles'
-])
-@description('Container Apps environment type. WorkloadProfiles uses only the Consumption profile.')
-param containerAppsEnvironmentMode string = 'ConsumptionOnly'
-
-@description('Existing Container Apps subnet NSG resource ID. Empty leaves the subnet unattached.')
-param containerAppsSubnetNsgId string = ''
-
-@description('Existing private endpoint subnet NSG resource ID. Empty leaves the subnet unattached.')
-param privateEndpointSubnetNsgId string = ''
-
 @description('Tags applied to all taggable resources.')
 param tags object
 
 var infrastructureSubnetName = 'snet-container-apps'
 var privateEndpointSubnetName = 'snet-private-endpoints'
 
+// A workload profiles environment needs a subnet of at least /27 that nothing else uses, and its size cannot change
+// after creation. The /26 leaves room for the extra addresses a revision change takes; the /25 is the smallest network
+// that holds it next to the private endpoint subnet.
 resource vnet 'Microsoft.Network/virtualNetworks@2025-07-01' = {
   name: 'vnet-${namePrefix}'
   location: location
@@ -50,59 +25,32 @@ resource vnet 'Microsoft.Network/virtualNetworks@2025-07-01' = {
   properties: {
     addressSpace: {
       addressPrefixes: [
-        '10.42.0.0/22'
+        '10.42.0.0/25'
       ]
     }
     subnets: [
       {
         name: infrastructureSubnetName
-        properties: union({
-          addressPrefix: '10.42.0.0/23'
-          delegations: containerAppsEnvironmentMode == 'WorkloadProfiles' ? [
+        properties: {
+          addressPrefix: '10.42.0.0/26'
+          delegations: [
             {
               name: 'container-apps'
               properties: {
                 serviceName: 'Microsoft.App/environments'
               }
             }
-          ] : []
-        }, empty(containerAppsSubnetNsgId) ? {} : {
-          networkSecurityGroup: {
-            id: containerAppsSubnetNsgId
-          }
-        })
+          ]
+        }
       }
       {
         name: privateEndpointSubnetName
-        properties: union({
-          addressPrefix: '10.42.2.0/29'
-          delegations: []
+        properties: {
+          addressPrefix: '10.42.0.64/29'
           privateEndpointNetworkPolicies: 'Disabled'
-        }, empty(privateEndpointSubnetNsgId) ? {} : {
-          networkSecurityGroup: {
-            id: privateEndpointSubnetNsgId
-          }
-        })
+        }
       }
     ]
-  }
-}
-
-resource queuePrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
-  name: 'privatelink.queue.${environment().suffixes.storage}'
-  location: 'global'
-  tags: tags
-}
-
-resource queuePrivateDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  parent: queuePrivateDnsZone
-  name: 'link-vnet-${namePrefix}'
-  location: 'global'
-  properties: {
-    registrationEnabled: false
-    virtualNetwork: {
-      id: vnet.id
-    }
   }
 }
 
@@ -112,7 +60,7 @@ resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' 
   tags: tags
 }
 
-resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+resource registry 'Microsoft.ContainerRegistry/registries@2025-11-01' = {
   name: 'acrahm${resourceToken}'
   location: location
   tags: tags
@@ -122,6 +70,12 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   properties: {
     adminUserEnabled: false
     publicNetworkAccess: 'Enabled'
+    roleAssignmentMode: 'LegacyRegistryPermissions'
+    policies: {
+      azureADAuthenticationAsArmPolicy: {
+        status: 'enabled'
+      }
+    }
   }
 }
 
@@ -161,100 +115,11 @@ resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
   }
 }
 
-resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
-  name: 'pg-ahm-${resourceToken}'
-  location: location
-  tags: tags
-  sku: {
-    name: postgresSkuName
-    tier: postgresSkuTier
-  }
-  properties: {
-    version: '16'
-    authConfig: {
-      activeDirectoryAuth: 'Enabled'
-      passwordAuth: 'Disabled'
-      tenantId: subscription().tenantId
-    }
-    backup: {
-      backupRetentionDays: 7
-      geoRedundantBackup: 'Disabled'
-    }
-    highAvailability: {
-      mode: 'Disabled'
-    }
-    network: {
-      publicNetworkAccess: 'Enabled'
-    }
-    storage: {
-      autoGrow: 'Disabled'
-      storageSizeGB: 32
-    }
-  }
-}
-
-resource entraAdministrator 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024-08-01' = {
-  parent: postgres
-  name: adminObjectId
-  properties: {
-    principalName: adminUpn
-    principalType: 'User'
-    tenantId: subscription().tenantId
-  }
-}
-
-resource azureServicesFirewall 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2024-08-01' = {
-  parent: postgres
-  name: 'AllowAzureServices'
-  properties: {
-    startIpAddress: '0.0.0.0'
-    endIpAddress: '0.0.0.0'
-  }
-}
-
-resource bootstrapFirewall 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2024-08-01' = {
-  parent: postgres
-  name: 'BootstrapAdmin'
-  properties: {
-    startIpAddress: adminIpAddress
-    endIpAddress: adminIpAddress
-  }
-}
-
-resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = {
-  parent: postgres
-  name: 'demo'
-  properties: {
-    charset: 'UTF8'
-    collation: 'en_US.utf8'
-  }
-}
-
-resource postgresDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
-  scope: postgres
-  name: 'diag-postgres-to-law'
-  properties: {
-    workspaceId: workspace.id
-    logs: [
-      {
-        categoryGroup: 'allLogs'
-        enabled: true
-      }
-    ]
-    metrics: [
-      {
-        category: 'AllMetrics'
-        enabled: true
-      }
-    ]
-  }
-}
-
 resource containerEnvironment 'Microsoft.App/managedEnvironments@2025-10-02-preview' = {
   name: 'cae-${namePrefix}'
   location: location
   tags: tags
-  properties: union({
+  properties: {
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
@@ -266,32 +131,26 @@ resource containerEnvironment 'Microsoft.App/managedEnvironments@2025-10-02-prev
       infrastructureSubnetId: '${vnet.id}/subnets/${infrastructureSubnetName}'
       internal: false
     }
-    zoneRedundant: false
-  }, containerAppsEnvironmentMode == 'WorkloadProfiles' ? {
     workloadProfiles: [
       {
         name: 'Consumption'
         workloadProfileType: 'Consumption'
       }
     ]
-  } : {
-    environmentMode: 'ConsumptionOnly'
-  })
+    zoneRedundant: false
+  }
 }
 
 output identityId string = identity.id
-output identityName string = identity.name
 output identityClientId string = identity.properties.clientId
 output identityPrincipalId string = identity.properties.principalId
+output vnetId string = vnet.id
+output privateEndpointSubnetId string = '${vnet.id}/subnets/${privateEndpointSubnetName}'
 output registryName string = registry.name
-output registryLoginServer string = registry.properties.loginServer
 output workspaceId string = workspace.id
 output applicationInsightsName string = applicationInsights.name
 output applicationInsightsId string = applicationInsights.id
-output privateEndpointSubnetId string = '${vnet.id}/subnets/${privateEndpointSubnetName}'
-output queuePrivateDnsZoneId string = queuePrivateDnsZone.id
-output postgresId string = postgres.id
-output postgresHost string = postgres.properties.fullyQualifiedDomainName
-output postgresDatabase string = database.name
 output environmentId string = containerEnvironment.id
+
+@description('Default domain of the Container Apps environment. A Container App named N is reachable at N.<domain>, so a URL is known before the app exists.')
 output environmentDefaultDomain string = containerEnvironment.properties.defaultDomain

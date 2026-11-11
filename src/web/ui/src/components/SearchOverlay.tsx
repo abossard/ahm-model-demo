@@ -1,18 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX, KeyboardEvent } from "react";
+import {
+  Dialog,
+  DialogSurface,
+  type DialogSurfaceProps,
+  Input,
+  Text,
+  makeStyles,
+  mergeClasses,
+  tokens,
+} from "@fluentui/react-components";
+import { Search20Regular } from "@fluentui/react-icons";
 import type { Entity, Relationship } from "../model/types";
 import { GROUP_LABELS, searchGraph, type SearchGroup, type SearchHit } from "../model/search";
 import { ancestorsToExpand, healthBucket } from "../model/collapse";
-import { useAppDispatch, useAppSelector } from "../store/store";
-import { selectCollapsed, selectSearchOpen, selectSelectedHealth } from "../store/selectors";
-import {
-  announce,
-  closeSearch,
-  expandMany,
-  focusEntities,
-  openSearch,
-  setSelectedHealth,
-} from "../store/uiSlice";
+import { actions, useStore } from "../store/store";
 
 interface SearchOverlayProps {
   readonly entities: readonly Entity[];
@@ -20,25 +22,66 @@ interface SearchOverlayProps {
 }
 
 const LISTBOX_ID = "graph-search-listbox";
+const BACKDROP = { "data-testid": "search-backdrop" } as NonNullable<DialogSurfaceProps["backdrop"]>;
 const GROUP_ORDER: readonly SearchGroup[] = ["entities", "relationships", "signals"];
 
-function Marked({ hit }: { readonly hit: SearchHit }): JSX.Element {
+const useStyles = makeStyles({
+  surface: {
+    width: "min(560px, calc(100% - 32px))",
+    maxWidth: "560px",
+    margin: "64px auto auto",
+    padding: 0,
+    overflow: "hidden",
+  },
+  input: { width: "100%", padding: tokens.spacingVerticalXS },
+  results: { maxHeight: "320px", overflowY: "auto" },
+  groupLabel: {
+    padding: `${tokens.spacingVerticalS} ${tokens.spacingHorizontalL} ${tokens.spacingVerticalXXS}`,
+    fontSize: tokens.fontSizeBase100,
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+    color: tokens.colorNeutralForeground2,
+  },
+  option: {
+    display: "flex",
+    alignItems: "baseline",
+    columnGap: tokens.spacingHorizontalM,
+    padding: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalL}`,
+    cursor: "pointer",
+  },
+  active: { backgroundColor: tokens.colorSubtleBackgroundHover },
+  label: { fontSize: tokens.fontSizeBase300, color: tokens.colorNeutralForeground1 },
+  detail: {
+    marginLeft: "auto",
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground2,
+  },
+  mark: {
+    backgroundColor: tokens.colorBrandBackground2,
+    color: tokens.colorBrandForeground2,
+    padding: 0,
+  },
+  empty: { margin: 0, padding: `${tokens.spacingVerticalL} ${tokens.spacingHorizontalL}` },
+});
+
+const Marked = memo(function Marked({ hit }: { readonly hit: SearchHit }): JSX.Element {
+  const styles = useStyles();
   if (hit.matchLength === 0) return <>{hit.label}</>;
   const end = hit.matchStart + hit.matchLength;
   return (
     <>
       {hit.label.slice(0, hit.matchStart)}
-      <mark>{hit.label.slice(hit.matchStart, end)}</mark>
+      <mark className={styles.mark}>{hit.label.slice(hit.matchStart, end)}</mark>
       {hit.label.slice(end)}
     </>
   );
-}
+});
 
-export function SearchOverlay({ entities, relationships }: SearchOverlayProps): JSX.Element | null {
-  const dispatch = useAppDispatch();
-  const open = useAppSelector(selectSearchOpen);
-  const collapsed = useAppSelector(selectCollapsed);
-  const selectedHealth = useAppSelector(selectSelectedHealth);
+export function SearchOverlay({ entities, relationships }: SearchOverlayProps): JSX.Element {
+  const styles = useStyles();
+  const open = useStore((state) => state.searchOpen);
+  const collapsed = useStore((state) => state.collapsed);
+  const selectedHealth = useStore((state) => state.selectedHealth);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -48,20 +91,26 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
     const onKeyDown = (event: globalThis.KeyboardEvent): void => {
       if (event.key.toLowerCase() !== "k" || !(event.metaKey || event.ctrlKey)) return;
       event.preventDefault();
-      returnFocusTo.current = document.activeElement as HTMLElement | null;
-      dispatch(openSearch());
+      actions.openSearch();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [dispatch]);
+  }, []);
+
+  // The store notifies before React renders, while the opener still holds focus, for every entry path.
+  useEffect(
+    () =>
+      useStore.subscribe((state, previous) => {
+        if (!state.searchOpen || previous.searchOpen) return;
+        const current = document.activeElement;
+        returnFocusTo.current =
+          current instanceof HTMLElement && current !== document.body ? current : null;
+      }),
+    [],
+  );
 
   useEffect(() => {
     if (!open) return;
-    // Remember the opener for every entry path, not just the keyboard shortcut.
-    if (!returnFocusTo.current || returnFocusTo.current === document.body) {
-      const current = document.activeElement as HTMLElement | null;
-      returnFocusTo.current = current && current !== document.body ? current : null;
-    }
     setQuery("");
     setActive(0);
     inputRef.current?.focus();
@@ -72,10 +121,8 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
     [query, entities, relationships],
   );
 
-  if (!open) return null;
-
   const dismiss = (): void => {
-    dispatch(closeSearch());
+    actions.closeSearch();
     const opener = returnFocusTo.current;
     returnFocusTo.current = null;
     opener?.focus();
@@ -92,7 +139,7 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
       if (bucket !== "Deleted") required.add(bucket);
     }
     if (required.size !== selectedHealth.length) {
-      dispatch(setSelectedHealth([...required]));
+      actions.setSelectedHealth([...required]);
     }
     const blocked = new Set<string>();
     for (const name of hit.focusEntities) {
@@ -100,9 +147,9 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
         blocked.add(ancestor);
       }
     }
-    if (blocked.size > 0) dispatch(expandMany([...blocked]));
-    dispatch(focusEntities({ highlight: hit.focusEntity, names: hit.focusEntities }));
-    dispatch(announce(`Showing ${hit.label} — ${hit.detail}.`));
+    if (blocked.size > 0) actions.expandMany([...blocked]);
+    actions.focusEntities({ highlight: hit.focusEntity, names: hit.focusEntities });
+    actions.announce(`Showing ${hit.label}: ${hit.detail}.`);
     dismiss();
   };
 
@@ -131,17 +178,18 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
   const activeHit = hits[active];
 
   return (
-    <div className="search-overlay" data-testid="search-overlay">
-      <div
-        className="search-overlay__backdrop"
-        onClick={dismiss}
-        role="presentation"
-        data-testid="search-backdrop"
-      />
-      <div className="search-overlay__panel">
-        <input
-          ref={inputRef}
-          className="search-overlay__input"
+    <Dialog open={open} onOpenChange={(_, data) => (data.open ? undefined : dismiss())}>
+      <DialogSurface
+        className={styles.surface}
+        aria-label="Search the topology"
+        data-testid="search-overlay"
+        backdrop={BACKDROP}
+      >
+        <Input
+          input={{ ref: inputRef }}
+          className={styles.input}
+          appearance="filled-lighter"
+          contentBefore={<Search20Regular />}
           data-testid="search-input"
           type="text"
           role="combobox"
@@ -153,16 +201,16 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
           aria-autocomplete="list"
           {...(activeHit ? { "aria-activedescendant": activeHit.id } : {})}
           value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
+          onChange={(_, data) => {
+            setQuery(data.value);
             setActive(0);
           }}
           onKeyDown={onKeyDown}
         />
-        <div className="search-overlay__results" id={LISTBOX_ID} role="listbox" aria-label="Results">
+        <div className={styles.results} id={LISTBOX_ID} role="listbox" aria-label="Results">
           {GROUP_ORDER.filter((group) => hits.some((hit) => hit.group === group)).map((group) => (
-            <div className="search-overlay__group" role="group" aria-label={GROUP_LABELS[group]} key={group}>
-              <div className="search-overlay__group-label" aria-hidden="true">
+            <div role="group" aria-label={GROUP_LABELS[group]} key={group}>
+              <div className={styles.groupLabel} aria-hidden="true">
                 {GROUP_LABELS[group]}
               </div>
               {hits
@@ -173,27 +221,27 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
                     id={hit.id}
                     role="option"
                     aria-selected={hit.id === activeHit?.id}
-                    className={`search-overlay__option${hit.id === activeHit?.id ? " is-active" : ""}`}
+                    className={mergeClasses(styles.option, hit.id === activeHit?.id && styles.active)}
                     onMouseDown={(event) => {
                       event.preventDefault();
                       choose(hit);
                     }}
                   >
-                    <span className="search-overlay__option-label">
+                    <span className={styles.label}>
                       <Marked hit={hit} />
                     </span>
-                    <span className="search-overlay__option-detail">{hit.detail}</span>
+                    <span className={styles.detail}>{hit.detail}</span>
                   </div>
                 ))}
             </div>
           ))}
         </div>
         {query.trim().length > 0 && hits.length === 0 ? (
-          <p className="search-overlay__empty" data-testid="search-empty">
+          <Text as="p" className={styles.empty} data-testid="search-empty">
             No matches for “{query}”
-          </p>
+          </Text>
         ) : null}
-      </div>
-    </div>
+      </DialogSurface>
+    </Dialog>
   );
 }

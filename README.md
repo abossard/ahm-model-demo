@@ -1,10 +1,10 @@
 # Azure Health Model demo
 
-A web application, API, and AI agent for viewing and modifying Azure health models.
-The website and agent can inspect models and submit health reports.
-The deployment also includes a separate shop demo health model.
-The standalone survey app lets visitors create statement surveys, answer with agreement sliders,
-and read public aggregates without an account.
+- A web app for browsing Azure health models, sending health reports and running agent Tasks on them.
+- Review, Explain and Design Tasks run in shared Sessions on one Foundry hosted agent. A Review or Design task ends in a Health model diff that you approve and the web app applies.
+- The agent only reads Azure, through the Azure MCP server. Only the web app writes health models.
+- One Container App in a small VNet, one hosted agent, Sessions in Blob Storage behind a private endpoint, one region.
+- The app has no sign-in. Everyone with the URL shares Sessions and can Apply ([ADR 0002](docs/adr/0002-shared-sessions-without-sign-in.md)).
 
 ## Get started from scratch
 
@@ -14,46 +14,47 @@ Clone this repository, open a terminal in its root, and run:
 azd up
 ```
 
-Follow the prompts to sign in and choose an environment, subscription, and region.
-`azd up` creates the Azure resources, sets up the database, and deploys the applications.
-At the end, it prints links to the web application, AI assistant, API, and shop demo.
+- Sign in, then choose an environment name (1 to 20 characters), a subscription and a region.
+- Choose `swedencentral`. Foundry hosted agents are not available in North Europe, and a region cannot change after the first provision.
+- Use a new environment. Provisioning cannot update an older version's environment in place ([details](infra/README.md#deploying)).
+- `azd up` provisions the resources, deploys the web app, then builds the agent image and creates the hosted agent with its read roles.
+- It prints the links to the web app at the end.
+- Deployment creates [billable Azure resources](infra/README.md#resources). See [prerequisites](docs/development.md#prerequisites) for tools, permissions and model quota.
 
-See [prerequisites](docs/development.md#prerequisites) for the required tools and permissions.
-Deployment creates billable Azure resources.
+## What you can do
 
-## Develop locally
-
-After `azd up`, run:
-
-```bash
-make dev
-```
-
-Open [localhost:8080](http://localhost:8080). Local development still uses your Azure resources.
-`make dev` is for local development; `azd up` is the first-time setup.
+- Browse any health model the web app's identity can read. By default that is this resource group; [catalog access](infra/README.md#model-catalog-access) widens it to the subscription.
+- Send a health report to an entity and watch the state roll up.
+- Start a Task in a Session: Review a model, Explain why an entity has its state, or Design a model for a workload. The Activity timeline shows each agent step.
+- Approve some or all changes of a Health model diff and Apply them to a live model in this resource group. Apply has no undo.
 
 ## Models
 
 | Model | Purpose |
 |-------|---------|
-| `hm-<env>` | Application health from metrics, logs, availability tests, and health reports. |
-| `hm-<env>-shop` | A 17-node shop with two simulated payment providers and five real Azure-resource links. |
-| `hm-<env>-survey` | Author Survey, Join and Answer, and View Results over the survey Container App and shared persistence/telemetry. |
+| `hm-<env>` | The application: web app, hosted agent, Foundry account and session storage, from metrics, log queries, an availability test and health reports. Selected by default. |
+| `hm-<env>-design` | Starts empty. The target of Design tasks. |
 
-The shop uses synthetic signals. A green shop node does not prove that its Azure resource is healthy.
+## Develop locally
+
+After `azd up`, run `make dev` and open [127.0.0.1:8080](http://127.0.0.1:8080).
+It runs the web app against the deployed hosted agent and health models. Sessions stay in memory, because the session store takes only private endpoint traffic.
 
 ## Documentation
 
-- [Azure Developer CLI documentation](https://learn.microsoft.com/azure/developer/azure-developer-cli/).
-- [Development](docs/development.md): local commands, tests, and limits.
-- [Demo guide](docs/demo.md): models, health reports, and the request journey.
-- [Infrastructure](infra/README.md): deployment, resource bindings, and saving Designer layouts.
+- [Development](docs/development.md): prerequisites, local runs, checks and limits.
+- [Demo guide](docs/demo.md): a walkthrough and its side effects.
+- [Architecture and plan](docs/redesign/plan.md), [decisions](docs/adr/) and [glossary](GLOSSARY.md).
+- [Infrastructure](infra/README.md): resources, roles, health model topology and saving Designer layouts.
+- [Agent](src/agent/README.md): the hosted agent, its local run and its deploy script.
 - [Agent guide](AGENTS.md): setup and project context for coding agents.
+- [Azure Developer CLI documentation](https://learn.microsoft.com/azure/developer/azure-developer-cli/).
 
 ## Code
 
-- `src/web`: FastAPI server and React UI.
-- `src/agent-web`: Next.js and CopilotKit frontend.
-- `src/agent-app`: Python agent and health-model tools.
-- `src/survey`: same-origin FastAPI/React survey app, versioned PostgreSQL schema, and local checks.
-- `infra`: Bicep templates. `azure.yaml` defines Container Apps hosting.
+- `src/web/app`: FastAPI API and static host for the UI.
+- `src/web/ui`: React UI with Fluent UI v9, zustand and a React Flow graph.
+- `src/agent`: hosted agent image, health model skills and the deploy script.
+- `infra`: Bicep templates. `azure.yaml` wires the web service and the `postdeploy` hook.
+- `tests`: Python tests for the web app and the infrastructure.
+- `scripts`: the local environment export and the `postup` hook.

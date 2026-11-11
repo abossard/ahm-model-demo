@@ -10,13 +10,6 @@ infra:
   module: main
 
 services:
-  survey:
-    project: ./src/survey
-    language: py
-    host: containerapp
-    docker:
-      path: ./Dockerfile
-      remoteBuild: true
   web:
     project: ./src/web
     language: py
@@ -24,29 +17,24 @@ services:
     docker:
       path: ./Dockerfile
       remoteBuild: true
-  agent-web:
-    project: ./src/agent-web
-    language: ts
-    host: containerapp
-    docker:
-      path: ./Dockerfile
-      remoteBuild: true
-  agent-app:
-    project: ./src/agent-app
-    language: py
+
+  mcp:
+    project: ./src/mcp
+    language: docker
     host: containerapp
     docker:
       path: ./Dockerfile
       remoteBuild: true
 
 hooks:
-  preprovision:
-    shell: sh
-    run: bash ./scripts/hooks/preprovision.sh
   postprovision:
     shell: sh
     interactive: true
     run: bash ./scripts/hooks/postprovision.sh
+  postdeploy:
+    shell: sh
+    interactive: true
+    run: bash ./src/agent/deploy/deploy-agent.sh
   postup:
     shell: sh
     interactive: true

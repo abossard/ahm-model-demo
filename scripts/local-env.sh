@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Exports the selected azd environment as the env vars the local services expect, so a local run
-# reads the same single source of configuration a deployed revision does. The azd output names
-# and the application env var names differ in a few places, so the mapping is explicit.
+# Exports the selected azd environment as the env vars the web app expects, so a local run
+# reads the same single source of configuration a deployed revision does. Every name is both
+# an azd output and an app env var.
 #
 #   make dev
 #
@@ -25,46 +25,25 @@ azd_env_json=$(azd env get-values --output json 2>/dev/null) || {
   exit 1
 }
 
-# APP_ENV_VAR=azd_output_name
-MAPPING=(
-  "AZURE_SUBSCRIPTION_ID=AZURE_SUBSCRIPTION_ID"
-  "AZURE_SUBSCRIPTION_NAME=AZURE_SUBSCRIPTION_NAME"
-  "AZURE_RESOURCE_GROUP=AZURE_RESOURCE_GROUP"
-  "HEALTH_MODEL_NAME=HEALTH_MODEL_NAME"
-  "HEALTH_MODEL_LOCATION=HEALTH_MODEL_LOCATION"
-  "QUEUE_URL=AZURE_QUEUE_URL"
-  "POSTGRES_HOST=AZURE_POSTGRES_HOST"
-  "POSTGRES_DATABASE=AZURE_POSTGRES_DATABASE"
-  "POSTGRES_USER=AZURE_IDENTITY_NAME"
-  "AZURE_CLIENT_ID=AZURE_IDENTITY_CLIENT_ID"
-  "APPLICATIONINSIGHTS_CONNECTION_STRING=APPLICATIONINSIGHTS_CONNECTION_STRING"
-  "AZURE_OPENAI_ENDPOINT=AZURE_OPENAI_ENDPOINT"
-  "AZURE_OPENAI_CHAT_DEPLOYMENT_NAME=AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"
+NAMES=(
+  "AZURE_SUBSCRIPTION_ID"
+  "AZURE_RESOURCE_GROUP"
+  "HEALTH_MODEL_NAME"
+  "HEALTH_MODEL_DESIGN_NAME"
+  "APPLICATIONINSIGHTS_CONNECTION_STRING"
+  "FOUNDRY_PROJECT_ENDPOINT"
+  "FOUNDRY_AGENT_NAME"
 )
 
-if [[ "${1:-}" == '--survey' ]]; then
-  MAPPING=(
-    "POSTGRES_HOST=AZURE_POSTGRES_HOST"
-    "POSTGRES_DATABASE=AZURE_POSTGRES_DATABASE"
-    "POSTGRES_USER=AZURE_IDENTITY_NAME"
-    "AZURE_CLIENT_ID=AZURE_IDENTITY_CLIENT_ID"
-    "APPLICATIONINSIGHTS_CONNECTION_STRING=APPLICATIONINSIGHTS_CONNECTION_STRING"
-  )
-  exports=("export OTEL_SERVICE_NAME=ahm-survey")
-else
-  exports=()
-fi
-
+exports=()
 missing=()
-for pair in "${MAPPING[@]}"; do
-  app_var=${pair%%=*}
-  azd_key=${pair#*=}
-  value=$(jq -r --arg key "$azd_key" '.[$key] // empty' <<<"$azd_env_json")
+for name in "${NAMES[@]}"; do
+  value=$(jq -r --arg key "$name" '.[$key] // empty' <<<"$azd_env_json")
   if [[ -z $value ]]; then
-    missing+=("$azd_key")
+    missing+=("$name")
     continue
   fi
-  exports+=("$(printf 'export %s=%q' "$app_var" "$value")")
+  exports+=("$(printf 'export %s=%q' "$name" "$value")")
 done
 
 if ((${#missing[@]})); then
@@ -72,5 +51,11 @@ if ((${#missing[@]})); then
   printf 'LOCAL_ENV_FAIL run "azd provision" so the deployment writes its outputs back\n' >&2
   exit 1
 fi
+
+# The session store accepts only private endpoint traffic, so a local run keeps Sessions in process memory.
+exports+=("export SESSIONS_CONTAINER_URL=memory:")
+# A local run has no managed identity, so no on-behalf-of: the web app acts as the developer's az login identity and
+# asks nobody to sign in. The app refuses this mode inside a Container App.
+exports+=("export AUTH_MODE=local")
 
 printf '%s\n' "${exports[@]}"

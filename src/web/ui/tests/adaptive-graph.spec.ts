@@ -413,8 +413,7 @@ test("health checkbox labels keep theme colors and exclude Standby", async ({ pa
   await expect(page.getByRole("checkbox", { name: "Unknown", exact: true })).toBeChecked();
 
   const degradedSwatchLight = await page
-    .locator(".graph-toolbar__health-option", { hasText: "Degraded" })
-    .locator(".graph-toolbar__health-swatch")
+    .getByTestId("health-swatch-Degraded")
     .evaluate((item) => getComputedStyle(item).backgroundColor);
   expect(degradedSwatchLight).toBe("rgb(194, 106, 0)");
   await closeHealthFilter(page);
@@ -422,8 +421,7 @@ test("health checkbox labels keep theme colors and exclude Standby", async ({ pa
   await page.getByTestId("theme-toggle").click();
   await openHealthFilter(page);
   const degradedSwatchDark = await page
-    .locator(".graph-toolbar__health-option", { hasText: "Degraded" })
-    .locator(".graph-toolbar__health-swatch")
+    .getByTestId("health-swatch-Degraded")
     .evaluate((item) => getComputedStyle(item).backgroundColor);
   expect(degradedSwatchDark).toBe("rgb(253, 186, 116)");
 });
@@ -471,7 +469,7 @@ test("dot mode keeps deselected-state nodes as gray dots with muted edges", asyn
   const edgeStrokes = await page
     .locator(".react-flow__edge .react-flow__edge-path")
     .evaluateAll((items) => items.map((item) => getComputedStyle(item).stroke));
-  expect(edgeStrokes).toContain("rgb(96, 94, 92)");
+  expect(edgeStrokes).toContain("rgb(66, 66, 66)");
 });
 
 test("adaptive layout publishes live frames", async ({ page }) => {
@@ -790,7 +788,7 @@ test("health popup supports keyboard focus and escape on narrow viewport", async
   const popup = page.getByTestId("health-filter-popup");
   await expect(popup).toBeVisible();
 
-  await page.keyboard.press("Tab");
+  // Opening moves keyboard focus onto the first control of the popup.
   await expect(page.getByRole("checkbox", { name: "Healthy", exact: true })).toBeFocused();
 
   const bounds = await popup.boundingBox();
@@ -815,7 +813,7 @@ test("health popup keeps semantics and checked states across keyboard dismissal"
   await expect(popup).toBeVisible();
   await expect(toggle).toHaveAttribute("aria-controls", await popup.getAttribute("id"));
 
-  await page.keyboard.press("Tab");
+  await expect(page.getByRole("checkbox", { name: "Healthy", exact: true })).toBeFocused();
   await page.keyboard.press("Tab");
   await page.keyboard.press(" ");
   await expect(page.getByRole("checkbox", { name: "Degraded", exact: true })).not.toBeChecked();

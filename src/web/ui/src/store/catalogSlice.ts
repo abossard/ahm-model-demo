@@ -1,74 +1,57 @@
-import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
-import type { Draft } from "@reduxjs/toolkit";
-import type { ApiError, AsyncState, ModelCatalog, ModelRef } from "../model/types";
+import type { StateCreator } from "zustand";
+import type { AsyncState, ModelCatalog, ModelRef, ModelSelection } from "../model/types";
 import { selectionFromSearch } from "../model/selection";
 import * as api from "./api";
+import { IDLE, LOADING, settle } from "./asyncState";
+import type { Store } from "./store";
 
-interface CatalogState {
-  readonly data: AsyncState<ModelCatalog>;
+export interface CatalogState {
+  readonly catalog: AsyncState<ModelCatalog>;
   readonly selected: ModelRef | null;
-  readonly unavailableSelection: ModelRef | null;
+  readonly unavailableSelection: ModelSelection | null;
 }
 
-const initialState: CatalogState = {
-  data: { kind: "idle" },
+export interface CatalogActions {
+  readonly loadModelCatalog: (search?: string) => Promise<void>;
+  readonly chooseModel: (model: ModelRef) => void;
+}
+
+export const catalogSlice: StateCreator<Store, [], [], CatalogState & CatalogActions> = (
+  set,
+  get,
+) => ({
+  catalog: IDLE,
   selected: null,
   unavailableSelection: null,
-};
 
-export const loadModelCatalog = createAsyncThunk<
-  {
-    readonly catalog: ModelCatalog;
-    readonly selected: ModelRef | null;
-    readonly unavailableSelection: ModelRef | null;
+  loadModelCatalog: async (search = window.location.search) => {
+    set({ catalog: LOADING });
+    const catalog = await settle(api.fetchModelCatalog(), "The health models could not be listed.");
+    if (catalog.kind !== "success") {
+      set({ catalog, unavailableSelection: null });
+      return;
+    }
+    const { selected, unavailable } = selectionFromSearch(search, catalog.value);
+    set({ catalog, selected, unavailableSelection: unavailable });
+    if (selected) void get().loadHealthModel();
   },
-  void,
-  { rejectValue: ApiError }
->("catalog/load", async (_arg, { rejectWithValue }) => {
-  try {
-    const catalog = await api.fetchModelCatalog();
-    const resolution = selectionFromSearch(window.location.search, catalog);
-    return {
-      catalog,
-      selected: resolution.selected,
-      unavailableSelection: resolution.unavailable,
-    };
-  } catch (error) {
-    return rejectWithValue(error as ApiError);
-  }
-});
 
-const catalogSlice = createSlice({
-  name: "catalog",
-  initialState,
-  reducers: {
-    chooseModel: (state, action: { payload: ModelRef }) => {
-      state.selected = action.payload as Draft<ModelRef>;
-      state.unavailableSelection = null;
-    },
-  },
-  extraReducers: (builder) => {
-    builder
-      .addCase(loadModelCatalog.pending, (state) => {
-        state.data = { kind: "loading" };
-      })
-      .addCase(loadModelCatalog.fulfilled, (state, action) => {
-        state.data = { kind: "success", value: action.payload.catalog as Draft<ModelCatalog> };
-        state.selected = action.payload.selected as Draft<ModelRef> | null;
-        state.unavailableSelection = action.payload.unavailableSelection as Draft<ModelRef> | null;
-      })
-      .addCase(loadModelCatalog.rejected, (state, action) => {
-        const error: ApiError = action.payload ?? {
-          code: "unknown",
-          message: action.error.message ?? "The health models could not be listed.",
-          retryable: true,
-          operationId: null,
-        };
-        state.data = { kind: "failure", error };
-        state.unavailableSelection = null;
-      });
+  // Switching models is the one place that clears what belonged to the previous model.
+  chooseModel: (selected) => {
+    set({
+      selected,
+      unavailableSelection: null,
+      model: LOADING,
+      refreshError: null,
+      selectedName: null,
+      detail: IDLE,
+      report: IDLE,
+      collapsed: [],
+      highlightedName: null,
+      focusNames: [],
+      focusSeq: 0,
+      chainNames: [],
+    });
+    void get().loadHealthModel();
   },
 });
-
-export const { chooseModel } = catalogSlice.actions;
-export const catalogReducer = catalogSlice.reducer;

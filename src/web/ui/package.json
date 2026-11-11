@@ -8,18 +8,19 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
-    "e2e": "playwright test",
-    "e2e:agent": "playwright test --config playwright.agent.config.ts"
+    "e2e": "playwright test"
   },
   "dependencies": {
+    "@azure/msal-browser": "^5.29.0",
     "@dagrejs/dagre": "^3.0.0",
-    "@reduxjs/toolkit": "^2.12.0",
+    "@fluentui/react-components": "^9.75.1",
+    "@fluentui/react-icons": "^2.0.345",
     "@xyflow/react": "^12.11.2",
     "d3-force": "3.0.0",
     "elkjs": "0.12.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-redux": "^9.3.0"
+    "zustand": "^5.0.16"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

@@ -12,21 +12,24 @@ param applicationInsightsName string
 @description('Public URL of the Health Pulse website.')
 param appUrl string
 
-// Must match health-model-entities.bicep's availabilityTestName; tests/test_app.py asserts they agree.
+@description('Health check URL of the Azure MCP server. The server answers /health without authentication.')
+param mcpHealthUrl string
+
+// Must match health-model-entities.bicep's availabilityTestName; tests/test_infra.py asserts they agree.
 param availabilityTestName string = 'Health Pulse home page'
+param mcpAvailabilityTestName string = 'Azure MCP health'
 param availabilityTestFrequencySeconds int = 300
 param availabilityTestLocations array = [
   'emea-gb-db3-azr'
   'emea-nl-ams-azr'
   'us-va-ash-azr'
 ]
-param journeyAvailabilityTestEnabled bool = false
 
 @description('Tags applied to all taggable resources.')
 param tags object
 
 var homeTestName = 'wt-${namePrefix}-home'
-var journeyTestName = 'wt-${namePrefix}-journey'
+var mcpTestName = 'wt-${namePrefix}-mcp'
 
 resource applicationInsights 'Microsoft.Insights/components@2020-02-02' existing = {
   name: applicationInsightsName
@@ -34,7 +37,7 @@ resource applicationInsights 'Microsoft.Insights/components@2020-02-02' existing
 
 // Always-on synthetic traffic. Plain GET of the UI only: it keeps a replica warm so the
 // container app's CPU, memory and response-time metrics report real values, and it feeds
-// Application Insights availability without writing to the Queue or PostgreSQL.
+// Application Insights availability without writing anything.
 resource homeAvailabilityTest 'Microsoft.Insights/webtests@2022-06-15' = {
   name: homeTestName
   location: location
@@ -70,42 +73,43 @@ resource homeAvailabilityTest 'Microsoft.Insights/webtests@2022-06-15' = {
   }
 }
 
-// Filming-only traffic. This POST runs the full request journey, so it writes to the Queue
-// and PostgreSQL on every execution. That is exactly what makes the Storage signals report
-// real values on camera, so it ships disabled and is enabled only while filming.
-resource journeyAvailabilityTest 'Microsoft.Insights/webtests@2022-06-15' = {
-  name: journeyTestName
+output availabilityTestName string = availabilityTestName
+
+// The MCP server cannot export its own requests: its telemetry exporter has no credential and Application Insights
+// accepts only Entra tokens. The probe gives the health model real evidence of the server.
+resource mcpAvailabilityTest 'Microsoft.Insights/webtests@2022-06-15' = {
+  name: mcpTestName
   location: location
   tags: union(tags, {
     'hidden-link:${applicationInsights.id}': 'Resource'
   })
   kind: 'standard'
   properties: {
-    SyntheticMonitorId: journeyTestName
-    Name: 'Health Pulse request journey'
-    Description: 'Filming-only POST that exercises the Queue and PostgreSQL write path. Disable it between takes.'
-    Enabled: journeyAvailabilityTestEnabled
+    SyntheticMonitorId: mcpTestName
+    Name: mcpAvailabilityTestName
+    Description: 'Side-effect-free GET of the Azure MCP server health check.'
+    Enabled: true
     Frequency: availabilityTestFrequencySeconds
-    Timeout: 60
+    Timeout: 30
     Kind: 'standard'
-    RetryEnabled: false
+    RetryEnabled: true
     Locations: [
       for locationId in availabilityTestLocations: {
         Id: locationId
       }
     ]
     Request: {
-      RequestUrl: '${appUrl}api/demo-request'
-      HttpVerb: 'POST'
+      RequestUrl: mcpHealthUrl
+      HttpVerb: 'GET'
       ParseDependentRequests: false
       FollowRedirects: false
     }
     ValidationRules: {
       ExpectedHttpStatusCode: 200
       SSLCheck: true
+      SSLCertRemainingLifetimeCheck: 7
     }
   }
 }
 
-output availabilityTestName string = availabilityTestName
-output availabilityTestUrl string = appUrl
+output mcpAvailabilityTestName string = mcpAvailabilityTestName

@@ -117,6 +117,33 @@ describe("layout engine registry", () => {
     }
   });
 
+  it.each([
+    ["dagre-tb", (parent: readonly [number, number], child: readonly [number, number]) => parent[1] < child[1]],
+    ["dagre-bt", (parent: readonly [number, number], child: readonly [number, number]) => parent[1] > child[1]],
+    ["dagre-lr", (parent: readonly [number, number], child: readonly [number, number]) => parent[0] < child[0]],
+    ["dagre-rl", (parent: readonly [number, number], child: readonly [number, number]) => parent[0] > child[0]],
+  ] as const)("arranges for the shortest connections under %s, every edge oriented", async (id, holds) => {
+    const layout = await LAYOUT_ENGINES[id].run(ENTITIES, RELATIONSHIPS, sizeOf, true);
+
+    expect(layout.positions.size).toBe(ENTITIES.length);
+    for (const item of linked) {
+      const parent = layout.positions.get(item.parentEntityName);
+      const child = layout.positions.get(item.childEntityName);
+      expect(holds([parent?.x ?? 0, parent?.y ?? 0], [child?.x ?? 0, child?.y ?? 0]), `${item.name} under ${id}`).toBe(true);
+    }
+    expect(Number.isFinite(layout.width) && Number.isFinite(layout.height)).toBe(true);
+  });
+
+  it.each(["elk-layered", "elk-radial", "d3-force"] as const)(
+    "leaves the order of %s to the engine when the shortest connections are asked for",
+    async (id) => {
+      const plain = await LAYOUT_ENGINES[id].run(ENTITIES, RELATIONSHIPS, sizeOf);
+      const asked = await LAYOUT_ENGINES[id].run(ENTITIES, RELATIONSHIPS, sizeOf, true);
+
+      expect([...asked.positions]).toEqual([...plain.positions]);
+    },
+  );
+
   it.each(LAYOUT_CHOICES.map((engine) => engine.id))(
     "%s places every node through the one shared async call shape",
     async (id) => {

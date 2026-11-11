@@ -34,7 +34,7 @@ def validate_report_body(body):
     if isinstance(expiry, bool) or expiry not in REPORT_EXPIRIES:
         return "invalid_expiry", "Select a supported expiry."
     preset = body["reasonPreset"]
-    if preset not in REASON_PRESETS:
+    if not isinstance(preset, str) or preset not in REASON_PRESETS:
         return "invalid_reason", "Select a supported reason."
     custom_reason = body.get("customReason")
     if preset == "custom":

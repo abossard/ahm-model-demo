@@ -1,21 +1,18 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Provider } from "react-redux";
 import type { GraphLayout, LiveLayoutSession } from "../model/layout";
 import { LAYOUT_ENGINES } from "../model/layout";
 import type { Entity, Relationship } from "../model/types";
-import { store } from "../store/store";
-import {
-  focusEntities,
-  setExcludedEntityMode,
-  setLayout,
-  setSelectedHealth,
-  toggleCollapse,
-  toggleSelectedHealth,
-} from "../store/uiSlice";
-import { chooseModel } from "../store/catalogSlice";
+import { actions } from "../store/store";
 import { Topology } from "./Topology";
+
+vi.mock("../store/api", () => ({
+  fetchModelCatalog: vi.fn(() => new Promise(() => {})),
+  fetchHealthModel: vi.fn(() => new Promise(() => {})),
+  fetchEntityDetail: vi.fn(() => new Promise(() => {})),
+  postHealthReport: vi.fn(() => new Promise(() => {})),
+}));
 
 type AdaptiveEngine = (typeof LAYOUT_ENGINES)["d3-force-adaptive"];
 type StartLiveArgs = Parameters<NonNullable<AdaptiveEngine["startLive"]>>[0];
@@ -88,11 +85,11 @@ async function flush(ms = 0): Promise<void> {
 }
 
 function setBaselineUi(): void {
-  store.dispatch(setLayout("dagre-tb"));
-  store.dispatch(setSelectedHealth(["Healthy", "Degraded", "Unhealthy", "Unknown"]));
-  store.dispatch(setExcludedEntityMode("hide"));
-  store.dispatch(toggleCollapse("b"));
-  store.dispatch(toggleCollapse("b"));
+  actions.setLayout("dagre-tb");
+  actions.setSelectedHealth(["Healthy", "Degraded", "Unhealthy", "Unknown"]);
+  actions.setExcludedEntityMode("hide");
+  actions.toggleCollapse("b");
+  actions.toggleCollapse("b");
 }
 
 function layoutFor(names: readonly string[], xBase = 0): GraphLayout {
@@ -176,9 +173,9 @@ describe("Topology live session guards", () => {
 
   it("keeps accepting current-session frames after effect re-runs", async () => {
     await act(async () => {
-      root.render(<Provider store={store}><Topology entities={baseEntities()} relationships={baseRelationships()} /></Provider>);
+      root.render(<Topology idPrefix="topology" entities={baseEntities()} relationships={baseRelationships()} />);
     });
-    store.dispatch(setLayout("d3-force-adaptive"));
+    actions.setLayout("d3-force-adaptive");
     await flush();
 
     latestFrame?.(layoutFor(["a", "b", "c"]));
@@ -186,7 +183,7 @@ describe("Topology live session guards", () => {
     const firstX = ((globalThis as unknown as Globals).__rf?.nodes.find((node) => node.id === "a")?.position.x ?? -1);
     expect(firstX).toBe(0);
 
-    store.dispatch(toggleSelectedHealth("Degraded"));
+    actions.toggleSelectedHealth("Degraded");
     await flush();
     latestFrame?.(layoutFor(["a", "c"], 200));
     await flush();
@@ -198,15 +195,15 @@ describe("Topology live session guards", () => {
     const entities = baseEntities();
     const relationships = baseRelationships();
     await act(async () => {
-      root.render(<Provider store={store}><Topology entities={entities} relationships={relationships} /></Provider>);
+      root.render(<Topology idPrefix="topology" entities={entities} relationships={relationships} />);
     });
-    store.dispatch(setLayout("d3-force-adaptive"));
+    actions.setLayout("d3-force-adaptive");
     await flush();
     const before = updateCalls;
 
     const refreshed = entities.map((item) => ({ ...item, latestEvaluationAt: "2026-10-09T00:00:00Z" }));
     await act(async () => {
-      root.render(<Provider store={store}><Topology entities={refreshed} relationships={[...relationships]} /></Provider>);
+      root.render(<Topology idPrefix="topology" entities={refreshed} relationships={[...relationships]} />);
     });
     await flush();
 
@@ -215,15 +212,15 @@ describe("Topology live session guards", () => {
 
   it("retries pending focus when positions arrive later and consumes it once", async () => {
     await act(async () => {
-      root.render(<Provider store={store}><Topology entities={baseEntities()} relationships={baseRelationships()} /></Provider>);
+      root.render(<Topology idPrefix="topology" entities={baseEntities()} relationships={baseRelationships()} />);
     });
-    store.dispatch(setLayout("d3-force-adaptive"));
+    actions.setLayout("d3-force-adaptive");
     await flush();
     (globalThis as unknown as Globals).__fit = [];
     const fitBefore = 0;
 
     await act(async () => {
-      store.dispatch(focusEntities({ highlight: "a", names: ["a"] }));
+      actions.focusEntities({ highlight: "a", names: ["a"] });
     });
     await flush();
     const fitAfterFocus = ((globalThis as unknown as Globals).__fit ?? []).length;
@@ -245,15 +242,15 @@ describe("Topology live session guards", () => {
 
   it("does not re-fit viewport on collapse or health filter changes", async () => {
     await act(async () => {
-      root.render(<Provider store={store}><Topology entities={baseEntities()} relationships={baseRelationships()} /></Provider>);
+      root.render(<Topology idPrefix="topology" entities={baseEntities()} relationships={baseRelationships()} />);
     });
-    store.dispatch(setLayout("d3-force-adaptive"));
+    actions.setLayout("d3-force-adaptive");
     await flush();
     const baseline = ((globalThis as unknown as Globals).__fit ?? []).length;
 
-    store.dispatch(toggleCollapse("a"));
+    actions.toggleCollapse("a");
     await flush();
-    store.dispatch(toggleSelectedHealth("Degraded"));
+    actions.toggleSelectedHealth("Degraded");
     await flush();
     const after = ((globalThis as unknown as Globals).__fit ?? []).length;
     expect(after).toBe(baseline);
@@ -261,9 +258,9 @@ describe("Topology live session guards", () => {
 
   it("disposes the live session when a live error is reported", async () => {
     await act(async () => {
-      root.render(<Provider store={store}><Topology entities={baseEntities()} relationships={baseRelationships()} /></Provider>);
+      root.render(<Topology idPrefix="topology" entities={baseEntities()} relationships={baseRelationships()} />);
     });
-    store.dispatch(setLayout("d3-force-adaptive"));
+    actions.setLayout("d3-force-adaptive");
     await flush();
     expect(disposeCalls).toBe(0);
     await act(async () => {
@@ -292,14 +289,14 @@ describe("Topology live session guards", () => {
 
     await act(async () => {
       root.render(
-        <StrictMode><Provider store={store}><Topology entities={baseEntities()} relationships={baseRelationships()} /></Provider></StrictMode>,
+        <StrictMode><Topology idPrefix="topology" entities={baseEntities()} relationships={baseRelationships()} /></StrictMode>,
       );
     });
-    store.dispatch(setLayout("d3-force-adaptive"));
+    actions.setLayout("d3-force-adaptive");
     await flush();
-    store.dispatch(setLayout("dagre-tb"));
+    actions.setLayout("dagre-tb");
     await flush();
-    store.dispatch(setLayout("d3-force-adaptive"));
+    actions.setLayout("d3-force-adaptive");
     await flush();
     expect(sessions.length).toBe(2);
 
@@ -331,10 +328,10 @@ describe("Topology live session guards", () => {
       latestError = onError;
       return current;
     };
-    store.dispatch(setLayout("d3-force-adaptive"));
+    actions.setLayout("d3-force-adaptive");
     await act(async () => {
       root.render(
-        <StrictMode><Provider store={store}><Topology entities={baseEntities()} relationships={baseRelationships()} /></Provider></StrictMode>,
+        <StrictMode><Topology idPrefix="topology" entities={baseEntities()} relationships={baseRelationships()} /></StrictMode>,
       );
     });
     await flush();
@@ -365,30 +362,30 @@ describe("Topology live session guards", () => {
       return current;
     };
     await act(async () => {
-      root.render(<Provider store={store}><Topology entities={baseEntities()} relationships={baseRelationships()} /></Provider>);
+      root.render(<Topology idPrefix="topology" entities={baseEntities()} relationships={baseRelationships()} />);
     });
-    store.dispatch(setLayout("d3-force-adaptive"));
+    actions.setLayout("d3-force-adaptive");
     await flush();
     expect(disposeCalls).toBeGreaterThan(0);
     expect(updateCalls).toBe(0);
 
-    store.dispatch(toggleSelectedHealth("Degraded"));
+    actions.toggleSelectedHealth("Degraded");
     await flush();
     expect(updateCalls).toBe(1);
   });
 
   it("does not replay already-consumed focus after remount or model switch", async () => {
     await act(async () => {
-      root.render(<Provider store={store}><Topology entities={baseEntities()} relationships={baseRelationships()} /></Provider>);
+      root.render(<Topology idPrefix="topology" entities={baseEntities()} relationships={baseRelationships()} />);
     });
-    store.dispatch(setLayout("d3-force-adaptive"));
+    actions.setLayout("d3-force-adaptive");
     await flush();
     latestFrame?.(layoutFor(["a", "b", "c"]));
     await flush();
 
     (globalThis as unknown as Globals).__fit = [];
     await act(async () => {
-      store.dispatch(focusEntities({ highlight: "a", names: ["a"] }));
+      actions.focusEntities({ highlight: "a", names: ["a"] });
     });
     await flush();
     const focusedCalls = ((globalThis as unknown as Globals).__fit ?? []).filter(
@@ -399,7 +396,7 @@ describe("Topology live session guards", () => {
     await act(async () => root.unmount());
     root = createRoot(host);
     await act(async () => {
-      root.render(<Provider store={store}><Topology entities={baseEntities()} relationships={baseRelationships()} /></Provider>);
+      root.render(<Topology idPrefix="topology" entities={baseEntities()} relationships={baseRelationships()} />);
     });
     await flush();
     const afterRemountFocusedCalls = ((globalThis as unknown as Globals).__fit ?? []).filter(
@@ -408,15 +405,14 @@ describe("Topology live session guards", () => {
     expect(afterRemountFocusedCalls).toBe(1);
 
     await act(async () => {
-      store.dispatch(
-        chooseModel({
-          name: "other",
-          resourceGroup: "group",
-          id: null,
-          location: null,
-          provisioningState: null,
-        }),
-      );
+      actions.chooseModel({
+        name: "other",
+        resourceGroup: "group",
+        subscriptionId: "sub",
+        id: null,
+        location: null,
+        provisioningState: null,
+      });
     });
     await flush();
     const afterModelSwitchFocusedCalls = ((globalThis as unknown as Globals).__fit ?? []).filter(
@@ -427,9 +423,9 @@ describe("Topology live session guards", () => {
 
   it("recreates the live session when reduced-motion preference changes and reapplies update", async () => {
     await act(async () => {
-      root.render(<Provider store={store}><Topology entities={baseEntities()} relationships={baseRelationships()} /></Provider>);
+      root.render(<Topology idPrefix="topology" entities={baseEntities()} relationships={baseRelationships()} />);
     });
-    store.dispatch(setLayout("d3-force-adaptive"));
+    actions.setLayout("d3-force-adaptive");
     await flush();
     expect(startModes).toEqual([false]);
     const sessionsBefore = sessionUpdates.length;

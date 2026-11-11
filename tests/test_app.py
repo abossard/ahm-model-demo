@@ -1,43 +1,68 @@
-import asyncio
-import copy
 import importlib
 import json
-import logging
 import os
 import re
-import subprocess
 import sys
-import threading
-import time
+import tempfile
 import unittest
-from datetime import datetime, timezone
+from collections import Counter
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import httpx
+from azure.core.exceptions import HttpResponseError
 from fastapi.testclient import TestClient
-from starlette.requests import ClientDisconnect
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import SpanKind
 
 
 def mimetype(response):
     return response.headers["content-type"].split(";")[0].strip()
 
 
-# Split so the pattern does not match its own source and exempt this file from the sweep.
-ACCOUNT_IDENTIFIER = r"ME-" r"MngEnv\w*|@microsoft\.com"
-
-
 SUBSCRIPTION_ID = "11111111-1111-1111-1111-111111111111"
-SUBSCRIPTION_NAME = "Example Subscription"
+OTHER_SUBSCRIPTION_ID = "22222222-2222-2222-2222-222222222222"
 RESOURCE_GROUP = "rg-ahm-demo"
 MODEL_NAME = "hm-ahm-demo"
 MODEL_LOCATION = "northeurope"
 SIGNAL_NAME = "web-ui-health-report"
+REMOVED_ENV = (
+    "QUEUE_URL",
+    "POSTGRES_HOST",
+    "POSTGRES_DATABASE",
+    "POSTGRES_USER",
+    "HEALTH_COPILOT_ENABLED",
+    "AGENT_WEB_ORIGIN",
+)
+VALID_REPORT = {
+    "signalName": SIGNAL_NAME,
+    "healthState": "Healthy",
+    "value": 1,
+    "expiresInMinutes": 30,
+    "reasonPreset": "recovery",
+}
 
 
 def ns(**values):
     return SimpleNamespace(**values)
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def azure_error(status):
+    error = HttpResponseError(message="SECRET_AZURE_BODY token=do-not-leak")
+    error.status_code = status
+    return error
 
 
 def signal(
@@ -106,1001 +131,56 @@ def relationship(name, parent, child, display_name):
     )
 
 
-SHOP_ROOT = "parameters('modelName')"
-
-SHOP_PARAMETER_SOURCES = {
-    "containerAppId": ("container-app-web", "containerAppId"),
-    "postgresId": ("foundation", "postgresId"),
-    "storageId": ("storage", "storageId"),
-    "workspaceId": ("foundation", "workspaceId"),
-}
-
-SHOP_LEAF_BINDINGS = {
-    "azure-web": ("storefront", "containerAppId", "Microsoft.App/containerApps"),
-    "azure-postgres": ("ordersDatabase", "postgresId", "Microsoft.DBforPostgreSQL/flexibleServers"),
-    "azure-storage": ("storage", "storageId", "Microsoft.Storage/storageAccounts"),
-    "azure-queue": ("orderQueue", "storageId", "Microsoft.Storage/storageAccounts/queueServices"),
-    "azure-workspace": ("logAnalyticsWorkspace", "workspaceId", "Microsoft.OperationalInsights/workspaces"),
-}
-
-# C2 target: an independent, hand-declared standard shop. Not derived from any export or from the
-# module under test, so a wrong module cannot make this oracle agree with it.
-SHOP_AGGREGATORS = (
-    SHOP_ROOT,
-    "shopping",
-    "checkout",
-    "orders",
-    "payment",
-    "shopping-cart",
-    "product-catalog",
-    "inventory",
-    "order-processing",
-    "analytics",
-)
-SHOP_PROVIDERS = ("provider-stripe", "provider-paypal")
-SHOP_GROUPS = SHOP_AGGREGATORS
-
-SHOP_DISPLAY_NAMES = {
-    SHOP_ROOT: "Contoso Shop",
-    "shopping": "Shopping",
-    "checkout": "Checkout",
-    "orders": "Orders",
-    "payment": "Payments",
-    "shopping-cart": "Shopping Cart",
-    "product-catalog": "Product Catalog",
-    "inventory": "Inventory",
-    "order-processing": "Order Processing",
-    "analytics": "Analytics",
-}
-
-SHOP_EDGES = {
-    "r-shop-root-shopping": (SHOP_ROOT, "shopping"),
-    "r-shop-root-checkout": (SHOP_ROOT, "checkout"),
-    "r-shop-root-orders": (SHOP_ROOT, "orders"),
-    "r-shop-shopping-product-catalog": ("shopping", "product-catalog"),
-    "r-shop-shopping-shopping-cart": ("shopping", "shopping-cart"),
-    "r-shop-checkout-shopping-cart": ("checkout", "shopping-cart"),
-    "r-shop-checkout-payment": ("checkout", "payment"),
-    "r-shop-orders-order-processing": ("orders", "order-processing"),
-    "r-shop-orders-inventory": ("orders", "inventory"),
-    "r-shop-orders-analytics": ("orders", "analytics"),
-    "r-shop-product-catalog-azure-web": ("product-catalog", "azure-web"),
-    "r-shop-product-catalog-azure-postgres": ("product-catalog", "azure-postgres"),
-    "r-shop-shopping-cart-azure-web": ("shopping-cart", "azure-web"),
-    "r-shop-shopping-cart-azure-storage": ("shopping-cart", "azure-storage"),
-    "r-shop-inventory-azure-postgres": ("inventory", "azure-postgres"),
-    "r-shop-order-processing-azure-web": ("order-processing", "azure-web"),
-    "r-shop-order-processing-azure-queue": ("order-processing", "azure-queue"),
-    "r-shop-payment-provider-stripe": ("payment", "provider-stripe"),
-    "r-shop-payment-provider-paypal": ("payment", "provider-paypal"),
-    "r-shop-payment-azure-web": ("payment", "azure-web"),
-    "r-shop-analytics-azure-workspace": ("analytics", "azure-workspace"),
-}
-
-# Saved Designer coordinates, with resources below the shop flows and services.
-SHOP_POSITIONS = {
-    SHOP_ROOT: (1270, 0),
-    "checkout": (1780, 193),
-    "shopping": (1260, 193),
-    "orders": (750, 193),
-    "payment": (1780, 386),
-    "shopping-cart": (1385, 386),
-    "product-catalog": (375, 386),
-    "inventory": (750, 386),
-    "order-processing": (125, 386),
-    "analytics": (1135, 386),
-    "provider-stripe": (1655, 597),
-    "provider-paypal": (1905, 597),
-    "azure-postgres": (625, 579),
-    "azure-web": (0, 589),
-    "azure-queue": (250, 579),
-    "azure-storage": (885, 589),
-    "azure-workspace": (1135, 589),
-}
-
-
-def shop_entity_name(expression):
-    inner = expression.removeprefix(
-        "[format('{0}/{1}', parameters('modelName'), "
-    ).removesuffix(")]")
-    return inner if inner == SHOP_ROOT else inner.strip("'")
-
-
-def shop_edge_endpoint(expression):
+def model_id(name, resource_group, subscription_id=SUBSCRIPTION_ID):
     return (
-        SHOP_ROOT if expression == f"[{SHOP_ROOT}]" else expression
+        f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}"
+        f"/providers/Microsoft.CloudHealth/healthmodels/{name}"
     )
 
 
-class SourceLayoutContractTests(unittest.TestCase):
-    def test_application_health_model_contract_removes_aks_authored_topology(self):
-        root = Path(__file__).parents[1]
-        compiled = json.loads(
-            subprocess.run(
-                [
-                    "az",
-                    "bicep",
-                    "build",
-                    "--file",
-                    str(root / "infra" / "main.bicep"),
-                    "--stdout",
-                    "--only-show-errors",
-                    "--subscription",
-                    SUBSCRIPTION_ID,
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        )
-        entities_module = next(
-            resource
-            for resource in compiled["resources"]
-            if resource.get("name") == "health-model-entities"
-        )
-        relationships_module = next(
-            resource
-            for resource in compiled["resources"]
-            if resource.get("name") == "health-model-relationships"
-        )
-        entities_template = entities_module["properties"]["template"]
-        relationships_template = relationships_module["properties"]["template"]
-        entity_resources = [
-            r for r in entities_template["resources"]
-            if r["type"].endswith("/entities")
-        ]
-        relationship_resources = [
-            r for r in relationships_template["resources"]
-            if r["type"].endswith("/relationships")
-        ]
-        relationship_names = {
-            shop_entity_name(resource["name"]) for resource in relationship_resources
-        }
-        relationship_endpoints = {
-            shop_entity_name(resource["name"]): (
-                resource["properties"]["parentEntityName"],
-                resource["properties"]["childEntityName"],
-            )
-            for resource in relationship_resources
-        }
-
-        self.assertEqual(entities_template["outputs"]["deterministicEntityCount"]["value"], 18)
-        self.assertEqual(relationships_template["outputs"]["deterministicRelationshipCount"]["value"], 20)
-        self.assertEqual(len(entity_resources), 18)
-        self.assertEqual(len(relationship_resources), 20)
-        self.assertNotIn("aksCluster", entities_template["outputs"]["entityNames"]["value"])
-        self.assertNotIn("r-app-hosting-aks", relationship_names)
-        self.assertEqual(
-            relationship_endpoints["r-app-hosting-container-app"],
-            (
-                "[parameters('entityNames').systemAppHosting]",
-                "[parameters('entityNames').containerApp]",
-            ),
-        )
-        self.assertFalse(
-            any(resource["name"] == "[format('{0}/{1}', parameters('modelName'), 'aks-cluster')]" for resource in entity_resources)
-        )
-
-        damaged_relationships = copy.deepcopy(relationship_resources)
-        replacement = next(
-            resource
-            for resource in damaged_relationships
-            if shop_entity_name(resource["name"]) == "r-app-hosting-container-app"
-        )
-        replacement["name"] = "[format('{0}/{1}', parameters('modelName'), 'r-app-hosting-aks')]"
-        replacement["properties"]["childEntityName"] = "[parameters('entityNames').aksCluster]"
-        with self.assertRaises(AssertionError):
-            damaged_names = {
-                shop_entity_name(resource["name"]) for resource in damaged_relationships
-            }
-            self.assertNotIn("r-app-hosting-aks", damaged_names)
-
-    def test_foundry_platform_keeps_agents_read_only_and_egress_closed(self):
-        root = Path(__file__).parents[1]
-        compiled = json.loads(
-            subprocess.run(
-                [
-                    "az",
-                    "bicep",
-                    "build",
-                    "--file",
-                    str(root / "infra" / "main.bicep"),
-                    "--stdout",
-                    "--only-show-errors",
-                    "--subscription",
-                    SUBSCRIPTION_ID,
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        )
-        modules = {
-            resource["name"]: resource["properties"]["template"]
-            for resource in compiled["resources"]
-            if resource["type"] == "Microsoft.Resources/deployments"
-        }
-        foundry = modules["foundry"]
-        foundry_resources = {
-            resource["type"]: resource for resource in foundry["resources"]
-        }
-        roles = {
-            re.fullmatch(r"\[variables\('(\w+)'\)\]", resource["properties"]["roleName"])[1]: set(
-                resource["properties"]["permissions"][0]["actions"]
-            )
-            for resource in modules["subscription-monitoring"]["resources"]
-            if resource["type"] == "Microsoft.Authorization/roleDefinitions"
-        }
-        writes = {
-            action for action in roles["modelWriterRoleName"]
-            if not action.endswith("/read")
-        }
-        egress = foundry_resources[
-            "Microsoft.CognitiveServices/accounts/raiPolicies"
-        ]["properties"]["egressPolicy"]
-
-        cases = (
-            ("foundry region", compiled["parameters"]["foundryLocation"]["defaultValue"], "swedencentral"),
-            ("account kind", foundry_resources["Microsoft.CognitiveServices/accounts"]["kind"], "AIServices"),
-            ("local auth", foundry_resources["Microsoft.CognitiveServices/accounts"]["properties"]["disableLocalAuth"], True),
-            ("egress enforced", (egress["mode"], egress["defaultAction"]), ("Enforced", "Deny")),
-            (
-                "reader changes nothing",
-                [a for a in roles["modelReaderRoleName"] if a.endswith(("/write", "/delete", "ingestHealthReport/action"))],
-                [],
-            ),
-            (
-                "writer changes only model children",
-                sorted(writes),
-                sorted(
-                    f"Microsoft.CloudHealth/healthmodels/{kind}/{verb}"
-                    for kind in ("entities", "relationships", "signaldefinitions")
-                    for verb in ("write", "delete")
-                ),
-            ),
-            (
-                "writer granted to the app",
-                [
-                    r["properties"]["roleDefinitionId"]
-                    for r in modules["rbac"]["resources"]
-                    if r["type"] == "Microsoft.Authorization/roleAssignments"
-                    and "modelWriterRoleDefinitionId" in r["properties"]["roleDefinitionId"]
-                ],
-                ["[parameters('modelWriterRoleDefinitionId')]"],
-            ),
-            (
-                "outputs",
-                [
-                    name for name in (
-                        "FOUNDRY_PROJECT_ENDPOINT",
-                        "FOUNDRY_MODEL_DEPLOYMENT_NAME",
-                        "FOUNDRY_AGENT_EGRESS_POLICY_ID",
-                        "HEALTH_MODEL_READER_ROLE_ID",
-                        "HEALTH_MODEL_DESIGN_NAME",
-                    )
-                    if name not in compiled["outputs"]
-                ],
-                [],
-            ),
-        )
-        for name, actual, expected in cases:
-            with self.subTest(case=name):
-                self.assertEqual(actual, expected)
-
-    def assert_shop_health_model_contract(self, template):
-        resources = template["resources"]
-        entity_list = [r for r in resources if r["type"].endswith("/entities")]
-        edge_list = [r for r in resources if r["type"].endswith("/relationships")]
-        self.assertEqual(len(entity_list), 17)
-        self.assertEqual(len(edge_list), 21)
-        entities = {shop_entity_name(r["name"]): r for r in entity_list}
-        self.assertEqual(set(entities), {*SHOP_GROUPS, *SHOP_PROVIDERS, *SHOP_LEAF_BINDINGS})
-        self.assertEqual(len(SHOP_EDGES), 21)
-        self.assertEqual(len(set(SHOP_EDGES.values())), 21)
-        expected_pairs = set(SHOP_EDGES.values())
-        expected_edges = dict(SHOP_EDGES)
-        self.assertEqual(
-            {
-                shop_entity_name(r["name"]): (
-                    shop_edge_endpoint(r["properties"]["parentEntityName"]),
-                    shop_edge_endpoint(r["properties"]["childEntityName"]),
-                )
-                for r in edge_list
-            },
-            expected_edges,
-        )
-        self.assertEqual(
-            {shop_edge_endpoint(v) for v in template["outputs"]["entityNames"]["value"]},
-            set(entities),
-        )
-        self.assertEqual(len(template["outputs"]["entityNames"]["value"]), 17)
-        self.assertEqual(
-            set(entities) - {c for _, c in expected_pairs}, {SHOP_ROOT}
-        )
-        self.assertEqual(
-            set(SHOP_GROUPS), {p for p, _ in expected_pairs}
-        )
-        self.assertFalse(any(r["type"].endswith("/discoveryrules") for r in resources))
-        self.assertNotIn("/subscriptions/", json.dumps(template))
-        access = next(r for r in resources if r["name"] == "shop-health-model-access")
-        monitored = access["properties"]["parameters"]["monitoredResources"]["value"]
-        access_id = "[resourceId('Microsoft.Resources/deployments', 'shop-health-model-access')]"
-        auth_id = (
-            "[resourceId('Microsoft.CloudHealth/healthmodels/authenticationsettings', "
-            "parameters('modelName'), variables('authenticationName'))]"
-        )
-        access_ref = (
-            "reference(resourceId('Microsoft.Resources/deployments', "
-            "'shop-health-model-access'), '2025-04-01').outputs.monitoredResources.value"
-        )
-        self.assertEqual(
-            template["variables"]["orderQueueServiceId"],
-            "[format('{0}/queueServices/default', parameters('storageId'))]",
-        )
-        self.assertEqual(
-            monitored,
-            {
-                binding: (
-                    "[variables('orderQueueServiceId')]"
-                    if name == "azure-queue" else f"[parameters('{parameter}')]"
-                )
-                for name, (binding, parameter, _) in SHOP_LEAF_BINDINGS.items()
-            },
-        )
-        self.assertEqual(
-            access["properties"]["parameters"]["modelPrincipalId"]["value"],
-            "[reference(resourceId('Microsoft.CloudHealth/healthmodels', parameters('modelName')), "
-            "'2026-05-01-preview', 'full').identity.principalId]",
-        )
-        bindings = []
-        positions = {}
-        for name, resource in entities.items():
-            with self.subTest(entity=name):
-                self.assertEqual(resource["apiVersion"], "2026-05-01-preview")
-                properties = resource["properties"]
-                groups = properties["signalGroups"]
-                positions[name] = {
-                    axis: json.loads(value[7:-3]) if isinstance(value, str) else value
-                    for axis, value in properties["canvasPosition"].items()
-                }
-                self.assertEqual(set(positions[name]), {"x", "y"})
-                self.assertTrue(all(type(v) in (int, float) for v in positions[name].values()))
-                self.assertEqual(
-                    positions[name],
-                    dict(zip(("x", "y"), SHOP_POSITIONS[name])),
-                )
-                if name in SHOP_GROUPS:
-                    self.assertEqual(properties["displayName"], SHOP_DISPLAY_NAMES[name])
-                    self.assertEqual(
-                        groups,
-                        {"dependencies": {"aggregationType": "WorstOf", "ignoreUnknown": False}},
-                    )
-                    continue
-                self.assertIn(access_id, resource["dependsOn"])
-                self.assertIn(auth_id, resource["dependsOn"])
-                self.assertEqual(
-                    groups["azureLogAnalytics"],
-                    {
-                        "authenticationSetting": "[variables('authenticationName')]",
-                        "logAnalyticsWorkspaceResourceId": f"[{access_ref}.logAnalyticsWorkspace]",
-                        "signals": "[variables('syntheticDemoSignals')]",
-                    },
-                )
-                if name in SHOP_PROVIDERS:
-                    self.assertEqual(set(groups), {"azureLogAnalytics"})
-                    self.assertIn("simulated external", properties["displayName"].lower())
-                    continue
-                binding, _, resource_type = SHOP_LEAF_BINDINGS[name]
-                azure = groups["azureResource"]
-                self.assertEqual(set(groups), {"azureResource", "azureLogAnalytics"})
-                self.assertEqual(azure["azureResourceId"], f"[{access_ref}.{binding}]")
-                self.assertEqual(azure["authenticationSetting"], "[variables('authenticationName')]")
-                self.assertEqual(azure["resourceHealth"], {"enabled": "Disabled"})
-                self.assertNotIn("signals", azure)
-                self.assertIn(resource_type, properties["displayName"])
-                bindings.append(azure["azureResourceId"].lower())
-        self.assertEqual(len(set(bindings)), 5)
-        self.assertGreater(
-            min(positions[name]["y"] for name in SHOP_LEAF_BINDINGS),
-            max(positions[name]["y"] for name in SHOP_GROUPS),
-        )
-        self.assertEqual(len({(p["x"], p["y"]) for p in positions.values()}), 17)
-        for resource in edge_list:
-            for endpoint in ("parentEntityName", "childEntityName"):
-                name = shop_edge_endpoint(resource["properties"][endpoint])
-                argument = SHOP_ROOT if name == SHOP_ROOT else f"'{name}'"
-                self.assertIn(
-                    "[resourceId('Microsoft.CloudHealth/healthmodels/entities', "
-                    f"parameters('modelName'), {argument})]",
-                    resource["dependsOn"],
-                )
-        self.assertEqual(
-            template["variables"]["syntheticDemoSignals"],
-            [{
-                "name": "synthetic-demo-health",
-                "displayName": "Synthetic demo health (constant 100)",
-                "signalKind": "LogAnalyticsQuery",
-                "queryText": "print Value = 100",
-                "valueColumnName": "Value",
-                "dataUnit": "Count",
-                "timeGrain": "PT5M",
-                "refreshInterval": "PT5M",
-                "evaluationRules": {
-                    "unhealthyRule": {"operator": "GreaterThan", "threshold": 100}
-                },
-            }],
-        )
-
-    def test_authored_sources_have_one_final_layout(self):
-        root = Path(__file__).parents[1]
-        expected = {
-            "azure.yaml",
-            "infra/main.bicep",
-            "infra/main.parameters.json",
-            "scripts/hooks/preprovision.sh",
-            "scripts/hooks/postprovision.sh",
-            "scripts/hooks/postup.sh",
-            "src/web/Dockerfile",
-            "src/web/requirements.txt",
-            "src/web/app/main.py",
-            "src/web/ui/package.json",
-            "src/agent-web/package.json",
-            "src/agent-web/src/app/page.tsx",
-            "src/agent-app/src/main.py",
-            "src/agent-app/tests/test_health_api.py",
-        }
-
-        self.assertEqual(
-            sorted(path for path in expected if not (root / path).is_file()),
-            [],
-        )
-        self.assertFalse((root / "app").exists())
-        self.assertFalse((root / "copilot").exists())
-        self.assertEqual(
-            sorted(path.name for path in (root / "infra").glob("*.bicep")),
-            ["main.bicep"],
-        )
-        self.assertEqual(
-            sorted(
-                str(path.relative_to(root))
-                for path in (root / "scripts").rglob("*")
-                if path.is_file()
-            ),
-            [
-                "scripts/demo-failure.sh",
-                "scripts/hooks/postprovision.sh",
-                "scripts/hooks/postup.sh",
-                "scripts/hooks/preprovision.sh",
-                "scripts/local-env.sh",
-            ],
-        )
-        self.assertEqual(
-            {path.name for path in (root / "tests").glob("test_*.py")},
-            {"test_app.py", "test_streaming_proxy.py"},
-        )
-
-    def test_preprovision_uses_selected_subscription_identity(self):
-        root = Path(__file__).parents[1]
-        command = [
-            "bash",
-            "-c",
-            """
-az() {
-  if [[ "$1 $2" == "ad signed-in-user" ]]; then
-    [[ -n "$DEFAULT_UPN" ]] || return 1
-    printf '%s\\n' "$DEFAULT_UPN"
-    return
-  fi
-  [[ "$1" == rest && " $* " == *" --subscription $AZURE_SUBSCRIPTION_ID "* ]] || return 1
-  [[ " $* " == *' https://graph.microsoft.com/v1.0/me?$select=userPrincipalName '* ]] || return 1
-  printf '%s\\n' "$EXPECTED_UPN"
-}
-curl() { printf '203.0.113.7'; }
-azd() { printf '%s\\n' "$*"; }
-source ./scripts/hooks/preprovision.sh
-""",
-        ]
-        cases = (
-            ("same-tenant", "operator@example.test", "operator@example.test"),
-            ("different-tenant", "default@example.test", "guest@target.example.test"),
-            ("expired-default", "", "operator@example.test"),
-        )
-        for name, default_upn, expected_upn in cases:
-            with self.subTest(case=name):
-                result = subprocess.run(
-                    command,
-                    cwd=root,
-                    env={
-                        **os.environ,
-                        "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION_ID,
-                        "DEFAULT_UPN": default_upn,
-                        "EXPECTED_UPN": expected_upn,
-                    },
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(f"env set ADMIN_UPN {expected_upn}\n", result.stdout)
-                self.assertIn("env set ADMIN_IP_ADDRESS 203.0.113.7\n", result.stdout)
-                self.assertEqual(result.stderr, "")
-
-        for value in (None, ""):
-            with self.subTest(subscription=value):
-                environment = {
-                    **os.environ,
-                    "DEFAULT_UPN": "operator@example.test",
-                    "EXPECTED_UPN": "operator@example.test",
-                }
-                if value is not None:
-                    environment["AZURE_SUBSCRIPTION_ID"] = value
-                else:
-                    environment.pop("AZURE_SUBSCRIPTION_ID", None)
-                result = subprocess.run(
-                    command, cwd=root, env=environment, capture_output=True, text=True
-                )
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("AZURE_SUBSCRIPTION_ID", result.stderr)
-                self.assertEqual(result.stdout, "")
-
-    def test_postprovision_scopes_catalog_lookups_and_propagates_errors(self):
-        root = Path(__file__).parents[1]
-        command = [
-            "bash",
-            "-c",
-            """
-az() {
-  [[ " $* " == *" --subscription $AZURE_SUBSCRIPTION_ID "* ]] || {
-    printf 'MISSING_SELECTED_SUBSCRIPTION\\n' >&2
-    return 1
-  }
-  if [[ "$1 $2" == "account get-access-token" ]]; then
-    printf 'eyJ.test.token\\n'
-  elif [[ "$1 $2 $3" == "role assignment list" ]]; then
-    [[ " $* " == *" --fill-principal-name false "* ]] || return 1
-    [[ " $* " != *" --assignee "* ]] || {
-      printf 'GRAPH_ASSIGNEE_LOOKUP\\n' >&2
-      return 1
+def graph_row(
+    name,
+    resource_group,
+    location,
+    provisioning_state="Succeeded",
+    subscription_id=SUBSCRIPTION_ID,
+):
+    return {
+        "id": model_id(name, resource_group, subscription_id),
+        "name": name,
+        "location": location,
+        "provisioningState": provisioning_state,
     }
-    [[ " $* " == *"principalId=='$AZURE_IDENTITY_PRINCIPAL_ID'"* ]] || return 1
-    [[ "$CATALOG_LOOKUP_FAIL" == 0 ]] || {
-      printf 'ROLE_LOOKUP_FAILED\\n' >&2
-      return 1
-    }
-    printf '%s\\n' "$CATALOG_ASSIGNMENTS"
-  else
-    return 1
-  fi
-}
-psql() {
-  if [[ " $* " == *" --tuples-only "* ]]; then printf '1\\n'; fi
-}
-source ./scripts/hooks/postprovision.sh
-""",
-        ]
-        cases = (
-            ("present", "1", "0", "subscription"),
-            ("missing", "0", "0", "single-model"),
-            ("lookup-error", "0", "1", None),
-        )
-        for name, assignments, lookup_fail, expected_scope in cases:
-            with self.subTest(case=name):
-                result = subprocess.run(
-                    command,
-                    cwd=root,
-                    env={
-                        **os.environ,
-                        "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION_ID,
-                        "AZURE_POSTGRES_HOST": "pg.example.test",
-                        "AZURE_POSTGRES_DATABASE": "demo",
-                        "AZURE_IDENTITY_NAME": "demo-app",
-                        "AZURE_IDENTITY_PRINCIPAL_ID": "22222222-2222-2222-2222-222222222222",
-                        "AZURE_HEALTH_MODEL_NAME": "hm-demo",
-                        "HEALTH_REPORT_ROLE_NAME": "AHM Demo Health Report Operator",
-                        "ADMIN_UPN": "operator@example.test",
-                        "CATALOG_ASSIGNMENTS": assignments,
-                        "CATALOG_LOOKUP_FAIL": lookup_fail,
-                    },
-                    capture_output=True,
-                    text=True,
-                )
-                if expected_scope is None:
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("ROLE_LOOKUP_FAILED", result.stderr)
-                    self.assertNotIn("CATALOG_SCOPE", result.stdout)
-                else:
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertIn(f"CATALOG_SCOPE {expected_scope}", result.stdout)
-                    self.assertEqual(result.stderr, "")
-
-    def test_postup_prints_deployed_website_links(self):
-        root = Path(__file__).parents[1]
-        command = ["bash", "./scripts/hooks/postup.sh"]
-        self.assertIn(
-            "  postup:\n    shell: sh\n    interactive: true\n"
-            "    run: bash ./scripts/hooks/postup.sh",
-            (root / "azure.yaml").read_text(),
-        )
-        cases = (
-            (
-                {
-                    "SERVICE_WEB_FQDN": "web-alpha.example.test",
-                    "AZURE_RESOURCE_GROUP": "rg-alpha",
-                    "SHOP_HEALTH_MODEL_NAME": "hm-alpha-shop",
-                },
-                [
-                    "https://web-alpha.example.test/",
-                    "https://web-alpha.example.test/agent",
-                    "https://web-alpha.example.test/api/health-model",
-                    "https://web-alpha.example.test/?model=hm-alpha-shop&resourceGroup=rg-alpha",
-                ],
-            ),
-            (
-                {
-                    "SERVICE_WEB_FQDN": "web-beta.example.test",
-                    "AZURE_RESOURCE_GROUP": "rg-beta",
-                    "SHOP_HEALTH_MODEL_NAME": "hm-beta-shop",
-                },
-                [
-                    "https://web-beta.example.test/",
-                    "https://web-beta.example.test/agent",
-                    "https://web-beta.example.test/api/health-model",
-                    "https://web-beta.example.test/?model=hm-beta-shop&resourceGroup=rg-beta",
-                ],
-            ),
-        )
-        for environment, expected_urls in cases:
-            with self.subTest(environment=environment):
-                result = subprocess.run(
-                    command,
-                    cwd=root,
-                    env={**os.environ, **environment},
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                self.assertEqual(re.findall(r"https://\S+", result.stdout), expected_urls)
-                self.assertEqual(result.stderr, "")
-
-        for name in cases[0][0]:
-            for value in (None, ""):
-                with self.subTest(missing=name, value=value):
-                    environment = {**os.environ, **cases[0][0]}
-                    if value is None:
-                        environment.pop(name, None)
-                    else:
-                        environment[name] = value
-                    result = subprocess.run(
-                        command, cwd=root, env=environment, capture_output=True, text=True
-                    )
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn(name, result.stderr)
-                    self.assertEqual(result.stdout, "")
-
-    def test_shop_health_model_binds_project_resources_to_synthetic_health(self):
-        root = Path(__file__).parents[1]
-        compiled = json.loads(
-            subprocess.run(
-                [
-                    "az",
-                    "bicep",
-                    "build",
-                    "--file",
-                    str(root / "infra" / "main.bicep"),
-                    "--stdout",
-                    "--only-show-errors",
-                    "--subscription",
-                    SUBSCRIPTION_ID,
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        )
-
-        self.assertEqual(
-            [
-                name
-                for name in ("SHOP_HEALTH_MODEL_NAME", "SHOP_HEALTH_MODEL_ID")
-                if name not in compiled["outputs"]
-            ],
-            [],
-        )
-        self.assertEqual(
-            [
-                name
-                for name in ("HEALTH_MODEL_ID", "HEALTH_MODEL_NAME", "AZURE_HEALTH_MODEL_NAME")
-                if name not in compiled["outputs"]
-            ],
-            [],
-        )
-
-        module = next(
-            resource
-            for resource in compiled["resources"]
-            if resource.get("name") == "shop-health-model"
-        )
-        for name, (deployment, output) in SHOP_PARAMETER_SOURCES.items():
-            with self.subTest(parameter=name):
-                value = module["properties"]["parameters"][name]["value"]
-                self.assertEqual(
-                    value,
-                    "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', "
-                    "subscription().subscriptionId, format('rg-{0}', parameters('environmentName'))), "
-                    f"'Microsoft.Resources/deployments', '{deployment}'), '2025-04-01')"
-                    f".outputs.{output}.value]",
-                )
-
-        template = module["properties"]["template"]
-        self.assert_shop_health_model_contract(template)
-        for output, deployment in (
-            ("AZURE_HEALTH_MODEL_NAME", "health-model"),
-            ("HEALTH_MODEL_NAME", "health-model"),
-            ("SHOP_HEALTH_MODEL_NAME", "shop-health-model"),
-        ):
-            with self.subTest(output=output):
-                self.assertEqual(
-                    compiled["outputs"][output]["value"],
-                    "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', "
-                    "subscription().subscriptionId, format('rg-{0}', parameters('environmentName'))), "
-                    f"'Microsoft.Resources/deployments', '{deployment}'), '2025-04-01').outputs.modelName.value]",
-                )
-
-        # Mutate the compiled boundary, not source text, to exercise plausible schema-valid regressions.
-        for defect in (
-            "drop-role", "merge-role", "reverse-pair", "replace-pair", "extra-edge",
-            "remove-provider", "disconnect-provider", "second-inventory",
-            "duplicate-binding-case", "swap-postgres", "provider-binding",
-            "foreign-binding", "threshold", "missing-signal", "missing-ordering",
-            "resource-layer", "restore-c0-position", "restore-c1-position",
-            "retained-edge-endpoint",
-        ):
-            with self.subTest(defect=defect):
-                damaged = copy.deepcopy(template)
-                entities = {
-                    shop_entity_name(r["name"]): r
-                    for r in damaged["resources"] if r["type"].endswith("/entities")
-                }
-                edges = [r for r in damaged["resources"] if r["type"].endswith("/relationships")]
-                if defect in ("drop-role", "remove-provider"):
-                    name = "inventory" if defect == "drop-role" else "provider-paypal"
-                    damaged["resources"].remove(entities[name])
-                elif defect == "merge-role":
-                    entities["inventory"]["name"] = entities["analytics"]["name"]
-                elif defect == "reverse-pair":
-                    p = edges[0]["properties"]
-                    p["parentEntityName"], p["childEntityName"] = p["childEntityName"], p["parentEntityName"]
-                elif defect in ("replace-pair", "disconnect-provider"):
-                    edge = edges[0] if defect == "replace-pair" else next(
-                        r for r in edges if r["properties"]["childEntityName"] == "provider-paypal"
-                    )
-                    edge["properties"]["childEntityName"] = "azure-web"
-                elif defect == "extra-edge":
-                    damaged["resources"].append(copy.deepcopy(edges[0]))
-                elif defect == "second-inventory":
-                    entities["inventory"]["name"] = entities["inventory"]["name"].replace(
-                        "inventory", "inventory-domain"
-                    )
-                elif defect in ("duplicate-binding-case", "swap-postgres", "foreign-binding"):
-                    groups = entities["azure-postgres"]["properties"]["signalGroups"]
-                    groups["azureResource"]["azureResourceId"] = (
-                        "/subscriptions/foreign/providers/Microsoft.App/containerApps/foreign"
-                        if defect == "foreign-binding" else
-                        entities["azure-web"]["properties"]["signalGroups"]["azureResource"]["azureResourceId"]
-                    )
-                    if defect == "duplicate-binding-case":
-                        groups["azureResource"]["azureResourceId"] = groups["azureResource"]["azureResourceId"].upper()
-                elif defect == "provider-binding":
-                    entities["provider-stripe"]["properties"]["signalGroups"]["azureResource"] = copy.deepcopy(
-                        entities["azure-web"]["properties"]["signalGroups"]["azureResource"]
-                    )
-                elif defect == "threshold":
-                    damaged["variables"]["syntheticDemoSignals"][0]["evaluationRules"]["unhealthyRule"]["operator"] = "GreaterThanOrEqual"
-                elif defect == "missing-signal":
-                    entities["provider-stripe"]["properties"]["signalGroups"]["azureLogAnalytics"]["signals"] = []
-                elif defect == "missing-ordering":
-                    entities["azure-workspace"]["dependsOn"] = []
-                elif defect == "resource-layer":
-                    entities["azure-storage"]["properties"]["canvasPosition"]["y"] = 0
-                elif defect == "restore-c0-position":
-                    entities[SHOP_ROOT]["properties"]["canvasPosition"] = {"x": 560, "y": 40}
-                elif defect == "restore-c1-position":
-                    entities[SHOP_ROOT]["properties"]["canvasPosition"] = {"x": 500, "y": 0}
-                elif defect == "retained-edge-endpoint":
-                    next(
-                        r for r in edges
-                        if shop_entity_name(r["name"]) == "r-shop-shopping-product-catalog"
-                    )["properties"]["childEntityName"] = "azure-web"
-                # A separate TestCase lets subTest assertions propagate to this negative control.
-                validator = SourceLayoutContractTests()
-                with self.assertRaises(AssertionError):
-                    validator.assert_shop_health_model_contract(damaged)
-
-        fractional = copy.deepcopy(template)
-        root_position = next(
-            r["properties"]["canvasPosition"] for r in fractional["resources"]
-            if r["type"].endswith("/entities") and shop_entity_name(r["name"]) == SHOP_ROOT
-        )
-        root_position["x"] = "[json('900.125')]"
-        with mock.patch.dict(SHOP_POSITIONS, {SHOP_ROOT: (900.125, 0)}):
-            self.assert_shop_health_model_contract(fractional)
-            root_position["x"] = 900
-            with self.assertRaises(AssertionError):
-                SourceLayoutContractTests().assert_shop_health_model_contract(fractional)
 
 
-SCENE_SHOT_COUNTS = {
-    "scene-1-noise.md": 4,
-    "scene-2-health-models.md": 7,
-    "scene-3-azure-monitor.md": 5,
-    "scene-4-context-ai-ops.md": 5,
-    "scene-5-closing.md": 1,
-}
-
-SCENE_3_SIGNAL_SOURCES = (
-    "Application Insights",
-    "Log Analytics",
-    "Azure Metrics Explorer",
-    "Azure Monitor workspace",
-    "Resource Health",
-    "Service Health",
-    "Azure Resource Manager",
-    "Activity Log",
-)
-
-
-class StoryboardSceneGuideTests(unittest.TestCase):
-    def test_scene_guides_cover_every_storyboard_shot_and_signal_source(self):
-        scenes = Path(__file__).parents[1] / "docs" / "scenes"
-
-        self.assertEqual(
-            sorted(path.name for path in scenes.glob("*.md")),
-            sorted(["README.md", *SCENE_SHOT_COUNTS]),
-        )
-
-        missing_shots = {}
-        unresolved_paths = {}
-        for name, shots in SCENE_SHOT_COUNTS.items():
-            body = (scenes / name).read_text(encoding="utf-8")
-            headings = re.findall(r"^## Shot (\d+)\b", body, flags=re.MULTILINE)
-            if headings != [str(index) for index in range(1, shots + 1)]:
-                missing_shots[name] = headings
-            for referenced in re.findall(
-                r"(?:scripts|infra|src|docs)/[^\s`)*]+", body
-            ):
-                referenced = referenced.rstrip(".,:;")
-                if not (Path(__file__).parents[1] / referenced).exists():
-                    unresolved_paths.setdefault(name, []).append(referenced)
-
-        unresolved_icons = {}
-        for name in ["README.md", *SCENE_SHOT_COUNTS]:
-            body = (scenes / name).read_text(encoding="utf-8")
-            for icon in re.findall(r"\./icons/([\w.-]+\.svg)", body):
-                if not (scenes / "icons" / icon).is_file():
-                    unresolved_icons.setdefault(name, []).append(icon)
-
-        self.assertEqual(missing_shots, {})
-        self.assertEqual(unresolved_paths, {})
-        self.assertEqual(unresolved_icons, {})
-        self.assertTrue((scenes / "icons" / "README.md").is_file())
-
-    def test_tracked_files_carry_no_real_subscription_identity(self):
-        # Everything git tracks is shareable, so a subscription id or account name may only
-        # appear as an obviously synthetic placeholder (one repeated hex digit).
-        root = Path(__file__).parents[1]
-        tracked = subprocess.run(
-            ["git", "ls-files", "-z"],
-            cwd=root,
-            capture_output=True,
-            check=True,
-        ).stdout.split(b"\0")
-        account = re.compile(ACCOUNT_IDENTIFIER, re.IGNORECASE)
-        subscription = re.compile(
-            r"SUBSCRIPTION_ID\W{0,4}"
-            r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
-            re.IGNORECASE,
-        )
-        synthetic = re.compile(r"^([0-9a-f])\1{7}(-\1{4}){3}-\1{12}$", re.IGNORECASE)
-
-        leaked = {}
-        for raw in tracked:
-            name = raw.decode()
-            path = root / name
-            if not name or not path.is_file() or name.startswith("docs/scenes/icons/"):
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-            hits = sorted(
-                set(account.findall(text))
-                | {
-                    guid
-                    for guid in subscription.findall(text)
-                    if not synthetic.match(guid)
-                }
-            )
-            if hits:
-                leaked[name] = hits
-
-        self.assertEqual(leaked, {})
-
-    def test_scene_guides_carry_no_environment_identifiers(self):
-        # The guides are handed to an external video crew, so they must describe the demo
-        # without naming the account it runs in.
-        forbidden = re.compile(
-            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-            r"|" + ACCOUNT_IDENTIFIER + r""
-            r"|/subscriptions/"
-            r"|AZURE_MUTATION_COORDINATION_ACK",
-            re.IGNORECASE,
-        )
-        scenes = Path(__file__).parents[1] / "docs" / "scenes"
-
-        leaked = {
-            path.name: sorted(set(forbidden.findall(path.read_text(encoding="utf-8"))))
-            for path in sorted(scenes.rglob("*.md"))
-            if forbidden.search(path.read_text(encoding="utf-8"))
-        }
-
-        self.assertEqual(leaked, {})
-
-        scene_three = (scenes / "scene-3-azure-monitor.md").read_text(encoding="utf-8")
-        self.assertEqual(
-            [source for source in SCENE_3_SIGNAL_SOURCES if source not in scene_three],
-            [],
-        )
-
-    def test_availability_test_name_agrees_across_infrastructure(self):
-        modules = Path(__file__).parents[1] / "infra" / "modules"
-        pattern = r"param availabilityTestName string = '([^']+)'"
-
-        names = {
-            path.name: re.search(pattern, path.read_text(encoding="utf-8")).group(1)
-            for path in (
-                modules / "availability-tests.bicep",
-                modules / "health-model-entities.bicep",
-            )
-        }
-
-        self.assertEqual(len(set(names.values())), 1, names)
-
-
-def catalog_model(name, resource_group, location, provisioning_state="Succeeded"):
-    return ns(
-        id=(
-            f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/{resource_group}"
-            f"/providers/Microsoft.CloudHealth/healthmodels/{name}"
+def catalog_rows():
+    return [
+        graph_row("hm-zulu", RESOURCE_GROUP, MODEL_LOCATION),
+        graph_row(MODEL_NAME, RESOURCE_GROUP, MODEL_LOCATION),
+        graph_row("hm-alpha", "rg-other", "westeurope", "Creating"),
+        graph_row(
+            "hm-remote",
+            "rg-remote",
+            "swedencentral",
+            subscription_id=OTHER_SUBSCRIPTION_ID,
         ),
-        name=name,
-        location=location,
-        properties=ns(provisioning_state=provisioning_state),
-    )
+    ]
 
 
 class RecordingHealthModels:
-    def __init__(self, model):
+    def __init__(self, model, known):
         self.model = model
+        self.known = set(known)
         self.calls = []
-        self.list_calls = []
         self.error = None
-        self.list_error = None
-        self.catalog = [
-            catalog_model("hm-zulu", RESOURCE_GROUP, MODEL_LOCATION),
-            catalog_model(MODEL_NAME, RESOURCE_GROUP, MODEL_LOCATION),
-            catalog_model("hm-alpha", "rg-other", "westeurope", "Creating"),
-        ]
 
     def get(self, *args, **kwargs):
         self.calls.append((args, kwargs))
         if self.error:
             raise self.error
+        if args[:2] not in self.known:
+            raise azure_error(404)
         return self.model
-
-    def list_by_subscription(self, *args, **kwargs):
-        self.list_calls.append((args, kwargs))
-        if self.list_error:
-            raise self.list_error
-        return iter(list(self.catalog))
 
 
 class RecordingEntities:
@@ -1192,54 +272,89 @@ class RecordingRelationships:
 
 
 class RecordingCloudClient:
-    def __init__(self, model, entities, relationships):
-        self.health_models = RecordingHealthModels(model)
+    def __init__(self, model, entities, relationships, known):
+        self.health_models = RecordingHealthModels(model, known)
         self.entities = RecordingEntities(entities)
         self.relationships = RecordingRelationships(relationships)
+
+    def reads_and_writes(self):
+        return [
+            self.entities.list_calls,
+            self.entities.get_calls,
+            self.entities.history_calls,
+            self.entities.signal_history_calls,
+            self.entities.ingest_calls,
+            self.relationships.calls,
+        ]
+
+
+class RecordingResourceGraph:
+    def __init__(self, pages):
+        self.pages = pages
+        self.requests = []
+        self.error = None
+
+    def resources(self, request, **kwargs):
+        self.requests.append(request)
+        if self.error:
+            raise self.error
+        rows, skip_token = self.pages[len(self.requests) - 1]
+        return ns(data=list(rows), skip_token=skip_token)
 
 
 class HealthReportUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.dist = tempfile.TemporaryDirectory()
+        dist = Path(cls.dist.name)
+        (dist / "assets").mkdir()
+        (dist / "index.html").write_text(
+            '<!doctype html><html><body><div id="root"></div>'
+            '<script type="module" src="/assets/index-test.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        (dist / "assets" / "index-test.js").write_text(
+            "console.log('shell');", encoding="utf-8"
+        )
+
         cls.environment = {
+            "AUTH_MODE": "local",
             "AZURE_CLIENT_ID": "00000000-0000-0000-0000-000000000001",
-            "QUEUE_URL": "https://example.queue.core.windows.net/requests",
-            "POSTGRES_HOST": "pg.example.postgres.database.azure.com",
-            "POSTGRES_DATABASE": "demo",
-            "POSTGRES_USER": "id-ahm-demo-app",
             "APPLICATIONINSIGHTS_CONNECTION_STRING": (
                 "InstrumentationKey=00000000-0000-0000-0000-000000000000"
             ),
             "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION_ID,
-            "AZURE_SUBSCRIPTION_NAME": SUBSCRIPTION_NAME,
             "AZURE_RESOURCE_GROUP": RESOURCE_GROUP,
             "HEALTH_MODEL_NAME": MODEL_NAME,
-            "HEALTH_MODEL_LOCATION": MODEL_LOCATION,
+            "HEALTH_MODEL_DESIGN_NAME": f"{MODEL_NAME}-design",
+            "SESSIONS_CONTAINER_URL": "memory:",
+            "FOUNDRY_PROJECT_ENDPOINT": "fake:",
+            "FOUNDRY_AGENT_NAME": "health-model-agent",
+            "UI_DIST_DIR": str(dist),
         }
         cls.env_patch = mock.patch.dict(os.environ, cls.environment, clear=False)
         cls.env_patch.start()
+        for name in REMOVED_ENV:
+            os.environ.pop(name, None)
+
+        cls.spans = InMemorySpanExporter()
+        provider = trace.get_tracer_provider()
+        if not isinstance(provider, TracerProvider):
+            provider = TracerProvider()
+            trace.set_tracer_provider(provider)
+        provider.add_span_processor(SimpleSpanProcessor(cls.spans))
 
         cls.credential = mock.Mock(name="default_azure_credential")
-        cls.bootstrap_cloud = mock.Mock(name="bootstrap_cloud_client")
-        cls.patchers = [
-            mock.patch(
+        cls.patchers = {
+            "credential": mock.patch(
                 "azure.identity.DefaultAzureCredential",
                 return_value=cls.credential,
             ),
-            mock.patch(
-                "azure.storage.queue.QueueClient.from_queue_url",
-                return_value=mock.Mock(name="queue_client"),
-            ),
-            mock.patch(
+            "monitor": mock.patch(
                 "azure.monitor.opentelemetry.configure_azure_monitor",
             ),
-            mock.patch(
-                "azure.mgmt.cloudhealth.CloudHealthMgmtClient",
-                return_value=cls.bootstrap_cloud,
-            ),
-        ]
-        for patcher in cls.patchers:
-            patcher.start()
+        }
+        cls.mocks = {name: patcher.start() for name, patcher in cls.patchers.items()}
 
         app_path = os.path.join(
             os.path.dirname(__file__), "..", "src", "web", "app"
@@ -1251,23 +366,25 @@ class HealthReportUiTests(unittest.TestCase):
             "dto",
             "inventory",
             "reports",
-            "journey",
-            "agent_proxy",
             "errors",
+            "healthmodels",
         ):
             sys.modules.pop(name, None)
         cls.module = importlib.import_module("main")
         cls.inventory = importlib.import_module("inventory")
         cls.config = importlib.import_module("config")
+        cls.healthmodels = importlib.import_module("healthmodels")
+        cls.obo = importlib.import_module("obo")
+        cls.credentials = cls.obo.Developer(cls.credential)
 
     @classmethod
     def tearDownClass(cls):
-        for patcher in reversed(cls.patchers):
+        for patcher in reversed(list(cls.patchers.values())):
             patcher.stop()
         cls.env_patch.stop()
+        cls.dist.cleanup()
 
     def setUp(self):
-        self.now = "2026-07-26T15:00:00Z"
         self.entities = [
             entity(
                 MODEL_NAME,
@@ -1342,10 +459,7 @@ class HealthReportUiTests(unittest.TestCase):
             relationship("r-api-db", "api", "database", "persists"),
         ]
         self.model = ns(
-            id=(
-                f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/{RESOURCE_GROUP}"
-                f"/providers/Microsoft.CloudHealth/healthmodels/{MODEL_NAME}"
-            ),
+            id=model_id(MODEL_NAME, RESOURCE_GROUP),
             name=MODEL_NAME,
             location=MODEL_LOCATION,
             properties=ns(
@@ -1354,679 +468,115 @@ class HealthReportUiTests(unittest.TestCase):
             ),
         )
         self.cloud = RecordingCloudClient(
-            self.model, self.entities, self.relationships
+            self.model,
+            self.entities,
+            self.relationships,
+            known=[
+                (RESOURCE_GROUP, MODEL_NAME),
+                ("rg-other", "hm-alpha"),
+                (RESOURCE_GROUP, "hm-zulu"),
+            ],
         )
-        self.module.health_client = self.cloud
+        self.remote_cloud = RecordingCloudClient(
+            self.model,
+            self.entities,
+            self.relationships,
+            known=[("rg-remote", "hm-remote")],
+        )
+        self.clouds = {
+            SUBSCRIPTION_ID: self.cloud,
+            OTHER_SUBSCRIPTION_ID: self.remote_cloud,
+        }
+        self.created = []
+        self.graph = RecordingResourceGraph([(catalog_rows(), None)])
+        for patcher in (
+            mock.patch.object(
+                self.healthmodels, "ResourceGraphClient", return_value=self.graph
+            ),
+            mock.patch.object(
+                self.healthmodels,
+                "CloudHealthMgmtClient",
+                side_effect=self.create_cloud_client,
+            ),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.module.health = self.healthmodels.HealthModels(self.credentials)
         self.client = TestClient(self.module.app, follow_redirects=False)
+        self.spans.clear()
 
-        self.enqueue = mock.patch.object(
-            self.module,
-            "enqueue_event",
-            return_value={
-                "request_id": "journey-request",
-                "message_id": "queue-message",
-                "created_at": self.now,
-            },
+    def create_cloud_client(self, credential, subscription_id, **kwargs):
+        self.created.append((credential, subscription_id, kwargs))
+        return self.clouds.get(subscription_id) or RecordingCloudClient(
+            self.model, [], [], known=[]
         )
-        self.insert = mock.patch.object(
-            self.module, "insert_event_and_count", return_value=73
-        )
-        self.peek = mock.patch.object(
-            self.module,
-            "peek_queue_head",
-            return_value={
-                "label": "oldest visible / best-effort FIFO",
-                "message_id": "oldest-message",
-                "request_id": "oldest-request",
-                "created_at": "2026-07-25T10:00:00Z",
-                "dequeue_count": 0,
-            },
-        )
-        self.enqueue_mock = self.enqueue.start()
-        self.insert_mock = self.insert.start()
-        self.peek_mock = self.peek.start()
-
-    def tearDown(self):
-        self.peek.stop()
-        self.insert.stop()
-        self.enqueue.stop()
 
     def assert_security_headers(self, response):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(
             response.headers["Content-Security-Policy"],
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; base-uri 'none'; "
-            "frame-src 'self'; frame-ancestors 'none'",
+            "default-src 'self'; script-src 'self'; "
+            "style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; "
+            "img-src 'self' data:; connect-src 'self' https://login.microsoftonline.com; base-uri 'none'; "
+            "frame-ancestors 'none'",
         )
+
+    def assert_no_azure_calls(self):
+        self.assertEqual(self.created, [])
+        self.assertEqual(self.graph.requests, [])
+        for cloud in self.clouds.values():
+            self.assertEqual(cloud.health_models.calls, [])
+            self.assertEqual(cloud.reads_and_writes(), [[]] * 6)
 
     def test_plain_root_is_side_effect_free_ui(self):
-        with mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "false"}):
-            response = self.client.get("/")
+        response = self.client.get("/")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(mimetype(response), "text/html")
         body = response.text
         self.assertIn('id="root"', body)
         self.assertRegex(body, r"/assets/index-[\w-]+\.js")
-        self.assertNotIn("The Health Pulse", body)
-        self.assertNotIn("displayName", body)
-        self.assertNotIn("'unsafe-inline'", body)
-        self.enqueue_mock.assert_not_called()
-        self.insert_mock.assert_not_called()
-        self.peek_mock.assert_not_called()
-        self.assertEqual(self.cloud.entities.list_calls, [])
+        self.assert_no_azure_calls()
         self.assert_security_headers(response)
 
-    def test_invalid_compatibility_formats_are_safe_and_side_effect_free(self):
+    def test_shell_and_assets_come_from_the_ui_dist_dir(self):
         cases = [
-            "/?format=",
-            "/?format=invalid",
-            "/?format=xml",
-            "/?format=JSON",
-            "/?format=%20html%20",
-            "/?format=json&format=html",
+            ("/", 'id="root"'),
+            ("/sessions/abc", 'id="root"'),
+            ("/assets/index-test.js", "console.log('shell');"),
         ]
 
-        class RecordingHandler(logging.Handler):
-            def __init__(self):
-                super().__init__()
-                self.records = []
-
-            def emit(self, record):
-                self.records.append(record)
-
-        for path in cases:
+        for path, expected in cases:
             with self.subTest(path=path):
-                handler = RecordingHandler()
-                self.module.logger.addHandler(handler)
-                try:
-                    response = self.client.get(path)
-                finally:
-                    self.module.logger.removeHandler(handler)
+                response = self.client.get(path)
 
-                self.assertEqual(response.status_code, 400)
-                self.assertEqual(mimetype(response), "application/json")
-                payload = response.json()
-                self.assertEqual(payload["error"]["code"], "invalid_format")
-                operation_id = payload["error"]["operationId"]
-                self.assertRegex(operation_id, r"^[0-9a-f]{32}$")
-                self.assertEqual(response.headers["X-Operation-ID"], operation_id)
-                self.enqueue_mock.assert_not_called()
-                self.insert_mock.assert_not_called()
-                self.peek_mock.assert_not_called()
-                self.assertEqual(self.cloud.health_models.calls, [])
-                self.assertEqual(self.cloud.entities.list_calls, [])
-                self.assertEqual(self.cloud.relationships.calls, [])
-                self.assertFalse(
-                    any(
-                        record.levelno >= logging.ERROR or record.exc_info
-                        for record in handler.records
-                    )
-                )
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(expected, response.text)
+                self.assert_no_azure_calls()
                 self.assert_security_headers(response)
 
-    def test_enabled_copilot_is_an_exact_origin_parent_owned_surface(self):
-        with mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}):
-            response = self.client.get("/")
-
-        body = response.text
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(mimetype(response), "text/html")
-        self.assertIn('id="root"', body)
-        self.assertRegex(body, r"/assets/index-[\w-]+\.js")
-        self.assertNotIn("copilot.example", body)
-        self.assertNotIn("app-ahm-health-copilot", body)
-        self.assertNotIn("COPILOT_URL", body)
-        self.assertNotIn("//copilot", body)
-        self.assert_security_headers(response)
-
-    def test_invalid_copilot_enablement_fails_closed(self):
-        for flag in ["false", "1", "yes", "enabled", "true-ish"]:
-            with self.subTest(flag=flag):
-                with mock.patch.dict(
-                    os.environ,
-                    {"HEALTH_COPILOT_ENABLED": flag},
-                ):
-                    shell = self.client.get("/")
-                    agent = self.client.get("/agent")
-                self.assertEqual(shell.status_code, 200)
-                self.assertEqual(agent.status_code, 404)
-                self.assertEqual(agent.json()["error"]["code"], "agent_disabled")
-
-    def test_agent_proxy_preserves_request_response_and_strips_unsafe_headers(self):
-        seen = []
-
-        def upstream(request):
-            body = request.read()
-            seen.append((request, body))
-            return httpx.Response(
-                202,
-                headers={
-                    "Content-Type": "application/json",
-                    "Content-Encoding": "identity",
-                    "Cache-Control": "no-cache",
-                    "Connection": "x-internal",
-                    "X-Internal": "do-not-forward",
-                    "Set-Cookie": "session=secret",
-                    "Content-Length": "999",
-                },
-                stream=httpx.ByteStream(b'{"status":"accepted"}'),
-            )
-
-        client = httpx.Client(transport=httpx.MockTransport(upstream))
-        with (
-            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
-            mock.patch.object(
-                self.module,
-                "_agent_client_factory",
-                return_value=client,
-            ),
-        ):
-            response = self.client.post(
-                "/agent/api/copilotkit/default/run?thread=one&thread=two",
-                content=b'{"message":"hello"}',
-                headers={
-                    "content-type": "application/json",
-                    "Cookie": "caller=secret",
-                    "X-Forwarded-Host": "evil.example",
-                    "Connection": "x-caller",
-                    "X-Caller": "do-not-forward",
-                },
-            )
-
-        self.assertEqual(response.status_code, 202)
-        self.assertEqual(response.content, b'{"status":"accepted"}')
-        self.assertEqual(response.headers["Content-Type"], "application/json")
-        self.assertEqual(response.headers["Content-Encoding"], "identity")
-        self.assertEqual(response.headers["Cache-Control"], "no-cache")
-        for name in [
-            "Connection",
-            "X-Internal",
-            "Set-Cookie",
-            "Content-Length",
-        ]:
-            self.assertNotIn(name, response.headers)
-        self.assertEqual(len(seen), 1)
-        request, body = seen[0]
-        self.assertEqual(request.method, "POST")
-        self.assertEqual(request.url.host, "127.0.0.1")
-        self.assertEqual(request.url.port, 3000)
-        self.assertEqual(request.url.path, "/agent/api/copilotkit/default/run")
-        self.assertEqual(
-            list(request.url.params.multi_items()),
-            [("thread", "one"), ("thread", "two")],
-        )
-        self.assertEqual(body, b'{"message":"hello"}')
-        self.assertEqual(request.headers["host"], "127.0.0.1:3000")
-        for name in ["cookie", "x-forwarded-host", "x-caller"]:
-            self.assertNotIn(name, request.headers)
-
-    def test_agent_proxy_streams_raw_sse_in_order_and_closes(self):
-        class DelayedStream(httpx.SyncByteStream):
-            def __init__(self):
-                self.closed = False
-
-            def __iter__(self):
-                yield b"event: start\ndata: one\n\n"
-                time.sleep(0.08)
-                yield b"event: finish\ndata: two\n\n"
-
-            def close(self):
-                self.closed = True
-
-        stream = DelayedStream()
-
-        def upstream(_request):
-            return httpx.Response(
-                200,
-                headers={
-                    "Content-Type": "text/event-stream; charset=utf-8",
-                    "Cache-Control": "no-cache",
-                },
-                stream=stream,
-            )
-
-        client = httpx.Client(transport=httpx.MockTransport(upstream))
-        with (
-            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
-            mock.patch.object(
-                self.module,
-                "_agent_client_factory",
-                return_value=client,
-            ),
-        ):
-            with self.client.stream(
-                "GET", "/agent/api/copilotkit/default/run"
-            ) as response:
-                chunks = list(response.iter_raw())
-
-        self.assertEqual(
-            b"".join(chunks),
-            (
-                b"event: start\ndata: one\n\n"
-                b"event: finish\ndata: two\n\n"
-            ),
-        )
-        self.assertTrue(stream.closed)
-
-    def test_agent_proxy_disconnect_closes_upstream_stream(self):
-        class OpenStream(httpx.SyncByteStream):
-            def __init__(self):
-                self.closed = False
-
-            def __iter__(self):
-                yield b"event: RUN_STARTED\ndata: one\n\n"
-                yield b"event: TEXT_MESSAGE_CONTENT\ndata: two\n\n"
-
-            def close(self):
-                self.closed = True
-
-        stream = OpenStream()
-        client = httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _request: httpx.Response(
-                    200,
-                    headers={"Content-Type": "text/event-stream"},
-                    stream=stream,
-                )
-            )
-        )
-        with (
-            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
-            mock.patch.object(
-                self.module,
-                "_agent_client_factory",
-                return_value=client,
-            ),
-        ):
-            with self.client.stream(
-                "GET", "/agent/api/copilotkit/default/run"
-            ) as response:
-                iterator = response.iter_raw()
-                self.assertIn(b"RUN_STARTED", next(iterator))
-
-        self.assertTrue(stream.closed)
-
-    def test_agent_proxy_asgi_disconnect_releases_upstream_and_slot(self):
-        for agent_path in (
-            "",
-            "_next/static/chunks/demo.js",
-            "api/copilotkit/default/run",
-        ):
-            for spec_version in ("2.3", "2.4"):
-                for disconnect_at in (
-                    "http.response.start",
-                    "http.response.body",
-                    None,
-                ):
-                    with self.subTest(
-                        path=agent_path,
-                        spec=spec_version,
-                        disconnect_at=disconnect_at,
-                    ):
-                        upstream = httpx.Response(
-                            200,
-                            headers={"Content-Type": "text/plain"},
-                            stream=httpx.ByteStream(b"first chunk"),
-                        )
-                        client = httpx.Client(
-                            transport=httpx.MockTransport(lambda _request: upstream)
-                        )
-                        slots = threading.BoundedSemaphore(1)
-
-                        async def exercise():
-                            path = f"/agent/{agent_path}" if agent_path else "/agent"
-                            scope = {
-                                "type": "http",
-                                "asgi": {"spec_version": spec_version},
-                                "method": "GET",
-                                "scheme": "http",
-                                "path": path,
-                                "raw_path": path.encode(),
-                                "query_string": b"",
-                                "headers": [(b"host", b"testserver")],
-                            }
-                            response = await self.module._proxy_agent(
-                                self.module.Request(scope), agent_path
-                            )
-                            reached = asyncio.Event()
-
-                            async def receive():
-                                await reached.wait()
-                                return {"type": "http.disconnect"}
-
-                            async def send(message):
-                                if message["type"] == disconnect_at:
-                                    reached.set()
-                                    if spec_version == "2.4":
-                                        raise OSError("client disconnected")
-                                    await asyncio.Future()
-
-                            try:
-                                if spec_version == "2.4" and disconnect_at is not None:
-                                    with self.assertRaises(ClientDisconnect):
-                                        await response(scope, receive, send)
-                                else:
-                                    await response(scope, receive, send)
-                                self.assertTrue(upstream.is_closed)
-                                self.assertTrue(client.is_closed)
-                                self.assertTrue(slots.acquire(blocking=False))
-                                self.assertFalse(slots.acquire(blocking=False))
-                                slots.release()
-                            finally:
-                                await response.body_iterator.aclose()
-
-                        with (
-                            mock.patch.dict(
-                                os.environ, {"HEALTH_COPILOT_ENABLED": "true"}
-                            ),
-                            mock.patch.object(self.module, "_agent_proxy_slots", slots),
-                            mock.patch.object(
-                                self.module, "_agent_client_factory", return_value=client
-                            ),
-                        ):
-                            try:
-                                asyncio.run(exercise())
-                            finally:
-                                upstream.close()
-                                client.close()
-
-    def test_agent_proxy_rejects_unapproved_inputs_before_upstream(self):
-        upstream = mock.Mock(
-            side_effect=AssertionError("upstream must not be reached")
-        )
-        client = httpx.Client(transport=httpx.MockTransport(upstream))
+    def test_request_journey_surface_is_gone(self):
         cases = [
-            ("method", "OPTIONS", "/agent", None, None, 405),
-            ("path", "GET", "/agent/private", None, None, 404),
-            (
-                "content-type",
-                "POST",
-                "/agent/api/copilotkit/default/run",
-                b"body",
-                "text/plain",
-                415,
-            ),
-            (
-                "body-size",
-                "POST",
-                "/agent/api/copilotkit/default/run",
-                b"x" * (1_048_576 + 1),
-                "application/json",
-                413,
-            ),
+            ("get", "/?format=json", 200),
+            ("get", "/?format=html", 200),
+            ("get", "/?format=", 200),
+            ("get", "/?format=invalid", 200),
+            ("get", "/?format=json&format=html", 200),
+            ("post", "/api/demo-request", 404),
+            ("get", "/api/demo-request", 404),
         ]
-        for label, method, path, body, content_type, expected in cases:
-            with self.subTest(label=label):
-                with (
-                    mock.patch.dict(
-                        os.environ,
-                        {"HEALTH_COPILOT_ENABLED": "true"},
-                    ),
-                    mock.patch.object(
-                        self.module,
-                        "_agent_client_factory",
-                        return_value=client,
-                    ),
-                ):
-                    headers = (
-                        {"content-type": content_type} if content_type else None
-                    )
-                    response = self.client.request(
-                        method,
-                        path,
-                        content=body,
-                        headers=headers,
-                    )
-                self.assertEqual(response.status_code, expected)
-        upstream.assert_not_called()
 
-    def test_agent_proxy_saturation_is_bounded_before_upstream(self):
-        slots = mock.Mock()
-        slots.acquire.return_value = False
-        with (
-            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
-            mock.patch.object(self.module, "_agent_proxy_slots", slots),
-            mock.patch.object(
-                self.module,
-                "_agent_client_factory",
-                side_effect=AssertionError("upstream must not be reached"),
-            ),
-        ):
-            response = self.client.get("/agent")
+        for method, path, status in cases:
+            with self.subTest(method=method, path=path):
+                response = getattr(self.client, method)(path)
 
-        payload = response.json()
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(payload["error"]["code"], "agent_proxy_saturated")
-        self.assertTrue(payload["error"]["retryable"])
-        self.assertRegex(payload["error"]["operationId"], r"^[0-9a-f]{32}$")
-
-    def test_agent_proxy_static_asset_waits_for_temporarily_busy_slot(self):
-        slots = threading.BoundedSemaphore(1)
-        self.assertTrue(slots.acquire(blocking=False))
-        client = httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _request: httpx.Response(
-                    200,
-                    headers={"content-type": "application/javascript"},
-                    stream=httpx.ByteStream(b"console.log('ok');"),
-                )
-            )
-        )
-        released = threading.Event()
-
-        def release_slot():
-            slots.release()
-            released.set()
-
-        timer = threading.Timer(0.05, release_slot)
-        timer.start()
-        started = time.monotonic()
-        try:
-            with (
-                mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
-                mock.patch.object(self.module, "_agent_proxy_slots", slots),
-                mock.patch.object(
-                    self.module,
-                    "_agent_client_factory",
-                    return_value=client,
-                ),
-            ):
-                response = self.client.get("/agent/_next/static/chunks/demo.js")
-        finally:
-            timer.cancel()
-            if not released.is_set():
-                slots.release()
-        waited = time.monotonic() - started
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"console.log('ok');")
-        self.assertGreaterEqual(waited, 0.04)
-
-    def test_agent_proxy_static_asset_returns_saturation_after_wait_timeout(self):
-        slots = threading.BoundedSemaphore(1)
-        self.assertTrue(slots.acquire(blocking=False))
-        started = time.monotonic()
-        try:
-            with (
-                mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
-                mock.patch.object(self.module, "_agent_proxy_slots", slots),
-                mock.patch.object(
-                    self.module,
-                    "_AGENT_STATIC_SLOT_WAIT_SECONDS",
-                    0.05,
-                ),
-                mock.patch.object(
-                    self.module,
-                    "_AGENT_STATIC_SLOT_POLL_SECONDS",
-                    0.005,
-                ),
-                mock.patch.object(
-                    self.module,
-                    "_agent_client_factory",
-                    side_effect=AssertionError("upstream must not be reached"),
-                ),
-            ):
-                response = self.client.get("/agent/_next/static/chunks/demo.js")
-        finally:
-            slots.release()
-        waited = time.monotonic() - started
-        payload = response.json()
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(payload["error"]["code"], "agent_proxy_saturated")
-        self.assertGreaterEqual(waited, 0.05)
-
-    def test_agent_proxy_runtime_post_still_fails_fast_when_slots_are_busy(self):
-        slots = mock.Mock()
-        slots.acquire.return_value = False
-        with (
-            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
-            mock.patch.object(self.module, "_agent_proxy_slots", slots),
-            mock.patch.object(
-                self.module,
-                "_agent_client_factory",
-                side_effect=AssertionError("upstream must not be reached"),
-            ),
-        ):
-            response = self.client.post(
-                "/agent/api/copilotkit/default/run",
-                json={"messages": []},
-            )
-        payload = response.json()
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(payload["error"]["code"], "agent_proxy_saturated")
-        slots.acquire.assert_called_once_with(blocking=False)
-
-    def test_agent_proxy_static_asset_head_still_fails_fast_when_slots_are_busy(self):
-        slots = mock.Mock()
-        slots.acquire.return_value = False
-        with (
-            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
-            mock.patch.object(self.module, "_agent_proxy_slots", slots),
-            mock.patch.object(
-                self.module,
-                "_agent_client_factory",
-                side_effect=AssertionError("upstream must not be reached"),
-            ),
-        ):
-            response = self.client.head("/agent/_next/static/chunks/demo.js")
-        self.assertEqual(response.status_code, 503)
-        slots.acquire.assert_called_once_with(blocking=False)
-
-    def test_agent_proxy_static_slot_wait_remains_cooperative(self):
-        calls = 0
-        slots = mock.Mock()
-        pending = True
-
-        def acquire(*, blocking=False):
-            nonlocal calls
-            calls += 1
-            return calls >= 40
-
-        slots.acquire.side_effect = acquire
-        ticks = 0
-
-        async def ticker():
-            nonlocal ticks
-            while pending:
-                await asyncio.sleep(0.001)
-                ticks += 1
-
-        async def run_probe():
-            nonlocal pending
-            with (
-                mock.patch.object(self.module, "_agent_proxy_slots", slots),
-                mock.patch.object(self.module, "_AGENT_STATIC_SLOT_WAIT_SECONDS", 0.12),
-                mock.patch.object(self.module, "_AGENT_STATIC_SLOT_POLL_SECONDS", 0.002),
-            ):
-                acquired = await self.module._acquire_agent_slot(
-                    "asset", "GET", "_next/static/chunks/demo.js"
-                )
-            self.assertTrue(acquired)
-            pending = False
-
-        async def main():
-            await asyncio.gather(run_probe(), ticker())
-
-        asyncio.run(main())
-        self.assertGreaterEqual(ticks, 15)
-
-    def test_agent_proxy_sanitizes_redirects_and_bounds_upstream_failure(self):
-        cases = [
-            (
-                "same-upstream",
-                httpx.Response(
-                    307,
-                    headers={
-                        "Location": (
-                            "http://127.0.0.1:3000/agent"
-                            "/api/copilotkit?resume=1"
-                        )
-                    },
-                    stream=httpx.ByteStream(b""),
-                ),
-                307,
-                "/agent/api/copilotkit?resume=1",
-            ),
-            (
-                "foreign-upstream",
-                httpx.Response(
-                    302,
-                    headers={"Location": "https://evil.example/steal"},
-                    stream=httpx.ByteStream(b""),
-                ),
-                502,
-                None,
-            ),
-        ]
-        for label, upstream_response, expected_status, expected_location in cases:
-            with self.subTest(label=label):
-                client = httpx.Client(
-                    transport=httpx.MockTransport(
-                        lambda _request, value=upstream_response: value
-                    )
-                )
-                with (
-                    mock.patch.dict(
-                        os.environ,
-                        {"HEALTH_COPILOT_ENABLED": "true"},
-                    ),
-                    mock.patch.object(
-                        self.module,
-                        "_agent_client_factory",
-                        return_value=client,
-                    ),
-                ):
-                    response = self.client.get("/agent")
-                self.assertEqual(response.status_code, expected_status)
-                self.assertEqual(
-                    response.headers.get("Location"),
-                    expected_location,
-                )
-                self.assertNotIn("127.0.0.1", response.text)
-                self.assertNotIn("evil.example", response.text)
-
-        failing_client = mock.Mock()
-        failing_client.build_request.return_value = mock.sentinel.request
-        failing_client.send.side_effect = httpx.ConnectError(
-            "secret upstream detail",
-            request=httpx.Request("GET", "http://127.0.0.1:3000/agent"),
-        )
-        with (
-            mock.patch.dict(os.environ, {"HEALTH_COPILOT_ENABLED": "true"}),
-            mock.patch.object(
-                self.module,
-                "_agent_client_factory",
-                return_value=failing_client,
-            ),
-        ):
-            response = self.client.get("/agent")
-        payload = response.json()
-        self.assertEqual(response.status_code, 502)
-        self.assertEqual(payload["error"]["code"], "agent_web_unavailable")
-        self.assertRegex(payload["error"]["operationId"], r"^[0-9a-f]{32}$")
-        self.assertNotIn("secret upstream detail", response.text)
+                self.assertEqual(response.status_code, status)
+                if status == 200:
+                    self.assertIn('id="root"', response.text)
+                else:
+                    self.assertEqual(response.json()["error"]["code"], "not_found")
+                self.assert_no_azure_calls()
 
     def test_model_read_returns_rich_dynamic_inventory_once(self):
         response = self.client.get("/api/health-model")
@@ -2085,16 +635,13 @@ class HealthReportUiTests(unittest.TestCase):
         )
         self.assertEqual(
             payload["reportOptions"]["healthStates"],
-            ["Healthy", "Degraded", "Unhealthy", "Unknown", "Deleted"],
+            ["Healthy", "Degraded", "Unhealthy", "Unknown"],
         )
         self.assertEqual(payload["reportOptions"]["values"], [None, 0, 0.5, 1])
         self.assertEqual(payload["reportOptions"]["expiries"], [1, 5, 15, 30, 60, 120])
         self.assertEqual(len(self.cloud.health_models.calls), 1)
         self.assertEqual(len(self.cloud.entities.list_calls), 1)
         self.assertEqual(len(self.cloud.relationships.calls), 1)
-        self.enqueue_mock.assert_not_called()
-        self.insert_mock.assert_not_called()
-        self.peek_mock.assert_not_called()
         self.assert_security_headers(response)
 
     def test_model_read_is_fresh_and_does_not_persist(self):
@@ -2106,9 +653,6 @@ class HealthReportUiTests(unittest.TestCase):
         self.assertEqual(len(self.cloud.health_models.calls), 2)
         self.assertEqual(len(self.cloud.entities.list_calls), 2)
         self.assertEqual(len(self.cloud.relationships.calls), 2)
-        self.enqueue_mock.assert_not_called()
-        self.insert_mock.assert_not_called()
-        self.peek_mock.assert_not_called()
 
     def test_detail_uses_exact_entity_and_server_owned_history_window(self):
         response = self.client.get("/api/entities/api")
@@ -2168,7 +712,6 @@ class HealthReportUiTests(unittest.TestCase):
             ("Degraded", 0, 30, "investigating", None),
             ("Unhealthy", 0.5, 120, "custom", "Operator saw <script>alert(1)</script>"),
             ("Unknown", 1, 5, "demo-test", None),
-            ("Deleted", None, 15, "recovery", None),
         ]
 
         for state, value, expiry, preset, custom_reason in cases:
@@ -2331,6 +874,13 @@ class HealthReportUiTests(unittest.TestCase):
                 400,
             ),
             (
+                "state-removed-from-the-service",
+                "api",
+                {**valid, "healthState": "Deleted"},
+                "application/json",
+                400,
+            ),
+            (
                 "value",
                 "api",
                 {**valid, "value": 0.25},
@@ -2392,6 +942,68 @@ class HealthReportUiTests(unittest.TestCase):
                 self.assertEqual(response.status_code, expected_status)
                 self.assertEqual(self.cloud.entities.ingest_calls, [])
 
+    def test_a_reason_preset_that_is_not_text_is_the_usual_validation_error(self):
+        for preset in ([], {}, ["recovery"], {"recovery": 1}, [[]], 5, 1.5, True, None):
+            with self.subTest(preset=preset):
+                response = self.client.post("/api/entities/api/health-reports", json={**VALID_REPORT, "reasonPreset": preset})
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error"]["code"], "invalid_reason")
+                self.assertEqual(self.cloud.entities.ingest_calls, [])
+
+    def test_malformed_selectors_are_rejected_before_any_azure_call(self):
+        guid = OTHER_SUBSCRIPTION_ID
+        malformed = [
+            ("subscription that is no guid", f"?model=hm-alpha&resourceGroup=rg-other&subscription=not-a-guid"),
+            ("subscription with a trailing newline", f"?model=hm-alpha&resourceGroup=rg-other&subscription={guid}%0A"),
+            ("subscription without hyphens", f"?model=hm-alpha&resourceGroup=rg-other&subscription={guid.replace('-', '')}"),
+            ("subscription in braces", f"?model=hm-alpha&resourceGroup=rg-other&subscription=%7B{guid}%7D"),
+            ("subscription with non hex digits", f"?model=hm-alpha&resourceGroup=rg-other&subscription={'z' * 8}-{'z' * 4}-{'z' * 4}-{'z' * 4}-{'z' * 12}"),
+            ("group with a slash", "?model=hm-alpha&resourceGroup=rg%2Fother"),
+            ("group with a blank", "?model=hm-alpha&resourceGroup=rg%20other"),
+            ("group with a trailing newline", "?model=hm-alpha&resourceGroup=rg-other%0A"),
+            ("group of 91 characters", f"?model=hm-alpha&resourceGroup={'r' * 91}"),
+            ("group with a semicolon", "?model=hm-alpha&resourceGroup=rg;other"),
+            ("model of one character", "?model=m&resourceGroup=rg-other"),
+            ("model starting with a hyphen", "?model=-hm&resourceGroup=rg-other"),
+            ("model ending with a hyphen", "?model=hm-&resourceGroup=rg-other"),
+            ("model with a trailing newline", "?model=hm-alpha%0A&resourceGroup=rg-other"),
+            ("model of 261 characters", f"?model={'m' * 261}&resourceGroup=rg-other"),
+            ("model with an underscore", "?model=hm_alpha&resourceGroup=rg-other"),
+            ("model with a blank", "?model=hm%20alpha&resourceGroup=rg-other"),
+            ("model with a slash", "?model=hm%2Falpha&resourceGroup=rg-other"),
+        ]
+        routes = [
+            ("get", "/api/health-model", {}),
+            ("get", "/api/entities/api", {}),
+            ("post", "/api/entities/api/health-reports", {"json": VALID_REPORT}),
+        ]
+        for label, selector in malformed:
+            for method, path, arguments in routes:
+                with self.subTest(label=label, route=f"{method} {path}"):
+                    response = getattr(self.client, method)(f"{path}{selector}", **arguments)
+
+                    self.assertEqual((response.status_code, response.json()["error"]["code"]), (400, "unknown_model"))
+                    self.assert_no_azure_calls()
+
+    def test_well_formed_selectors_at_the_limits_still_reach_azure(self):
+        selectors = [
+            ("underscores dots and parentheses", "?model=hm-alpha&resourceGroup=rg_a.b(c)-d"),
+            ("a group of 90 characters", f"?model=hm-alpha&resourceGroup={'r' * 90}"),
+            ("a model of 3 characters", "?model=abc&resourceGroup=rg-other"),
+            ("a model of 260 characters", f"?model={'m' * 260}&resourceGroup=rg-other"),
+            ("a guid in capitals", f"?model=hm-alpha&resourceGroup=rg-other&subscription={OTHER_SUBSCRIPTION_ID.upper()}"),
+        ]
+        for label, selector in selectors:
+            with self.subTest(label=label):
+                self.cloud.health_models.calls.clear()
+                self.remote_cloud.health_models.calls.clear()
+
+                response = self.client.get(f"/api/health-model{selector}")
+
+                self.assertEqual((response.status_code, response.json()["error"]["code"]), (400, "unknown_model"))
+                self.assertEqual(len(self.cloud.health_models.calls) + len(self.remote_cloud.health_models.calls), 1)
+
     def test_deleted_current_entity_is_not_reportable(self):
         self.entities[1].properties.health_state = "Deleted"
 
@@ -2409,81 +1021,50 @@ class HealthReportUiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(self.cloud.entities.ingest_calls, [])
 
-    def test_demo_and_legacy_routes_preserve_write_contract(self):
-        for method, path in [
-            ("post", "/api/demo-request"),
-            ("get", "/?format=json"),
-            ("get", "/?format=html"),
-        ]:
-            with self.subTest(method=method, path=path):
-                self.enqueue_mock.reset_mock()
-                self.insert_mock.reset_mock()
-                self.peek_mock.reset_mock()
-
-                response = getattr(self.client, method)(path)
-
-                self.assertEqual(response.status_code, 200)
-                if path.endswith("html"):
-                    self.assertEqual(mimetype(response), "text/html")
-                else:
-                    self.assertEqual(
-                        set(response.json()),
-                        {"request_id", "just_enqueued", "queue_head", "row_count"},
-                    )
-                self.enqueue_mock.assert_called_once()
-                self.insert_mock.assert_called_once()
-                self.peek_mock.assert_called_once()
-                self.assert_security_headers(response)
-
-    def test_demo_request_failure_after_enqueue_keeps_request_and_operation_ids(self):
-        self.enqueue_mock.reset_mock()
-        self.insert_mock.reset_mock()
-        self.peek_mock.reset_mock()
-        self.insert_mock.side_effect = RuntimeError("database offline")
-
-        response = self.client.post("/api/demo-request")
-
-        self.assertEqual(response.status_code, 503)
-        payload = response.json()
-        self.assertEqual(payload["status"], "failed")
-        self.assertEqual(payload["error"], "RuntimeError")
-        self.assertRegex(payload["request_id"], r"^[0-9a-f-]{36}$")
-        self.assertRegex(payload["operation_id"], r"^[0-9a-f]{32}$")
-        self.assertEqual(response.headers["X-Request-ID"], payload["request_id"])
-        self.assertEqual(response.headers["X-Operation-ID"], payload["operation_id"])
-        self.enqueue_mock.assert_called_once()
-        self.insert_mock.assert_called_once()
-        self.peek_mock.assert_not_called()
-
     def test_sdk_errors_are_mapped_without_azure_details(self):
-        from azure.core.exceptions import HttpResponseError
-
         cases = [
-            (401, 503, False),
-            (403, 503, False),
-            (404, 404, False),
-            (409, 409, True),
-            (429, 503, True),
-            (500, 503, True),
-            (503, 503, True),
+            (401, 503, False, "health_model_access_unavailable"),
+            (403, 403, False, "forbidden"),
+            (404, 404, False, "not_found"),
+            (409, 409, True, "health_model_conflict"),
+            (429, 503, True, "health_model_busy"),
+            (500, 503, True, "health_model_unavailable"),
+            (503, 503, True, "health_model_unavailable"),
         ]
-        for azure_status, expected_status, retryable in cases:
+        for azure_status, expected_status, retryable, code in cases:
             with self.subTest(azure_status=azure_status):
-                error = HttpResponseError(message="SECRET_AZURE_BODY token=do-not-leak")
-                error.status_code = azure_status
-                self.cloud.health_models.error = error
+                self.cloud.health_models.error = azure_error(azure_status)
                 with self.assertLogs("ahm-demo", level="WARNING") as captured:
                     response = self.client.get("/api/health-model")
                 self.cloud.health_models.error = None
 
                 self.assertEqual(response.status_code, expected_status)
                 payload = response.json()
+                self.assertEqual(payload["error"]["code"], code)
                 self.assertEqual(payload["error"]["retryable"], retryable)
                 self.assertEqual(len(payload["error"]["operationId"]), 32)
                 self.assertNotIn("SECRET_AZURE_BODY", response.text)
                 self.assertNotIn("do-not-leak", response.text)
                 self.assertNotIn("SECRET_AZURE_BODY", "\n".join(captured.output))
                 self.assertNotIn("do-not-leak", "\n".join(captured.output))
+
+    def test_report_without_write_access_is_a_clear_forbidden(self):
+        self.remote_cloud.entities.ingest_error = azure_error(403)
+
+        with self.assertLogs("ahm-demo", level="WARNING"):
+            response = self.client.post(
+                "/api/entities/api/health-reports"
+                f"?model=hm-remote&resourceGroup=rg-remote&subscription={OTHER_SUBSCRIPTION_ID}",
+                json=VALID_REPORT,
+            )
+
+        self.assertEqual(response.status_code, 403)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], "forbidden")
+        self.assertFalse(error["retryable"])
+        self.assertNotIn("SECRET_AZURE_BODY", response.text)
+        self.assertEqual(len(self.remote_cloud.entities.ingest_calls), 1)
+        self.assertEqual(self.cloud.entities.ingest_calls, [])
 
     def test_html_like_names_remain_data_and_headers_are_restrictive(self):
         response = self.client.get("/api/health-model")
@@ -2495,29 +1076,61 @@ class HealthReportUiTests(unittest.TestCase):
         )
         root = self.client.get("/")
         self.assertNotIn("unsafe-inline", root.headers["Content-Security-Policy"])
+        self.assertNotIn("frame-src", root.headers["Content-Security-Policy"])
         self.assert_security_headers(root)
 
-    def test_missing_runtime_config_fails_at_import_and_names_every_gap(self):
-        exact = dict(self.environment)
-        required = self.module.require_runtime_config(exact)
-        self.assertEqual(
-            required,
-            {
-                "subscription_id": SUBSCRIPTION_ID,
-                "resource_group": RESOURCE_GROUP,
-                "model_name": MODEL_NAME,
-            },
-        )
+    def test_the_policy_is_the_one_the_ui_specs_run_under(self):
+        spec = Path(__file__).resolve().parents[1] / "src" / "web" / "ui" / "tests" / "graph-ux.spec.ts"
+        declaration = re.search(r'const SERVED_CSP\s*=\s*((?:"[^"]*"\s*\+?\s*)+);', spec.read_text(encoding="utf-8"))
 
-        for key in (
+        self.assertIsNotNone(declaration, "SERVED_CSP is no longer a plain string expression in graph-ux.spec.ts")
+        served = "".join(re.findall(r'"([^"]*)"', declaration.group(1)))
+        self.assertEqual(self.config.SECURITY_POLICY, served)
+        self.assertIn("style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='", served)
+
+    def test_the_policy_allows_nothing_inline_beyond_the_empty_style_element(self):
+        directives = dict(part.strip().split(" ", 1) for part in self.config.SECURITY_POLICY.split(";"))
+
+        self.assertNotIn("unsafe-inline", self.config.SECURITY_POLICY)
+        self.assertNotIn("unsafe-eval", self.config.SECURITY_POLICY)
+        self.assertEqual(directives["script-src"], "'self'")
+        self.assertEqual(directives["style-src"].split(), ["'self'", "'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='"])
+        self.assertEqual(directives["connect-src"].split(), ["'self'", "https://login.microsoftonline.com"])
+
+    def test_runtime_needs_only_the_eight_required_variables(self):
+        required = {
             "APPLICATIONINSIGHTS_CONNECTION_STRING",
             "AZURE_RESOURCE_GROUP",
             "AZURE_SUBSCRIPTION_ID",
             "HEALTH_MODEL_NAME",
-            "POSTGRES_HOST",
-            "POSTGRES_USER",
-            "QUEUE_URL",
-        ):
+            "HEALTH_MODEL_DESIGN_NAME",
+            "SESSIONS_CONTAINER_URL",
+            "FOUNDRY_PROJECT_ENDPOINT",
+            "FOUNDRY_AGENT_NAME",
+        }
+        exact = dict(self.environment)
+        self.assertEqual(set(self.config.REQUIRED_ENV), required)
+        self.assertEqual(
+            self.module.require_runtime_config(exact),
+            {
+                "subscription_id": SUBSCRIPTION_ID,
+                "resource_group": RESOURCE_GROUP,
+                "model_name": MODEL_NAME,
+                "design_model_name": f"{MODEL_NAME}-design",
+                "sessions_container_url": "memory:",
+                "foundry_project_endpoint": "fake:",
+                "foundry_agent_name": "health-model-agent",
+                "auth_mode": "local",
+                "tenant_id": None,
+                "client_id": None,
+                "api_scope": None,
+                "mcp_scope": None,
+                "agent_principal_id": "",
+                "managed_identity_client_id": self.environment["AZURE_CLIENT_ID"],
+            },
+        )
+
+        for key in sorted(required):
             for label, blanked in (("absent", None), ("blank", "   ")):
                 with self.subTest(key=key, case=label):
                     candidate = dict(exact)
@@ -2540,30 +1153,248 @@ class HealthReportUiTests(unittest.TestCase):
         for key in self.config.REQUIRED_ENV:
             self.assertIn(key, message)
 
-    def test_arm_id_yields_its_resource_group_or_nothing(self):
+    def test_the_auth_mode_decides_which_variables_are_required_and_where_local_is_allowed(self):
+        base = {key: value for key, value in self.environment.items() if key not in ("AUTH_MODE", "UI_DIST_DIR")}
+        entra = {
+            "ENTRA_TENANT_ID": "33333333-3333-3333-3333-333333333333",
+            "ENTRA_CLIENT_ID": "44444444-4444-4444-4444-444444444444",
+            "ENTRA_API_SCOPE": "api://44444444-4444-4444-4444-444444444444/access_as_user",
+            "MCP_SCOPE": "api://55555555-5555-5555-5555-555555555555/Mcp.Tools.ReadWrite",
+        }
+        without = lambda environment, name: {key: value for key, value in environment.items() if key != name}
+        cases = [
+            ("no mode means entra and wants its variables", base, ["ENTRA_TENANT_ID", "ENTRA_CLIENT_ID", "ENTRA_API_SCOPE", "MCP_SCOPE"]),
+            ("entra with its variables", {**base, **entra}, "entra"),
+            ("entra named out loud", {**base, **entra, "AUTH_MODE": "entra"}, "entra"),
+            ("entra named in capitals with spaces", {**base, **entra, "AUTH_MODE": " ENTRA "}, "entra"),
+            ("entra without the agent identity yet", {**base, **entra, "FOUNDRY_AGENT_PRINCIPAL_ID": ""}, "entra"),
+            ("entra without the managed identity", without({**base, **entra}, "AZURE_CLIENT_ID"), ["AZURE_CLIENT_ID"]),
+            ("entra without the tenant", without({**base, **entra}, "ENTRA_TENANT_ID"), ["ENTRA_TENANT_ID"]),
+            ("entra without the api scope", without({**base, **entra}, "ENTRA_API_SCOPE"), ["ENTRA_API_SCOPE"]),
+            ("entra without the mcp scope", without({**base, **entra}, "MCP_SCOPE"), ["MCP_SCOPE"]),
+            ("entra with a blank client id", {**base, **entra, "ENTRA_CLIENT_ID": "  "}, ["ENTRA_CLIENT_ID"]),
+            ("entra inside a container app", {**base, **entra, "CONTAINER_APP_NAME": "ca-web"}, "entra"),
+            ("local needs no entra variables", {**base, "AUTH_MODE": "local"}, "local"),
+            ("local needs no managed identity", {**without(base, "AZURE_CLIENT_ID"), "AUTH_MODE": "local"}, "local"),
+            ("local in capitals", {**base, "AUTH_MODE": "LOCAL"}, "local"),
+            ("local with a blank container app name", {**base, "AUTH_MODE": "local", "CONTAINER_APP_NAME": " "}, "local"),
+            ("local inside a container app", {**base, "AUTH_MODE": "local", "CONTAINER_APP_NAME": "ca-web"}, ["Container App"]),
+            ("an unknown mode", {**base, **entra, "AUTH_MODE": "none"}, ["AUTH_MODE must be one of"]),
+            ("a blank mode means entra", {**base, "AUTH_MODE": " "}, ["ENTRA_TENANT_ID"]),
+        ]
+        for label, environment, expected in cases:
+            with self.subTest(label=label):
+                if isinstance(expected, list):
+                    with self.assertRaises(RuntimeError) as caught:
+                        self.module.require_runtime_config(environment)
+                    for fragment in expected:
+                        self.assertIn(fragment, str(caught.exception))
+                    continue
+                configured = self.module.require_runtime_config(environment)
+
+                self.assertEqual(configured["auth_mode"], expected)
+                if expected == "entra":
+                    self.assertEqual(
+                        (configured["tenant_id"], configured["client_id"], configured["api_scope"], configured["mcp_scope"]),
+                        tuple(entra.values()),
+                    )
+                    self.assertEqual(configured["agent_principal_id"], environment.get("FOUNDRY_AGENT_PRINCIPAL_ID", ""))
+
+    def test_the_agent_principal_is_read_trimmed_and_may_be_empty(self):
+        base = {key: value for key, value in self.environment.items() if key != "UI_DIST_DIR"}
+        for label, value, expected in [("set", " 66666666-6666-6666-6666-666666666666 ", "66666666-6666-6666-6666-666666666666"), ("empty", "", ""), ("absent", None, "")]:
+            with self.subTest(label=label):
+                environment = dict(base)
+                if value is not None:
+                    environment["FOUNDRY_AGENT_PRINCIPAL_ID"] = value
+
+                self.assertEqual(self.module.require_runtime_config(environment)["agent_principal_id"], expected)
+
+    def test_catalog_is_served_without_the_removed_variables(self):
+        self.assertEqual(set(REMOVED_ENV) & set(os.environ), set())
+
+        response = self.client.get("/api/health-models")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["models"]), 4)
+
+    def test_azure_monitor_and_identity_are_configured_from_the_environment(self):
+        self.mocks["credential"].assert_any_call(
+            managed_identity_client_id=self.environment["AZURE_CLIENT_ID"]
+        )
+        self.mocks["credential"].assert_any_call(exclude_managed_identity_credential=True)
+        self.mocks["monitor"].assert_called_once_with(
+            connection_string=self.environment["APPLICATIONINSIGHTS_CONNECTION_STRING"],
+            credential=self.credential,
+            enable_live_metrics=False,
+        )
+
+    def test_every_route_emits_exactly_one_server_span(self):
+        cases = [
+            ("get", "/", "GET /", 0),
+            ("get", "/sessions/abc", "GET /{full_path:path}", 0),
+            ("get", "/assets/index-test.js", None, 0),
+            ("get", "/api/health-models", "GET /api/health-models", 1),
+            ("get", "/api/health-model", "GET /api/health-model", 1),
+            (
+                "get",
+                f"/api/health-model?model=hm-remote&resourceGroup=rg-remote"
+                f"&subscription={OTHER_SUBSCRIPTION_ID}",
+                "GET /api/health-model",
+                1,
+            ),
+            ("get", "/api/health-model?model=hm-ghost&resourceGroup=rg-other", "GET /api/health-model", 0),
+            ("get", "/api/entities/api", "GET /api/entities/{entity_name:path}", 1),
+            ("get", "/api/entities/api?top=5", "GET /api/entities/{entity_name:path}", 0),
+            (
+                "post",
+                "/api/entities/api/health-reports",
+                "POST /api/entities/{entity_name:path}/health-reports",
+                1,
+            ),
+            ("post", "/api/demo-request", None, 0),
+        ]
+
+        for method, path, name, client_spans in cases:
+            with self.subTest(method=method, path=path):
+                self.spans.clear()
+                self.graph.pages = [(catalog_rows(), None)]
+                self.graph.requests.clear()
+
+                kwargs = {"json": VALID_REPORT} if method == "post" else {}
+                getattr(self.client, method)(path, **kwargs)
+
+                finished = self.spans.get_finished_spans()
+                self.assertEqual(
+                    Counter(span.kind for span in finished),
+                    Counter({SpanKind.SERVER: 1, SpanKind.CLIENT: client_spans}),
+                )
+                (server,) = [span for span in finished if span.kind == SpanKind.SERVER]
+                if name is not None:
+                    self.assertEqual(server.name, name)
+                for span in finished:
+                    self.assertEqual(span.context.trace_id, server.context.trace_id)
+
+    def test_error_operation_ids_are_the_trace_ids_of_the_request(self):
+        response = self.client.get("/api/entities/api?top=5")
+
+        (server,) = [
+            span
+            for span in self.spans.get_finished_spans()
+            if span.kind == SpanKind.SERVER
+        ]
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["error"]["operationId"],
+            f"{server.context.trace_id:032x}",
+        )
+
+    def test_arm_id_yields_its_subscription_and_resource_group_or_nothing(self):
         cases = [
             (
                 f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg-other"
                 f"/providers/Microsoft.CloudHealth/healthmodels/hm-alpha",
+                SUBSCRIPTION_ID,
                 "rg-other",
             ),
             (
                 f"/subscriptions/{SUBSCRIPTION_ID}/resourcegroups/rg-lower"
                 f"/providers/Microsoft.CloudHealth/healthmodels/hm-alpha",
+                SUBSCRIPTION_ID,
                 "rg-lower",
             ),
-            (f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups", None),
-            ("", None),
-            (None, None),
+            (
+                f"/SUBSCRIPTIONS/{OTHER_SUBSCRIPTION_ID}/RESOURCEGROUPS/RG-UPPER"
+                f"/providers/Microsoft.CloudHealth/healthmodels/hm-alpha",
+                OTHER_SUBSCRIPTION_ID,
+                "RG-UPPER",
+            ),
+            (f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups", SUBSCRIPTION_ID, None),
+            ("/providers/Microsoft.CloudHealth/healthmodels/hm-alpha", None, None),
+            ("", None, None),
+            (None, None, None),
         ]
 
-        for resource_id, expected in cases:
+        for resource_id, subscription_id, resource_group in cases:
             with self.subTest(resource_id=resource_id):
                 self.assertEqual(
-                    self.inventory.resource_group_from_id(resource_id), expected
+                    self.inventory.subscription_from_id(resource_id), subscription_id
+                )
+                self.assertEqual(
+                    self.inventory.resource_group_from_id(resource_id), resource_group
                 )
 
-    def test_catalog_lists_every_visible_model_in_stable_order(self):
+    def test_catalog_row_becomes_a_ref_or_nothing(self):
+        cases = [
+            (
+                "complete row",
+                graph_row("hm-alpha", "rg-other", "westeurope", "Creating"),
+                {
+                    "id": model_id("hm-alpha", "rg-other"),
+                    "name": "hm-alpha",
+                    "resourceGroup": "rg-other",
+                    "subscriptionId": SUBSCRIPTION_ID,
+                    "location": "westeurope",
+                    "provisioningState": "Creating",
+                },
+            ),
+            (
+                "group casing comes from the id, not from the lowercased column",
+                {
+                    **graph_row("hm-case", "rg-Mixed-Case", "northeurope"),
+                    "resourceGroup": "rg-mixed-case",
+                },
+                {
+                    "id": model_id("hm-case", "rg-Mixed-Case"),
+                    "name": "hm-case",
+                    "resourceGroup": "rg-Mixed-Case",
+                    "subscriptionId": SUBSCRIPTION_ID,
+                    "location": "northeurope",
+                    "provisioningState": "Succeeded",
+                },
+            ),
+            (
+                "empty provisioning state",
+                graph_row("hm-blank", "rg-other", "westeurope", ""),
+                {
+                    "id": model_id("hm-blank", "rg-other"),
+                    "name": "hm-blank",
+                    "resourceGroup": "rg-other",
+                    "subscriptionId": SUBSCRIPTION_ID,
+                    "location": "westeurope",
+                    "provisioningState": None,
+                },
+            ),
+            ("no name", {**graph_row("x", "rg-other", "westeurope"), "name": None}, None),
+            ("no id", {"name": "hm-alpha", "location": "westeurope"}, None),
+            (
+                "id without a resource group",
+                {"id": f"/subscriptions/{SUBSCRIPTION_ID}", "name": "hm-alpha"},
+                None,
+            ),
+            ("not a row", "columns", None),
+        ]
+
+        for label, row, expected in cases:
+            with self.subTest(label=label):
+                self.assertEqual(self.inventory.model_ref(row), expected)
+
+    def test_catalog_lists_every_readable_model_across_subscriptions_in_stable_order(self):
+        self.graph.pages = [
+            (
+                [
+                    graph_row(
+                        MODEL_NAME,
+                        RESOURCE_GROUP,
+                        "swedencentral",
+                        subscription_id=OTHER_SUBSCRIPTION_ID,
+                    ),
+                    *catalog_rows(),
+                ],
+                None,
+            )
+        ]
+
         response = self.client.get("/api/health-models")
 
         self.assertEqual(response.status_code, 200)
@@ -2571,44 +1402,127 @@ class HealthReportUiTests(unittest.TestCase):
         self.assertEqual(set(payload), {"models", "default"})
         self.assertEqual(
             payload["default"],
-            {"resourceGroup": RESOURCE_GROUP, "name": MODEL_NAME},
+            {
+                "name": MODEL_NAME,
+                "resourceGroup": RESOURCE_GROUP,
+                "subscriptionId": SUBSCRIPTION_ID,
+            },
         )
         self.assertEqual(
-            [(item["resourceGroup"], item["name"]) for item in payload["models"]],
             [
-                (RESOURCE_GROUP, MODEL_NAME),
-                ("rg-other", "hm-alpha"),
-                (RESOURCE_GROUP, "hm-zulu"),
+                (item["subscriptionId"], item["resourceGroup"], item["name"])
+                for item in payload["models"]
+            ],
+            [
+                (SUBSCRIPTION_ID, RESOURCE_GROUP, MODEL_NAME),
+                (OTHER_SUBSCRIPTION_ID, RESOURCE_GROUP, MODEL_NAME),
+                (SUBSCRIPTION_ID, "rg-other", "hm-alpha"),
+                (OTHER_SUBSCRIPTION_ID, "rg-remote", "hm-remote"),
+                (SUBSCRIPTION_ID, RESOURCE_GROUP, "hm-zulu"),
             ],
         )
         self.assertEqual(
             set(payload["models"][0]),
-            {"id", "name", "resourceGroup", "location", "provisioningState"},
+            {
+                "id",
+                "name",
+                "resourceGroup",
+                "subscriptionId",
+                "location",
+                "provisioningState",
+            },
         )
         alpha = next(item for item in payload["models"] if item["name"] == "hm-alpha")
+        self.assertEqual(alpha["id"], model_id("hm-alpha", "rg-other"))
         self.assertEqual(alpha["location"], "westeurope")
         self.assertEqual(alpha["provisioningState"], "Creating")
 
-    def test_unreadable_or_empty_catalog_degrades_to_the_configured_model(self):
-        from azure.core.exceptions import HttpResponseError
+    def test_catalog_is_one_resource_graph_query_over_every_visible_subscription(self):
+        response = self.client.get("/api/health-models")
 
-        forbidden = HttpResponseError(message="forbidden")
-        forbidden.status_code = 403
-        unauthorized = HttpResponseError(message="unauthorized")
-        unauthorized.status_code = 401
-        cases = [
-            ("forbidden", forbidden, None),
-            ("unauthorized", unauthorized, None),
-            ("empty", None, []),
+        self.assertEqual(response.status_code, 200)
+        (request,) = self.graph.requests
+        self.assertEqual(request.query, self.healthmodels.MODELS_QUERY)
+        self.assertIn("type =~ 'microsoft.cloudhealth/healthmodels'", request.query)
+        self.assertIsNone(request.subscriptions)
+        self.assertIsNone(request.management_groups)
+        self.assertIsNone(request.options.skip_token)
+        self.assertEqual(self.created, [])
+
+    def test_catalog_follows_resource_graph_paging(self):
+        self.graph.pages = [
+            ([graph_row("hm-zulu", RESOURCE_GROUP, MODEL_LOCATION)], "page-2"),
+            ([graph_row("hm-alpha", "rg-other", "westeurope")], "page-3"),
+            ([graph_row(MODEL_NAME, RESOURCE_GROUP, MODEL_LOCATION)], None),
         ]
 
-        for label, error, catalog in cases:
+        response = self.client.get("/api/health-models")
+
+        self.assertEqual(
+            [item["name"] for item in response.json()["models"]],
+            [MODEL_NAME, "hm-alpha", "hm-zulu"],
+        )
+        self.assertEqual(
+            [request.options.skip_token for request in self.graph.requests],
+            [None, "page-2", "page-3"],
+        )
+
+    def test_the_catalog_is_cached_for_30_seconds(self):
+        clock = Clock()
+        self.module.health = self.healthmodels.HealthModels(self.credentials, clock=clock)
+        self.graph.pages = [(catalog_rows(), None), (catalog_rows(), None)]
+
+        first = self.client.get("/api/health-models")
+        clock.now += 29.9
+        second = self.client.get("/api/health-models")
+        clock.now += 0.1
+        third = self.client.get("/api/health-models")
+
+        self.assertEqual(len(self.graph.requests), 2)
+        self.assertEqual(first.json(), second.json())
+        self.assertEqual(first.json(), third.json())
+
+    def test_model_checks_are_cached_across_requests(self):
+        clock = Clock()
+        self.module.health = self.healthmodels.HealthModels(self.credentials, clock=clock)
+        selector = "?model=hm-alpha&resourceGroup=rg-other"
+        ghost = "?model=hm-ghost&resourceGroup=rg-other"
+
+        for _ in range(3):
+            self.assertEqual(self.client.post(f"/api/entities/api/health-reports{selector}", json=VALID_REPORT).status_code, 202)
+            self.assertEqual(self.client.post(f"/api/entities/api/health-reports{ghost}", json=VALID_REPORT).status_code, 400)
+        asked = len(self.cloud.health_models.calls)
+        clock.now += 60
+        self.client.post(f"/api/entities/api/health-reports{selector}", json=VALID_REPORT)
+
+        self.assertEqual(asked, 2)
+        self.assertEqual(len(self.cloud.health_models.calls), 3)
+
+    def test_unreadable_or_empty_catalog_degrades_to_the_configured_model(self):
+        cases = [
+            ("forbidden", azure_error(403), []),
+            ("unauthorized", azure_error(401), []),
+            ("unexpected failure", RuntimeError("SECRET_AZURE_BODY"), []),
+            ("empty", None, []),
+            (
+                "unusable rows",
+                None,
+                [{"id": "not-an-arm-id", "name": "hm-alpha"}, {"name": "hm-orphan"}],
+            ),
+        ]
+
+        for label, error, rows in cases:
             with self.subTest(label=label):
-                self.cloud.health_models.list_error = error
-                if catalog is not None:
-                    self.cloud.health_models.catalog = catalog
-                response = self.client.get("/api/health-models")
-                self.cloud.health_models.list_error = None
+                self.graph.requests.clear()
+                self.graph.error = error
+                self.graph.pages = [(rows, None)]
+                logs = (
+                    self.assertLogs("ahm-demo", level="WARNING")
+                    if error
+                    else nullcontext()
+                )
+                with logs as captured:
+                    response = self.client.get("/api/health-models")
 
                 self.assertEqual(response.status_code, 200)
                 payload = response.json()
@@ -2619,6 +1533,7 @@ class HealthReportUiTests(unittest.TestCase):
                             "id": None,
                             "name": MODEL_NAME,
                             "resourceGroup": RESOURCE_GROUP,
+                            "subscriptionId": SUBSCRIPTION_ID,
                             "location": None,
                             "provisioningState": None,
                         }
@@ -2626,110 +1541,230 @@ class HealthReportUiTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     payload["default"],
-                    {"resourceGroup": RESOURCE_GROUP, "name": MODEL_NAME},
+                    {
+                        "name": MODEL_NAME,
+                        "resourceGroup": RESOURCE_GROUP,
+                        "subscriptionId": SUBSCRIPTION_ID,
+                    },
                 )
+                if error:
+                    output = "\n".join(captured.output)
+                    self.assertIn(f"error_type={type(error).__name__}", output)
+                    self.assertNotIn("SECRET_AZURE_BODY", output)
+        self.graph.error = None
 
     def test_selected_model_retargets_every_read_and_write(self):
-        selector = "?model=hm-alpha&resourceGroup=rg-other"
-
-        model = self.client.get(f"/api/health-model{selector}")
-        self.assertEqual(model.status_code, 200)
-        self.assertEqual(
-            self.cloud.entities.list_calls[-1][0][:2], ("rg-other", "hm-alpha")
-        )
-        self.assertEqual(
-            self.cloud.relationships.calls[-1][0][:2], ("rg-other", "hm-alpha")
-        )
-
-        detail = self.client.get(f"/api/entities/api{selector}")
-        self.assertEqual(detail.status_code, 200)
-        self.assertEqual(
-            self.cloud.entities.get_calls[-1][0][:2], ("rg-other", "hm-alpha")
-        )
-        self.assertEqual(
-            self.cloud.entities.history_calls[-1][0][:2], ("rg-other", "hm-alpha")
-        )
-
-        report = self.client.post(
-            f"/api/entities/api/health-reports{selector}",
-            json={
-                "signalName": SIGNAL_NAME,
-                "healthState": "Healthy",
-                "value": 1,
-                "expiresInMinutes": 30,
-                "reasonPreset": "recovery",
-            },
-        )
-        self.assertEqual(report.status_code, 202)
-        self.assertEqual(
-            self.cloud.entities.ingest_calls[-1][0][:2], ("rg-other", "hm-alpha")
-        )
-
-    def test_undiscoverable_model_is_rejected_before_any_sdk_call(self):
         cases = [
-            ("unknown name", "?model=hm-ghost&resourceGroup=rg-other"),
-            ("wrong group", f"?model={MODEL_NAME}&resourceGroup=rg-ghost"),
-            ("group only", "?resourceGroup=rg-other"),
-            ("name only", "?model=hm-alpha"),
+            (
+                "configured subscription when none is given",
+                "?model=hm-alpha&resourceGroup=rg-other",
+                self.cloud,
+                ("rg-other", "hm-alpha"),
+            ),
+            (
+                "explicit configured subscription",
+                f"?model=hm-alpha&resourceGroup=rg-other&subscription={SUBSCRIPTION_ID}",
+                self.cloud,
+                ("rg-other", "hm-alpha"),
+            ),
+            (
+                "another subscription",
+                f"?model=hm-remote&resourceGroup=rg-remote&subscription={OTHER_SUBSCRIPTION_ID}",
+                self.remote_cloud,
+                ("rg-remote", "hm-remote"),
+            ),
         ]
 
-        for label, selector in cases:
+        for label, selector, target, (group, name) in cases:
             with self.subTest(label=label):
-                self.cloud.entities.list_calls.clear()
-                self.cloud.entities.ingest_calls.clear()
-                self.cloud.entities.history_calls.clear()
+                for cloud in self.clouds.values():
+                    for calls in cloud.reads_and_writes():
+                        calls.clear()
 
-                response = self.client.get(f"/api/health-model{selector}")
-                self.assertEqual(response.status_code, 400)
-                self.assertEqual(response.json()["error"]["code"], "unknown_model")
+                model = self.client.get(f"/api/health-model{selector}")
+                self.assertEqual(model.status_code, 200)
+                self.assertEqual(target.entities.list_calls[-1][0][:2], (group, name))
+                self.assertEqual(target.relationships.calls[-1][0][:2], (group, name))
+
+                detail = self.client.get(f"/api/entities/api{selector}")
+                self.assertEqual(detail.status_code, 200)
+                self.assertEqual(target.entities.get_calls[-1][0][:2], (group, name))
+                self.assertEqual(target.entities.history_calls[-1][0][:2], (group, name))
 
                 report = self.client.post(
                     f"/api/entities/api/health-reports{selector}",
-                    json={
-                        "signalName": SIGNAL_NAME,
-                        "healthState": "Healthy",
-                        "value": 1,
-                        "expiresInMinutes": 30,
-                        "reasonPreset": "recovery",
-                    },
+                    json=VALID_REPORT,
                 )
-                self.assertEqual(report.status_code, 400)
-                self.assertEqual(report.json()["error"]["code"], "unknown_model")
+                self.assertEqual(report.status_code, 202)
+                self.assertEqual(target.entities.ingest_calls[-1][0][:2], (group, name))
 
-                self.assertEqual(self.cloud.entities.list_calls, [])
-                self.assertEqual(self.cloud.entities.ingest_calls, [])
-                self.assertEqual(self.cloud.entities.history_calls, [])
+                for cloud in self.clouds.values():
+                    if cloud is not target:
+                        self.assertEqual(cloud.reads_and_writes(), [[]] * 6)
+
+    def test_unavailable_model_is_rejected_before_any_read_or_write(self):
+        cases = [
+            ("unknown name", "?model=hm-ghost&resourceGroup=rg-other", True),
+            ("wrong group", f"?model={MODEL_NAME}&resourceGroup=rg-ghost", True),
+            (
+                "model that lives in another subscription",
+                f"?model=hm-remote&resourceGroup=rg-remote&subscription={SUBSCRIPTION_ID}",
+                True,
+            ),
+            (
+                "subscription the app cannot see",
+                f"?model=hm-alpha&resourceGroup=rg-other&subscription={'3' * 8}-3333-3333-3333-{'3' * 12}",
+                True,
+            ),
+            ("group only", "?resourceGroup=rg-other", False),
+            ("name only", "?model=hm-alpha", False),
+            ("subscription only", f"?subscription={OTHER_SUBSCRIPTION_ID}", False),
+            (
+                "name and subscription",
+                f"?model=hm-alpha&subscription={SUBSCRIPTION_ID}",
+                False,
+            ),
+        ]
+
+        for label, selector, looked_up in cases:
+            with self.subTest(label=label):
+                self.created.clear()
+                for cloud in self.clouds.values():
+                    cloud.health_models.calls.clear()
+                    for calls in cloud.reads_and_writes():
+                        calls.clear()
+
+                model = self.client.get(f"/api/health-model{selector}")
+                report = self.client.post(
+                    f"/api/entities/api/health-reports{selector}",
+                    json=VALID_REPORT,
+                )
+
+                for response in (model, report):
+                    self.assertEqual(response.status_code, 400)
+                    self.assertEqual(response.json()["error"]["code"], "unknown_model")
+                for cloud in self.clouds.values():
+                    self.assertEqual(cloud.reads_and_writes(), [[]] * 6)
+                self.assertEqual(self.graph.requests, [])
+                if not looked_up:
+                    self.assertEqual(self.created, [])
+                    for cloud in self.clouds.values():
+                        self.assertEqual(cloud.health_models.calls, [])
+
+    def test_azure_failures_while_resolving_a_model_are_classified_not_hidden(self):
+        cases = [
+            (400, 400, "unknown_model", False),
+            (403, 400, "unknown_model", False),
+            (404, 400, "unknown_model", False),
+            (401, 503, "health_model_access_unavailable", True),
+            (429, 503, "health_model_busy", True),
+            (500, 503, "health_model_unavailable", True),
+        ]
+        selector = "?model=hm-alpha&resourceGroup=rg-other"
+
+        for azure_status, status, code, warns in cases:
+            with self.subTest(azure_status=azure_status):
+                self.module.health = self.healthmodels.HealthModels(self.credentials)
+                self.cloud.health_models.error = azure_error(azure_status)
+                logs = (
+                    self.assertLogs("ahm-demo", level="WARNING")
+                    if warns
+                    else nullcontext()
+                )
+                with logs:
+                    model = self.client.get(f"/api/health-model{selector}")
+                    report = self.client.post(
+                        f"/api/entities/api/health-reports{selector}",
+                        json=VALID_REPORT,
+                    )
+                self.cloud.health_models.error = None
+
+                for response in (model, report):
+                    self.assertEqual(response.status_code, status)
+                    self.assertEqual(response.json()["error"]["code"], code)
+                    self.assertNotIn("SECRET_AZURE_BODY", response.text)
+                self.assertEqual(self.cloud.reads_and_writes(), [[]] * 6)
 
     def test_absent_selector_keeps_the_configured_model(self):
-        response = self.client.get("/api/health-model")
+        for selector in ("", "?model=&resourceGroup=&subscription="):
+            with self.subTest(selector=selector):
+                self.cloud.health_models.calls.clear()
 
-        self.assertEqual(response.status_code, 200)
+                response = self.client.get(f"/api/health-model{selector}")
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    self.cloud.entities.list_calls[-1][0][:2],
+                    (RESOURCE_GROUP, MODEL_NAME),
+                )
+                self.assertEqual(len(self.cloud.health_models.calls), 1)
+                self.assertEqual(self.graph.requests, [])
         self.assertEqual(
-            self.cloud.entities.list_calls[-1][0][:2], (RESOURCE_GROUP, MODEL_NAME)
+            [subscription_id for _, subscription_id, _ in self.created],
+            [SUBSCRIPTION_ID],
         )
-        self.assertEqual(self.cloud.health_models.list_calls, [])
+
+    def test_entity_reads_never_query_resource_graph(self):
+        selectors = [
+            "",
+            "?model=hm-alpha&resourceGroup=rg-other",
+            f"?model=hm-remote&resourceGroup=rg-remote&subscription={OTHER_SUBSCRIPTION_ID}",
+        ]
+
+        for selector in selectors:
+            self.client.get(f"/api/health-model{selector}")
+            self.client.get(f"/api/entities/api{selector}")
+            self.client.post(f"/api/entities/api/health-reports{selector}", json=VALID_REPORT)
+
+        self.assertEqual(self.graph.requests, [])
+
+    def test_one_cloud_health_client_is_created_per_subscription(self):
+        selectors = [
+            "",
+            "?model=hm-alpha&resourceGroup=rg-other",
+            f"?model=hm-remote&resourceGroup=rg-remote&subscription={OTHER_SUBSCRIPTION_ID}",
+        ]
+
+        for selector in selectors * 2:
+            self.client.get(f"/api/health-model{selector}")
+            self.client.get(f"/api/entities/api{selector}")
+
+        api_version = {"api_version": self.config.CLOUDHEALTH_API_VERSION}
+        self.assertEqual(
+            self.created,
+            [
+                (self.credential, SUBSCRIPTION_ID, api_version),
+                (self.credential, OTHER_SUBSCRIPTION_ID, api_version),
+            ],
+        )
 
     def test_detail_allows_only_the_model_selector_query(self):
         cases = [
-            ("history control", "?top=5", 400),
-            ("model only", "?model=hm-alpha", 400),
-            ("group only", "?resourceGroup=rg-other", 400),
-            ("valid selector", "?model=hm-alpha&resourceGroup=rg-other", 200),
+            ("history control", "?top=5", 400, "unsupported_query"),
+            ("model only", "?model=hm-alpha", 400, "unknown_model"),
+            ("group only", "?resourceGroup=rg-other", 400, "unknown_model"),
+            ("subscription only", f"?subscription={OTHER_SUBSCRIPTION_ID}", 400, "unknown_model"),
+            ("valid selector", "?model=hm-alpha&resourceGroup=rg-other", 200, None),
+            (
+                "valid selector with subscription",
+                f"?model=hm-remote&resourceGroup=rg-remote&subscription={OTHER_SUBSCRIPTION_ID}",
+                200,
+                None,
+            ),
             (
                 "selector plus extra",
                 "?model=hm-alpha&resourceGroup=rg-other&top=5",
                 400,
+                "unsupported_query",
             ),
         ]
 
-        for label, selector, expected in cases:
+        for label, selector, expected, code in cases:
             with self.subTest(label=label):
                 response = self.client.get(f"/api/entities/api{selector}")
                 self.assertEqual(response.status_code, expected)
-                if expected == 400 and label in ("history control", "selector plus extra"):
-                    self.assertEqual(
-                        response.json()["error"]["code"], "unsupported_query"
-                    )
+                if code:
+                    self.assertEqual(response.json()["error"]["code"], code)
 
     def test_ac10_success_and_error_payload_contracts_match_baseline(self):
         model = self.client.get("/api/health-model")
@@ -2770,18 +1805,7 @@ class HealthReportUiTests(unittest.TestCase):
             },
         )
 
-        journey = self.client.post("/api/demo-request")
-        self.assertEqual(journey.status_code, 200)
-        self.assertEqual(
-            set(journey.json()),
-            {"request_id", "just_enqueued", "queue_head", "row_count"},
-        )
-
-        from azure.core.exceptions import HttpResponseError
-
-        error = HttpResponseError(message="boom")
-        error.status_code = 500
-        self.cloud.health_models.error = error
+        self.cloud.health_models.error = azure_error(500)
         with self.assertLogs("ahm-demo", level="WARNING"):
             failure = self.client.get("/api/health-model")
         self.cloud.health_models.error = None

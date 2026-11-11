@@ -14,20 +14,10 @@ param modelName string = 'gpt-5.4-mini'
 param modelVersion string = '2026-03-17'
 param modelDeploymentSkuName string = 'GlobalStandard'
 @minValue(1)
-param modelDeploymentCapacity int = 10
+param modelDeploymentCapacity int = 500
 
-@description('Hosts that hosted-agent sessions may call. Everything else is denied.')
-param egressAllowedHosts array = [
-  split(environment().resourceManager, '/')[2]
-  split(environment().authentication.loginEndpoint, '/')[2]
-  'api.loganalytics.io'
-  '*.services.ai.azure.com'
-  '*.openai.azure.com'
-  '*.cognitiveservices.azure.com'
-  '*.in.applicationinsights.azure.com'
-  'github.com'
-  'codeload.github.com'
-]
+@description('Container registry holding the hosted agent image.')
+param registryName string
 
 @description('Resource ID of the workload user-assigned identity.')
 param identityId string
@@ -38,8 +28,48 @@ param identityPrincipalId string
 @description('Object ID of the user running azd. It deploys hosted agent versions.')
 param deployerPrincipalId string
 
+@description('Host name of the web app. The agent fetches its per-Task token there.')
+param webFqdn string
+
+@description('Host name of the MCP server. The agent calls its Azure tools there.')
+param mcpFqdn string
+
 @description('Tags applied to all taggable resources.')
 param tags object
+
+// Hosts that hosted-agent sessions may call; everything else is denied. Exact hosts only: a wildcard would also match
+// other tenants, and Application Insights ingestion with a foreign key needs no authentication. Foundry's required
+// platform connectivity is allowed separately. The agent reaches Azure only through the MCP server, which exchanges
+// the user's token itself, and the web app, which issues that token, so ARM, Entra and Log Analytics are not listed.
+var egressAllowedHosts = [
+  '${accountName}.services.ai.azure.com'
+  '${accountName}.openai.azure.com'
+  '${accountName}.cognitiveservices.azure.com'
+  webFqdn
+  mcpFqdn
+  'github.com'
+  'codeload.github.com'
+]
+
+// The same content filters as Microsoft.DefaultV2, read from a live account. The service rejects a custom policy without
+// an explicit list, and an empty list would pass validation but carry no filters.
+var contentFilters = [
+  { name: 'Hate', source: 'Prompt', severityThreshold: 'Medium', blocking: true, enabled: true }
+  { name: 'Hate', source: 'Completion', severityThreshold: 'Medium', blocking: true, enabled: true }
+  { name: 'Sexual', source: 'Prompt', severityThreshold: 'Medium', blocking: true, enabled: true }
+  { name: 'Sexual', source: 'Completion', severityThreshold: 'Medium', blocking: true, enabled: true }
+  { name: 'Violence', source: 'Prompt', severityThreshold: 'Medium', blocking: true, enabled: true }
+  { name: 'Violence', source: 'Completion', severityThreshold: 'Medium', blocking: true, enabled: true }
+  { name: 'Selfharm', source: 'Prompt', severityThreshold: 'Medium', blocking: true, enabled: true }
+  { name: 'Selfharm', source: 'Completion', severityThreshold: 'Medium', blocking: true, enabled: true }
+  { name: 'Jailbreak', source: 'Prompt', blocking: true, enabled: true }
+  { name: 'Protected Material Text', source: 'Completion', blocking: true, enabled: true }
+  { name: 'Protected Material Code', source: 'Completion', blocking: false, enabled: true }
+]
+
+resource registry 'Microsoft.ContainerRegistry/registries@2025-11-01' existing = {
+  name: registryName
+}
 
 resource account 'Microsoft.CognitiveServices/accounts@2026-03-01' = {
   name: accountName
@@ -103,6 +133,7 @@ resource agentEgressPolicy 'Microsoft.CognitiveServices/accounts/raiPolicies@202
   properties: {
     mode: 'Blocking'
     basePolicyName: 'Microsoft.DefaultV2'
+    contentFilters: contentFilters
     egressPolicy: {
       mode: 'Enforced'
       defaultAction: 'Deny'
@@ -139,6 +170,21 @@ resource projectFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
+// The platform pulls the agent image with the project identity. The registry keeps the legacy permissions mode,
+// where AcrPull is the pull role; Container Registry Repository Reader is its counterpart for ABAC mode.
+resource projectAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: registry
+  name: guid(registry.id, project.id, 'AcrPull')
+  properties: {
+    principalId: project.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+    )
+  }
+}
+
 resource appAgentConsumer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: project
   name: guid(project.id, identityId, 'Foundry Agent Consumer')
@@ -148,20 +194,6 @@ resource appAgentConsumer 'Microsoft.Authorization/roleAssignments@2022-04-01' =
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
       'eed3b665-ab3a-47b6-8f48-c9382fb1dad6'
-    )
-  }
-}
-
-// Kept until the chat copilot in src/agent-app is removed.
-resource appInference 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: account
-  name: guid(account.id, identityId, 'Cognitive Services OpenAI User')
-  properties: {
-    principalId: identityPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId(
-      'Microsoft.Authorization/roleDefinitions',
-      '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
     )
   }
 }
@@ -184,13 +216,13 @@ output accountId string = account.id
 
 output accountName string = account.name
 
+@description('Project the health model binds the hosted agent to.')
+output projectId string = project.id
+
 output projectName string = project.name
 
 @description('Endpoint for agent deployment, sessions and responses.')
 output projectEndpoint string = 'https://${accountName}.services.ai.azure.com/api/projects/${project.name}'
-
-@description('OpenAI-compatible endpoint the chat copilot calls until it is removed.')
-output openAiEndpoint string = account.properties.endpoints['OpenAI Language Model Instance API']
 
 output modelDeploymentName string = modelDeployment.name
 

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { JSX } from "react";
 import { BaseEdge, getBezierPath, getSmoothStepPath, useInternalNode } from "@xyflow/react";
 import type { Edge, EdgeProps, InternalNode, Node, Position } from "@xyflow/react";
@@ -30,7 +31,7 @@ function rectOf(node: InternalNode<Node>): Rect {
   };
 }
 
-export function FloatingEdge(props: EdgeProps<FloatingRfEdge>): JSX.Element | null {
+function FloatingEdgeImpl(props: EdgeProps<FloatingRfEdge>): JSX.Element | null {
   const source = useInternalNode(props.source);
   const target = useInternalNode(props.target);
   const data = props.data;
@@ -62,3 +63,5 @@ export function FloatingEdge(props: EdgeProps<FloatingRfEdge>): JSX.Element | nu
     />
   );
 }
+
+export const FloatingEdge = memo(FloatingEdgeImpl);

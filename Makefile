@@ -2,41 +2,23 @@
 SHELL := /bin/bash
 
 WEB_PORT ?= 8080
-AGENT_WEB_PORT ?= 3000
-AGENT_APP_PORT ?= 8000
 WEB_VENV ?= .venv-health-ui
 WEB_PYTHON ?= $(WEB_VENV)/bin/python
-# Must match the base image in src/web/Dockerfile and src/agent-app/Dockerfile so local runs
-# on the same interpreter as the containers.
+# Must match the base image in src/web/Dockerfile so local runs use the same interpreter as the container.
 PYTHON_VERSION ?= 3.14
-SURVEY_PORT ?= 8081
 
 .PHONY: help env deps ui dev gate
-.PHONY: survey-ui survey-dev
-
-survey-ui:
-	@npm --prefix src/survey/ui run build
-
-survey-dev: survey-ui
-	@set -e; vars="$$(scripts/local-env.sh --survey)"; eval "$$vars"; \
-	$(WEB_PYTHON) -m uvicorn --app-dir src/survey --host 127.0.0.1 \
-	  --port $(SURVEY_PORT) --no-access-log app.main:app
 
 gate:
 	@scripts/local-env.sh > /dev/null
 
 help:
-	@echo "make dev   start web, agent-web and agent-app locally against the selected azd environment"
+	@echo "make dev   start the web app locally against the selected azd environment"
 	@echo "make ui    build the SPA that web serves from src/web/ui/dist"
 	@echo "make env   print the azd environment mapping without starting anything"
 	@echo
 	@echo "Requires a provisioned environment: run 'azd provision' first, then 'azd env select <name>'."
-	@echo "web http://127.0.0.1:$(WEB_PORT), agent surface http://127.0.0.1:$(WEB_PORT)/agent"
-	@echo
-	@echo "Known local limitation: the request-journey route POST /api/demo-request cannot complete."
-	@echo "Its Storage Queue is private-endpoint only (publicNetworkAccess Disabled), so it is"
-	@echo "unreachable from a developer machine. Postgres and Azure OpenAI are reachable."
-	@echo "'make dev' does not exit when a single service dies; check the log of the failing one."
+	@echo "web http://127.0.0.1:$(WEB_PORT)"
 
 env:
 	@scripts/local-env.sh
@@ -54,8 +36,7 @@ deps:
 	  exit 1; \
 	fi; \
 	uv pip install --python $(WEB_PYTHON) --quiet --requirement src/web/requirements.txt; \
-	[ -d src/web/ui/node_modules ] || npm --prefix src/web/ui ci --no-audit --no-fund; \
-	[ -d src/agent-web/node_modules ] || npm --prefix src/agent-web ci --no-audit --no-fund
+	[ -d src/web/ui/node_modules ] || npm --prefix src/web/ui ci --no-audit --no-fund
 
 ui: deps
 	@npm --prefix src/web/ui run build
@@ -64,17 +45,5 @@ dev: gate ui
 	@set -e; \
 	vars="$$(scripts/local-env.sh)"; \
 	eval "$$vars"; \
-	export HEALTH_COPILOT_ENABLED="true"; \
-	export AGENT_WEB_ORIGIN="http://127.0.0.1:$(AGENT_WEB_PORT)"; \
-	export AGENT_URL="http://127.0.0.1:$(AGENT_APP_PORT)/"; \
-	export HEALTH_APP_BASE_URL="http://127.0.0.1:$(WEB_PORT)"; \
-	set -m; \
-	pids=""; \
-	$(WEB_PYTHON) -m uvicorn --app-dir src/web/app \
-	  --host 127.0.0.1 --port $(WEB_PORT) main:app & pids="$$pids $$!"; \
-	uv run --project src/agent-app --python $(PYTHON_VERSION) --frozen python -m uvicorn \
-	  --app-dir src/agent-app/src \
-	  --host 127.0.0.1 --port $(AGENT_APP_PORT) main:app & pids="$$pids $$!"; \
-	npm --prefix src/agent-web run dev & pids="$$pids $$!"; \
-	trap 'for p in $$pids; do kill -- -$$p 2>/dev/null; done' INT TERM; \
-	wait
+	exec $(WEB_PYTHON) -m uvicorn --app-dir src/web/app \
+	  --host 127.0.0.1 --port $(WEB_PORT) main:app

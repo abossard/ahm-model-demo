@@ -1,6 +1,6 @@
 # Azure Health Model demo
 
-A web application, API, and AI agents for viewing and changing Azure health models.
+A web application, API, and AI agent for viewing and changing Azure health models.
 
 ## Language
 
@@ -41,11 +41,11 @@ Running each new or changed signal in a **Health model diff** against real data 
 _Avoid_: Validation, test
 
 **Activity timeline**:
-The recorded steps a **Task**'s agents take (agent, tool call, query, sandbox run, file), shown live and kept with the **Task**.
+The recorded steps the agent takes on a **Task** (tool call, query, sandbox run, file), shown live and kept with the **Task**.
 _Avoid_: Log, trace, transcript
 
 **Apply**:
-Writing an approved **Health model diff** to a live health model in this deployment's resource group.
+Writing an approved **Health model diff** to a live health model, as the signed-in user.
 _Avoid_: Deploy, publish
 
 **Session**:

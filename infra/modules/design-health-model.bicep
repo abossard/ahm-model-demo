@@ -35,4 +35,3 @@ module access 'health-model-access.bicep' = {
 }
 
 output modelName string = model.name
-output modelId string = model.id

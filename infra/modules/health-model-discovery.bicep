@@ -19,7 +19,7 @@ resource appInsightsDiscovery 'Microsoft.CloudHealth/healthmodels/discoveryrules
   properties: {
     displayName: 'Application Insights topology'
     authenticationSetting: authenticationSettingName
-    addRecommendedSignals: 'Enabled'
+    addRecommendedSignals: 'Disabled'
     addResourceHealthSignal: 'Disabled'
     discoverRelationships: 'Enabled'
     specification: {

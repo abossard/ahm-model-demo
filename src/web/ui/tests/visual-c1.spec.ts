@@ -228,7 +228,7 @@ for (const theme of ["light", "dark"] as const) {
     }
     const chrome = await page.evaluate(() => {
       const errors: string[] = [];
-      for (const element of document.querySelectorAll<HTMLElement>(".status-bar, .graph-toolbar, .journey")) {
+      for (const element of document.querySelectorAll<HTMLElement>('[data-testid="status-bar"], [data-testid="graph-toolbar"]')) {
         if (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1) {
           errors.push(`${element.className}: overflow`);
         }

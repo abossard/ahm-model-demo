@@ -1,61 +1,34 @@
-import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
-import type { Draft } from "@reduxjs/toolkit";
-import type {
-  ApiError,
-  AsyncState,
-  HealthReportBody,
-  HealthReportResult,
-} from "../model/types";
-import type { RootState } from "./store";
+import type { StateCreator } from "zustand";
+import type { AsyncState, HealthReportBody, HealthReportResult } from "../model/types";
 import * as api from "./api";
+import { IDLE, LOADING, settle } from "./asyncState";
+import type { Store } from "./store";
+import { REFRESH_COUNTDOWN_SECONDS } from "./uiSlice";
 
-interface ReportState {
-  readonly result: AsyncState<HealthReportResult>;
+export interface ReportState {
+  readonly report: AsyncState<HealthReportResult>;
 }
 
-const initialState: ReportState = {
-  result: { kind: "idle" },
-};
+export interface ReportActions {
+  readonly submitHealthReport: (name: string, body: HealthReportBody) => Promise<void>;
+}
 
-export const submitHealthReport = createAsyncThunk<
-  HealthReportResult,
-  { readonly name: string; readonly body: HealthReportBody },
-  { state: RootState; rejectValue: ApiError }
->("report/submit", async ({ name, body }, { getState, rejectWithValue }) => {
-  try {
-    return await api.postHealthReport(name, body, getState().catalog.selected);
-  } catch (error) {
-    return rejectWithValue(error as ApiError);
-  }
-});
+export const reportSlice: StateCreator<Store, [], [], ReportState & ReportActions> = (
+  set,
+  get,
+) => ({
+  report: IDLE,
 
-const reportSlice = createSlice({
-  name: "report",
-  initialState,
-  reducers: {
-    resetReport: (state) => {
-      state.result = { kind: "idle" };
-    },
-  },
-  extraReducers: (builder) => {
-    builder
-      .addCase(submitHealthReport.pending, (state) => {
-        state.result = { kind: "loading" };
-      })
-      .addCase(submitHealthReport.fulfilled, (state, action) => {
-        state.result = { kind: "success", value: action.payload as Draft<HealthReportResult> };
-      })
-      .addCase(submitHealthReport.rejected, (state, action) => {
-        const error: ApiError = action.payload ?? {
-          code: "unknown",
-          message: action.error.message ?? "The report could not be submitted.",
-          retryable: true,
-          operationId: null,
-        };
-        state.result = { kind: "failure", error };
-      });
+  submitHealthReport: async (name, body) => {
+    set({ report: LOADING });
+    const report = await settle(
+      api.postHealthReport(name, body, get().selected),
+      "The report could not be submitted.",
+    );
+    // An accepted report starts the countdown to the refresh that shows its effect.
+    set({
+      report,
+      ...(report.kind === "success" ? { refreshCountdown: REFRESH_COUNTDOWN_SECONDS } : {}),
+    });
   },
 });
-
-export const { resetReport } = reportSlice.actions;
-export const reportReducer = reportSlice.reducer;

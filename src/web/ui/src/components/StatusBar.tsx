@@ -1,23 +1,35 @@
-import { useEffect, useRef, useState } from "react";
-import type { JSX, KeyboardEvent } from "react";
-import { useAppDispatch, useAppSelector } from "../store/store";
+import { useEffect } from "react";
+import type { JSX } from "react";
 import {
-  selectAutoRefreshMs,
-  selectChatOpen,
-  selectLastObservedAt,
-  selectModel,
-  selectModelCatalog,
-  selectModelRefreshing,
-  selectRefreshCountdown,
-  selectSelectedModel,
-  selectTheme,
-  selectUnavailableSelection,
-} from "../store/selectors";
-import { loadHealthModel } from "../store/modelSlice";
-import { chooseModel, loadModelCatalog } from "../store/catalogSlice";
-import { setAutoRefresh, setTheme, tickRefreshCountdown, toggleChat } from "../store/uiSlice";
-import type { ModelRef } from "../model/types";
-import { filterModels, sortModelsByNameThenGroup } from "../model/modelCatalog";
+  Badge,
+  Button,
+  Field,
+  MessageBar,
+  MessageBarActions,
+  MessageBarBody,
+  MessageBarTitle,
+  Select,
+  Spinner,
+  Text,
+  Tooltip,
+  makeStyles,
+  tokens,
+} from "@fluentui/react-components";
+import {
+  ArrowSync20Regular,
+  HeartPulse24Regular,
+  PanelLeftContract20Regular,
+  PanelLeftExpand20Regular,
+  WeatherMoon20Regular,
+  WeatherSunny20Regular,
+} from "@fluentui/react-icons";
+import { accessMessage } from "../model/errors";
+import { hasRunningTask } from "../model/tasks";
+import { actions, useStore } from "../store/store";
+import { HealthBadge } from "./HealthBadge";
+import { ModelPicker } from "./ModelPicker";
+import { UserMenu } from "./UserMenu";
+import { useInlineField } from "./inlineField";
 
 const AUTO_REFRESH_CHOICES: readonly { readonly ms: number; readonly label: string }[] = [
   { ms: 0, label: "Off" },
@@ -25,343 +37,235 @@ const AUTO_REFRESH_CHOICES: readonly { readonly ms: number; readonly label: stri
   { ms: 300_000, label: "Every 5 min" },
 ];
 
+const useStyles = makeStyles({
+  bar: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "space-between",
+    columnGap: tokens.spacingHorizontalL,
+    rowGap: tokens.spacingVerticalS,
+    padding: `${tokens.spacingVerticalS} ${tokens.spacingHorizontalL}`,
+    backgroundColor: tokens.colorNeutralBackground2,
+    borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  status: {
+    display: "flex",
+    alignItems: "center",
+    columnGap: tokens.spacingHorizontalS,
+    color: tokens.colorBrandForeground1,
+  },
+  title: { display: "flex", alignItems: "center", columnGap: tokens.spacingHorizontalS },
+  name: { color: tokens.colorNeutralForeground1 },
+  caption: {
+    display: "flex",
+    alignItems: "center",
+    columnGap: tokens.spacingHorizontalS,
+    minHeight: tokens.lineHeightBase200,
+    color: tokens.colorNeutralForeground2,
+  },
+  controls: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    columnGap: tokens.spacingHorizontalM,
+    rowGap: tokens.spacingVerticalXS,
+    minWidth: 0,
+    color: tokens.colorNeutralForeground2,
+  },
+  refresh: { display: "flex", alignItems: "center", columnGap: tokens.spacingHorizontalS },
+});
+
+function RefreshIndicator(): JSX.Element | null {
+  const refreshing = useStore((state) => state.refreshing);
+  return refreshing ? (
+    <Spinner
+      size="tiny"
+      label="Refreshing…"
+      labelPosition="after"
+      role="status"
+      data-testid="refresh-indicator"
+    />
+  ) : null;
+}
+
 function RefreshControls(): JSX.Element {
-  const dispatch = useAppDispatch();
-  const refreshing = useAppSelector(selectModelRefreshing);
-  const autoRefreshMs = useAppSelector(selectAutoRefreshMs);
-  const countdown = useAppSelector(selectRefreshCountdown);
+  const styles = useStyles();
+  const inlineField = useInlineField();
+  const autoRefreshMs = useStore((state) => state.autoRefreshMs);
+  const countdown = useStore((state) => state.refreshCountdown);
 
   useEffect(() => {
     if (autoRefreshMs <= 0) return;
-    const timer = setInterval(() => void dispatch(loadHealthModel()), autoRefreshMs);
+    const timer = setInterval(() => void actions.loadHealthModel(), autoRefreshMs);
     return () => clearInterval(timer);
-  }, [dispatch, autoRefreshMs]);
+  }, [autoRefreshMs]);
 
   useEffect(() => {
     if (countdown <= 0) return;
-    const timer = setTimeout(() => {
-      dispatch(tickRefreshCountdown());
-      if (countdown === 1) void dispatch(loadHealthModel());
-    }, 1000);
+    const timer = setTimeout(actions.tickRefreshCountdown, 1000);
     return () => clearTimeout(timer);
-  }, [dispatch, countdown]);
+  }, [countdown]);
 
   return (
-    <>
+    <div className={styles.refresh}>
       {countdown > 0 ? (
-        <span data-testid="refresh-countdown" className="refresh-countdown">
+        <Badge appearance="tint" color="brand" shape="circular" data-testid="refresh-countdown">
           {countdown}
-        </span>
+        </Badge>
       ) : null}
-      {refreshing ? (
-        <span data-testid="refresh-indicator" className="muted" role="status">
-          Refreshing…
-        </span>
-      ) : null}
-      <button
-        type="button"
-        className="refresh-now"
+      <Button
+        size="small"
+        icon={<ArrowSync20Regular />}
         data-testid="refresh-now"
-        onClick={() => void dispatch(loadHealthModel())}
+        onClick={() => void actions.loadHealthModel()}
       >
         Refresh
-      </button>
-      <label className="model-picker">
-        <span className="model-picker__label">Auto-refresh</span>
-        <select
+      </Button>
+      <Field label="Auto-refresh" orientation="horizontal" size="small" className={inlineField.root}>
+        <Select
+          size="small"
           data-testid="auto-refresh"
           value={autoRefreshMs}
-          onChange={(event) => dispatch(setAutoRefresh(Number(event.target.value)))}
+          onChange={(_, data) => actions.setAutoRefresh(Number(data.value))}
         >
           {AUTO_REFRESH_CHOICES.map((choice) => (
             <option key={choice.ms} value={choice.ms}>
               {choice.label}
             </option>
           ))}
-        </select>
-      </label>
-    </>
+        </Select>
+      </Field>
+    </div>
   );
 }
 
-function ModelPicker(): JSX.Element | null {
-  const dispatch = useAppDispatch();
-  const catalog = useAppSelector(selectModelCatalog);
-  const selected = useAppSelector(selectSelectedModel);
-  const unavailableSelection = useAppSelector(selectUnavailableSelection);
-  const [query, setQuery] = useState("");
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(0);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const key = (item: ModelRef): string => `${item.resourceGroup}/${item.name}`;
-  const optionId = (item: ModelRef): string =>
-    `model-option-${key(item).replaceAll("/", "__")}`;
-  const sorted =
-    catalog.kind === "success" ? sortModelsByNameThenGroup(catalog.value.models) : [];
-  const filtered = filterModels(sorted, query);
-  const selectedLabel = selected
-    ? `${selected.name} (${selected.resourceGroup})`
-    : "";
-  const listboxId = "model-picker-listbox";
-  const statusId = "model-picker-status";
-  const activeItem = filtered[active] ?? null;
-  const announcement =
-    filtered.length === 0
-      ? `No models match "${query}". Current selection remains ${selectedLabel}.`
-      : `Current selection ${selectedLabel}. ${filtered.length} result${filtered.length === 1 ? "" : "s"}.`;
-
-  useEffect(() => {
-    setActive(0);
-  }, [query, open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: MouseEvent): void => {
-      const node = rootRef.current;
-      if (!node) return;
-      if (event.target instanceof Node && node.contains(event.target)) return;
-      setOpen(false);
-    };
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
-
-  const pick = (item: ModelRef): void => {
-    dispatch(chooseModel(item));
-    setOpen(false);
-    setQuery("");
-  };
-
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") return;
-    if (event.key === "Tab") {
-      setOpen(false);
-      return;
-    }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      if (query.length > 0) {
-        setQuery("");
-      } else {
-        setOpen(false);
-      }
-      return;
-    }
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      if (!open) setOpen(true);
-      if (filtered.length > 0) {
-        setActive((current) => (current + 1) % filtered.length);
-      }
-      return;
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      if (!open) setOpen(true);
-      if (filtered.length > 0) {
-        setActive((current) => (current - 1 + filtered.length) % filtered.length);
-      }
-      return;
-    }
-    if (event.key === "Enter") {
-      event.preventDefault();
-      if (!open) {
-        setOpen(true);
-        return;
-      }
-      if (activeItem) pick(activeItem);
-    }
-  };
-
-  if (catalog.kind === "failure") {
-    return (
-      <div className="model-picker model-picker--error" role="alert">
-        <span className="model-picker__label">{catalog.error.message}</span>
-        <button
-          type="button"
-          className="refresh-now"
-          data-testid="catalog-retry"
-          onClick={() => void dispatch(loadModelCatalog())}
-        >
-          Retry catalog
-        </button>
-      </div>
-    );
-  }
-
-  if (catalog.kind !== "success" || !selected) return null;
-
+function WorkspaceToggle(): JSX.Element {
+  const open = useStore((state) => state.workspaceOpen);
+  const running = useStore(
+    (state) => state.sessionDetail.kind === "success" && hasRunningTask(state.sessionDetail.value.tasks),
+  );
   return (
-    <div className="model-picker model-picker--combobox" ref={rootRef}>
-      <span className="model-picker__label">Health model</span>
-      <input
-        ref={inputRef}
-        type="search"
-        className="model-picker__search"
-        data-testid="model-picker-search"
-        placeholder="Search model or group"
-        value={query}
-        role="combobox"
-        aria-label="Search health models"
-        aria-expanded={open}
-        aria-controls={listboxId}
-        aria-autocomplete="list"
-        aria-describedby={statusId}
-        {...(open && activeItem ? { "aria-activedescendant": optionId(activeItem) } : {})}
-        onFocus={() => setOpen(true)}
-        onClick={() => setOpen(true)}
-        onChange={(event) => {
-          setQuery(event.target.value);
-          setOpen(true);
-        }}
-        onKeyDown={onKeyDown}
-      />
-      <span className="model-picker__selected" data-testid="model-picker-selected">
-        Selected: {selectedLabel}
-      </span>
-      {unavailableSelection ? (
-        <span
-          className="model-picker__warning"
-          role="status"
-          data-testid="model-picker-unavailable-selection"
-        >
-          Requested {unavailableSelection.name} ({unavailableSelection.resourceGroup}) is unavailable. Selected: {selectedLabel}.
-        </span>
+    <Button
+      size="small"
+      appearance={open ? "primary" : "secondary"}
+      icon={open ? <PanelLeftContract20Regular /> : <PanelLeftExpand20Regular />}
+      aria-expanded={open}
+      aria-controls="session-workspace"
+      aria-label={running ? "Sessions, a Task is running" : "Sessions"}
+      onClick={() => actions.toggleWorkspace()}
+      data-testid="workspace-toggle"
+    >
+      Sessions
+      {running ? (
+        <Badge size="extra-small" color="brand" appearance="filled" aria-hidden="true" data-testid="workspace-running" />
       ) : null}
-      <input type="hidden" data-testid="model-picker" value={key(selected)} readOnly />
-      {open ? (
-        <div
-          className="model-picker__list"
-          role="listbox"
-          id={listboxId}
-          aria-label="Health models"
-        >
-          {filtered.map((item, index) => (
-            <button
-              type="button"
-              key={key(item)}
-              id={optionId(item)}
-              role="option"
-              aria-selected={key(item) === key(selected)}
-              data-testid={`model-picker-option-${key(item)}`}
-              className={`model-picker__option${index === active ? " is-active" : ""}`}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => pick(item)}
-            >
-              {item.name} ({item.resourceGroup})
-            </button>
-          ))}
-        </div>
-      ) : null}
-      {filtered.length === 0 ? (
-        <span className="model-picker__empty" data-testid="model-picker-empty" role="status">
-          No models match this search.
-        </span>
-      ) : null}
-      <span className="sr-only" role="status" id={statusId} data-testid="model-picker-status">
-        {announcement}
-      </span>
-    </div>
+    </Button>
   );
 }
 
 function ThemeControl(): JSX.Element {
-  const dispatch = useAppDispatch();
-  const theme = useAppSelector(selectTheme);
+  const theme = useStore((state) => state.theme);
   const next = theme === "dark" ? "light" : "dark";
+  const label = theme === "dark" ? "Light theme" : "Dark theme";
 
   return (
-    <button
-      type="button"
-      className="refresh-now"
-      data-testid="theme-toggle"
-      onClick={() => dispatch(setTheme(next))}
-    >
-      {theme === "dark" ? "Light theme" : "Dark theme"}
-    </button>
+    <Tooltip content={label} relationship="label">
+      <Button
+        size="small"
+        appearance="subtle"
+        data-testid="theme-toggle"
+        icon={theme === "dark" ? <WeatherSunny20Regular /> : <WeatherMoon20Regular />}
+        onClick={() => actions.setTheme(next)}
+      />
+    </Tooltip>
   );
 }
 
 export function StatusBar(): JSX.Element {
-  const dispatch = useAppDispatch();
-  const model = useAppSelector(selectModel);
-  const lastObservedAt = useAppSelector(selectLastObservedAt);
-  const chatOpen = useAppSelector(selectChatOpen);
-
-  if (model.kind === "failure") {
-    return (
-      <div className="status-bar status-bar--error" role="alert" data-testid="status-error">
-        <div className="status-main">
-          <strong>Health model unavailable</strong>
-          <span data-testid="status-error-message">{model.error.message}</span>
-        </div>
-        <div className="status-meta">
-          <ModelPicker />
-          <span data-testid="status-last-observed">
-            {lastObservedAt
-              ? `Last successful observation ${lastObservedAt}`
-              : "No successful observation yet"}
-          </span>
-          <button
-            type="button"
-            className="primary"
-            data-testid="status-retry"
-            onClick={() => void dispatch(loadHealthModel())}
-          >
-            Retry
-          </button>
-          <ThemeControl />
-          <span className="assistant-scope" data-testid="assistant-scope">
-            Assistant scope: configured application model
-          </span>
-          <button
-            type="button"
-            className="refresh-now"
-            onClick={() => dispatch(toggleChat())}
-            data-testid="chat-toggle"
-          >
-            {chatOpen ? "Close copilot" : "Open copilot"}
-          </button>
-          <RefreshControls />
-        </div>
-      </div>
-    );
-  }
+  const styles = useStyles();
+  const model = useStore((state) => state.model);
+  const catalog = useStore((state) => state.catalog);
+  const lastObservedAt = useStore((state) => state.lastObservedAt);
+  const refreshError = useStore((state) => state.refreshError);
+  const modelError = model.kind === "failure" ? model.error : refreshError;
 
   return (
-    <div className="status-bar" data-testid="status-bar">
-      <div className="status-main">
-        <strong data-testid="model-name">
-          {model.kind === "success" ? model.value.model.name : "Health Pulse"}
-        </strong>
-        {model.kind === "success" ? (
-          <span className="state-pill" data-state={model.value.model.healthState}>
-            {model.value.model.healthState}
-          </span>
-        ) : null}
-      </div>
-      <div className="status-meta">
-        <ModelPicker />
-        {model.kind === "loading" ? <span className="muted">Loading…</span> : null}
-        {model.kind === "success" ? (
-          <span data-testid="model-observed">Observed {model.value.observedAt}</span>
-        ) : null}
-        <ThemeControl />
-        <span className="assistant-scope" data-testid="assistant-scope">
-          Assistant scope: configured application model
-        </span>
-        <button
-          type="button"
-          className="refresh-now"
-          onClick={() => dispatch(toggleChat())}
-          data-testid="chat-toggle"
-        >
-          {chatOpen ? "Close copilot" : "Open copilot"}
-        </button>
-        <RefreshControls />
-      </div>
-    </div>
+    <>
+      <header className={styles.bar} data-testid="status-bar">
+        <div className={styles.status}>
+          <WorkspaceToggle />
+          <HeartPulse24Regular aria-hidden="true" />
+          <div>
+            <div className={styles.title}>
+              <Text as="strong" size={500} weight="bold" className={styles.name} data-testid="model-name">
+                {model.kind === "success" ? model.value.model.name : "Health Pulse"}
+              </Text>
+              {model.kind === "success" ? <HealthBadge state={model.value.model.healthState} /> : null}
+            </div>
+            <div className={styles.caption}>
+              {model.kind === "loading" ? (
+                <Spinner size="tiny" label="Loading…" labelPosition="after" />
+              ) : null}
+              {model.kind === "success" ? (
+                <Text size={200} data-testid="model-observed">
+                  Observed {model.value.observedAt}
+                </Text>
+              ) : null}
+              <RefreshIndicator />
+            </div>
+          </div>
+        </div>
+        <div className={styles.controls}>
+          <ModelPicker />
+          <RefreshControls />
+          <ThemeControl />
+          <UserMenu />
+        </div>
+      </header>
+      {modelError !== null ? (
+        <MessageBar intent="error" role="alert" data-testid="status-error">
+          <MessageBarBody>
+            <MessageBarTitle>{model.kind === "success" ? "Health model not refreshed" : "Health model unavailable"}</MessageBarTitle>
+            <span data-testid="status-error-message">{accessMessage(modelError, "browse")}</span>{" "}
+            <span data-testid="status-last-observed">
+              {lastObservedAt
+                ? `Last successful observation ${lastObservedAt}`
+                : "No successful observation yet"}
+            </span>
+          </MessageBarBody>
+          <MessageBarActions>
+            {modelError.code === "unauthenticated" ? (
+              <Button size="small" data-testid="status-sign-in" onClick={() => void actions.signIn()}>
+                Sign in again
+              </Button>
+            ) : (
+              <Button size="small" data-testid="status-retry" onClick={() => void actions.loadHealthModel()}>
+                Retry
+              </Button>
+            )}
+          </MessageBarActions>
+        </MessageBar>
+      ) : null}
+      {catalog.kind === "failure" ? (
+        <MessageBar intent="error" role="alert" data-testid="catalog-error">
+          <MessageBarBody>
+            <MessageBarTitle>Health models unavailable</MessageBarTitle>
+            {accessMessage(catalog.error, "browse")}
+          </MessageBarBody>
+          <MessageBarActions>
+            {catalog.error.code === "unauthenticated" ? (
+              <Button size="small" data-testid="catalog-sign-in" onClick={() => void actions.signIn()}>
+                Sign in again
+              </Button>
+            ) : (
+              <Button size="small" data-testid="catalog-retry" onClick={() => void actions.loadModelCatalog()}>
+                Retry catalog
+              </Button>
+            )}
+          </MessageBarActions>
+        </MessageBar>
+      ) : null}
+    </>
   );
 }

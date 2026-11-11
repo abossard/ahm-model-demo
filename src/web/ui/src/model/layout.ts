@@ -1,5 +1,6 @@
 import dagre from "@dagrejs/dagre";
 import type { Entity, Relationship } from "./types";
+import { arrange, type ArrangeDirection } from "./arrange";
 import { elkLayout } from "./layoutElk";
 import { createForceLayoutSession, forceLayout } from "./layoutForce";
 import type { LayoutFlow } from "./edgeRouting";
@@ -167,10 +168,15 @@ export interface LayoutEngine {
   readonly label: string;
   readonly rankAxis: RankAxis;
   readonly flow: LayoutFlow;
+  /**
+   * `shortest` asks the hierarchy layouts for the arrangement with short connections; the other
+   * layouts have their own idea of order and ignore it.
+   */
   readonly run: (
     entities: readonly Entity[],
     relationships: readonly Relationship[],
     sizeOf: SizeOf,
+    shortest?: boolean,
   ) => Promise<GraphLayout>;
   readonly startLive?: (callbacks: {
     readonly onFrame: (layout: GraphLayout) => void;
@@ -253,22 +259,37 @@ function dagreLayout(
   return { positions, ...boundsOf(positions, sizes) };
 }
 
+function arrangedLayout(
+  entities: readonly Entity[],
+  relationships: readonly Relationship[],
+  sizeOf: SizeOf,
+  direction: ArrangeDirection,
+): GraphLayout {
+  const nodes = entities.map((entity) => ({ name: entity.name, ...sizeOf(entity) }));
+  const { positions, width, height } = arrange(nodes, relationships, direction);
+  return { positions, width, height };
+}
+
 function dagreEngine(id: LayoutId, label: string, rankdir: RankDir): LayoutEngine {
   return {
     id,
     label,
     rankAxis: rankdir === "TB" || rankdir === "BT" ? "x" : "y",
     flow: rankdir.toLowerCase() as LayoutFlow,
-    run: (entities, relationships, sizeOf) =>
-      Promise.resolve(dagreLayout(entities, relationships, sizeOf, rankdir)),
+    run: (entities, relationships, sizeOf, shortest = false) =>
+      Promise.resolve(
+        shortest
+          ? arrangedLayout(entities, relationships, sizeOf, rankdir.toLowerCase() as ArrangeDirection)
+          : dagreLayout(entities, relationships, sizeOf, rankdir),
+      ),
   };
 }
 
 export const LAYOUT_CHOICES: readonly LayoutEngine[] = [
-  dagreEngine("dagre-tb", "Hierarchy — top down", "TB"),
-  dagreEngine("dagre-bt", "Hierarchy — bottom up", "BT"),
-  dagreEngine("dagre-lr", "Hierarchy — left to right", "LR"),
-  dagreEngine("dagre-rl", "Hierarchy — right to left", "RL"),
+  dagreEngine("dagre-tb", "Hierarchy: top down", "TB"),
+  dagreEngine("dagre-bt", "Hierarchy: bottom up", "BT"),
+  dagreEngine("dagre-lr", "Hierarchy: left to right", "LR"),
+  dagreEngine("dagre-rl", "Hierarchy: right to left", "RL"),
   {
     id: "elk-layered",
     label: "ELK layered",

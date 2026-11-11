@@ -1,13 +1,13 @@
-import { memo, useCallback } from "react";
+import { memo } from "react";
 import type { JSX, KeyboardEvent } from "react";
 import { Handle, Position, useStore } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
-import type { Entity, HealthState, SignalValue } from "../model/types";
+import type { Entity, HealthState } from "../model/types";
+import type { ChangeBadge } from "../model/changes";
 import { cardTokens, tokensFor } from "../model/palette";
 import { HEALTH_SORT_ORDER } from "../model/ordering";
-import { useAppDispatch } from "../store/store";
-import { selectEntity } from "../store/entitySlice";
-import { announce, openPanel, toggleCollapse } from "../store/uiSlice";
+import { formatSignalValue } from "../model/signalValue";
+import { actions } from "../store/store";
 
 export const CARD_WIDTH = 260;
 export const DOT_SIZE = 12;
@@ -83,10 +83,6 @@ function MetricGlyph(): JSX.Element {
   );
 }
 
-function formatValue(value: SignalValue): string {
-  return value === null ? "" : String(value);
-}
-
 export interface EntityNodeData extends Record<string, unknown> {
   readonly entity: Entity;
   readonly displayRole: "card" | "dot";
@@ -96,6 +92,12 @@ export interface EntityNodeData extends Record<string, unknown> {
   readonly collapsed: boolean;
   readonly hiddenCount: number;
   readonly hiddenStates: ReadonlyMap<HealthState, number>;
+  /** What a compared Health model diff does to this entity. */
+  readonly badge: ChangeBadge | null;
+  /** The entity has a change the user ticked. */
+  readonly marked: boolean;
+  /** The entity is part of the open Explain result's cause chain. */
+  readonly inChain: boolean;
 }
 
 const CHEVRON = `<path d="M4 6.5 8 10.5 12 6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`;
@@ -109,7 +111,6 @@ function CollapseToggle({
   readonly collapsed: boolean;
   readonly hiddenCount: number;
 }): JSX.Element {
-  const dispatch = useAppDispatch();
   const name = entity.displayName || entity.name;
   const label = collapsed ? `Expand ${name}, ${hiddenCount} hidden` : `Collapse ${name}`;
   // The card lives inside the React Flow viewport transform, so the authored 26px box renders at
@@ -126,9 +127,9 @@ function CollapseToggle({
       : 1;
 
   const toggle = (): void => {
-    dispatch(toggleCollapse(entity.name));
-    dispatch(
-      announce(collapsed ? `${name} expanded.` : `${name} collapsed, ${hiddenCount} nodes hidden.`),
+    actions.toggleCollapse(entity.name);
+    actions.announce(
+      collapsed ? `${name} expanded.` : `${name} collapsed, ${hiddenCount} nodes hidden.`,
     );
   };
 
@@ -201,43 +202,40 @@ function HiddenSummary({
 export type EntityRfNode = Node<EntityNodeData, "entity">;
 
 function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
-  const { entity, displayRole, selected, highlighted, hasChildren, collapsed, hiddenCount, hiddenStates } = data;
+  const { entity, displayRole, selected, highlighted, hasChildren, collapsed, hiddenCount, hiddenStates, badge, marked, inChain } = data;
   const token = tokensFor(entity.healthState);
-  const dispatch = useAppDispatch();
   const name = entity.displayName || entity.name;
 
-  const activate = useCallback(() => {
-    dispatch(selectEntity(entity.name));
-    dispatch(openPanel());
-  }, [dispatch, entity.name]);
+  const activate = (): void => {
+    actions.activateEntity(entity.name);
+  };
 
-  const onKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLDivElement>) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        activate();
-      }
-    },
-    [activate],
-  );
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      activate();
+    }
+  };
 
   return (
     <div className="entity-node-shell" style={{ width: displayRole === "dot" ? DOT_SIZE : CARD_WIDTH }}>
       <Handle type="target" position={Position.Top} className="entity-node__handle" />
       <div
-        className={`entity-node${displayRole === "dot" ? " entity-node--dot" : ""}${selected ? " is-selected" : ""}${highlighted ? " is-highlighted" : ""}`}
+        className={`entity-node${displayRole === "dot" ? " entity-node--dot" : ""}${selected ? " is-selected" : ""}${highlighted ? " is-highlighted" : ""}${inChain ? " is-chain" : ""}${marked ? " is-marked" : ""}`}
         data-entity={entity.name}
         data-role={displayRole}
         data-highlighted={highlighted ? "true" : undefined}
+        data-badge={badge ?? undefined}
+        data-chain={inChain ? "true" : undefined}
+        data-marked={marked ? "true" : undefined}
         role="button"
         tabIndex={0}
-        aria-label={`${name} — ${entity.healthState}${displayRole === "dot" ? ", filtered" : ""}`}
+        aria-label={`${name} (${entity.healthState}${displayRole === "dot" ? ", filtered" : ""})${badge ? `, ${badge} in this Health model diff` : ""}`}
         style={{
           width: displayRole === "dot" ? DOT_SIZE : CARD_WIDTH,
           height: displayRole === "dot" ? DOT_SIZE : undefined,
           borderStyle: displayRole === "dot" ? "solid" : token.dashed ? "dashed" : "solid",
           borderColor: displayRole === "dot" ? "var(--unknown-border)" : token.border,
-          borderRadius: displayRole === "dot" ? "999px" : undefined,
           backgroundColor: displayRole === "dot" ? "var(--unknown-dot)" : token.fill,
         }}
         onClick={activate}
@@ -247,6 +245,11 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
         <span className="entity-node__dot-only" aria-hidden="true" />
       ) : (
         <>
+          {badge ? (
+            <span className="entity-node__badge" data-testid="change-badge" data-badge={badge}>
+              {badge}
+            </span>
+          ) : null}
           <div className="entity-node__header">
             <span
               className="entity-node__icon"
@@ -271,7 +274,7 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
               <ul className="entity-node__rows">
                 {entity.signals.map((signal) => {
                   const healthy = signal.healthState === "Healthy";
-                  const value = formatValue(signal.value);
+                  const value = formatSignalValue(signal.value);
                   return (
                     <li className="entity-node__row" key={signal.name}>
                       <StateDot state={signal.healthState} />
@@ -281,6 +284,7 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
                       </span>
                       <span
                         className="entity-node__row-value"
+                        title={signal.value === null ? undefined : String(signal.value)}
                         style={{
                           fontWeight: healthy ? 400 : 600,
                           color: healthy ? cardTokens.muted : tokensFor(signal.healthState).label,

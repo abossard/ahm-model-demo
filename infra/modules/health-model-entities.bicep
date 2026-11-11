@@ -12,8 +12,9 @@ param rootActionGroupId string
 @description('Resource IDs the health model reads signals from, sourced from the access module so the read grants exist first.')
 param monitoredResources object
 
-// Must match availability-tests.bicep's availabilityTestName; tests/test_app.py asserts they agree.
+// Must match availability-tests.bicep's availabilityTestName; tests/test_infra.py asserts they agree.
 param availabilityTestName string = 'Health Pulse home page'
+param mcpAvailabilityTestName string = 'Azure MCP health'
 
 resource model 'Microsoft.CloudHealth/healthmodels@2026-05-01-preview' existing = {
   name: modelName
@@ -23,7 +24,7 @@ resource root 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' =
   parent: model
   name: modelName
   properties: {
-    displayName: 'Movie Request Experience'
+    displayName: 'Health Pulse'
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
@@ -33,7 +34,7 @@ resource root 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' =
     alerts: {
       unhealthy: {
         severity: 'Sev2'
-        description: 'The movie request journey is unhealthy.'
+        description: 'Health Pulse is unhealthy.'
         actionGroupIds: [
           rootActionGroupId
         ]
@@ -49,17 +50,16 @@ resource root 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' =
 }
 
 // Layer 1 - user flows. The paths a user takes through the app. No signals of their own; they
-// aggregate the system flows they depend on. Entity name kept as 'request-journey' because
-// scripts/demo-failure.sh polls it by name.
-resource requestJourney 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+// aggregate the system flows they depend on.
+resource viewHealthModel 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
-  name: 'request-journey'
+  name: 'flow-view-health-model'
   properties: {
-    displayName: 'Do A Queue Thingy'
+    displayName: 'View Health Model'
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 320
+      x: 80
       y: 190
     }
     signalGroups: {
@@ -79,7 +79,7 @@ resource sendHealthReports 'Microsoft.CloudHealth/healthmodels/entities@2026-05-
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 80
+      x: 320
       y: 190
     }
     signalGroups: {
@@ -91,15 +91,15 @@ resource sendHealthReports 'Microsoft.CloudHealth/healthmodels/entities@2026-05-
   }
 }
 
-resource viewHealthModel 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+resource runAgentTasks 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
-  name: 'flow-view-health-model'
+  name: 'flow-run-agent-tasks'
   properties: {
-    displayName: 'View Health Model'
+    displayName: 'Run agent tasks'
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 560
+      x: 740
       y: 190
     }
     signalGroups: {
@@ -111,29 +111,9 @@ resource viewHealthModel 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01
   }
 }
 
-resource askCopilot 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
-  parent: model
-  name: 'flow-ask-copilot'
-  properties: {
-    displayName: 'Ask the Health Copilot'
-    healthObjective: 99
-    impact: 'Standard'
-    canvasPosition: {
-      x: 800
-      y: 190
-    }
-    signalGroups: {
-      dependencies: {
-        aggregationType: 'WorstOf'
-        ignoreUnknown: true
-      }
-    }
-  }
-}
-
-// Layer 2 - system flows. Internal processes that enable the user flows. Each is a single entity
-// with as many parents as it has user flows; the CloudHealth graph is a DAG, so a shared system
-// flow is never duplicated per flow.
+// Layer 2 - system components. Internal parts that enable the user flows. Each is a single entity
+// with as many parents as it has user flows; the CloudHealth graph is a DAG, so a shared component
+// is never duplicated per flow.
 resource systemAppHosting 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
   name: 'system-app-hosting'
@@ -154,46 +134,6 @@ resource systemAppHosting 'Microsoft.CloudHealth/healthmodels/entities@2026-05-0
   }
 }
 
-resource systemDatabase 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
-  parent: model
-  name: 'system-database'
-  properties: {
-    displayName: 'Database'
-    healthObjective: 99
-    impact: 'Standard'
-    canvasPosition: {
-      x: 440
-      y: 340
-    }
-    signalGroups: {
-      dependencies: {
-        aggregationType: 'WorstOf'
-        ignoreUnknown: true
-      }
-    }
-  }
-}
-
-resource systemQueueing 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
-  parent: model
-  name: 'system-queueing'
-  properties: {
-    displayName: 'Queueing'
-    healthObjective: 99
-    impact: 'Standard'
-    canvasPosition: {
-      x: 640
-      y: 340
-    }
-    signalGroups: {
-      dependencies: {
-        aggregationType: 'WorstOf'
-        ignoreUnknown: true
-      }
-    }
-  }
-}
-
 resource systemAgentRuntime 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
   name: 'system-agent-runtime'
@@ -202,7 +142,7 @@ resource systemAgentRuntime 'Microsoft.CloudHealth/healthmodels/entities@2026-05
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 840
+      x: 530
       y: 340
     }
     signalGroups: {
@@ -222,7 +162,27 @@ resource systemAiInference 'Microsoft.CloudHealth/healthmodels/entities@2026-05-
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 1060
+      x: 860
+      y: 340
+    }
+    signalGroups: {
+      dependencies: {
+        aggregationType: 'WorstOf'
+        ignoreUnknown: true
+      }
+    }
+  }
+}
+
+resource systemSessionStore 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'system-session-store'
+  properties: {
+    displayName: 'Session Store'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 1080
       y: 340
     }
     signalGroups: {
@@ -240,11 +200,11 @@ resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
   parent: model
   name: 'container-app'
   properties: {
-    displayName: 'Python Container App'
+    displayName: 'Web Container App'
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 80
+      x: 200
       y: 490
     }
     signalGroups: {
@@ -257,7 +217,7 @@ resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
         azureResourceId: monitoredResources.containerApp
         azureResourceKind: 'ContainerApp'
         resourceHealth: {
-          enabled: 'Enabled'
+          enabled: 'Disabled'
         }
         signals: [
           {
@@ -268,8 +228,8 @@ resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
             metricName: 'CpuPercentage'
             aggregationType: 'Average'
             dataUnit: 'Percent'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
+            timeGrain: 'PT5M'
+            refreshInterval: 'PT5M'
             evaluationRules: {
               unhealthyRule: {
                 operator: 'GreaterThan'
@@ -285,8 +245,8 @@ resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
             metricName: 'MemoryPercentage'
             aggregationType: 'Average'
             dataUnit: 'Percent'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
+            timeGrain: 'PT5M'
+            refreshInterval: 'PT5M'
             evaluationRules: {
               unhealthyRule: {
                 operator: 'GreaterThan'
@@ -302,8 +262,8 @@ resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
             metricName: 'ResponseTime'
             aggregationType: 'Average'
             dataUnit: 'MilliSeconds'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
+            timeGrain: 'PT5M'
+            refreshInterval: 'PT5M'
             evaluationRules: {
               unhealthyRule: {
                 operator: 'GreaterThan'
@@ -319,9 +279,11 @@ resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
         signals: [
           {
             name: 'failed-requests'
-            displayName: 'Failed application requests'
+            displayName: 'Failed application requests (HTTP 5xx)'
             signalKind: 'LogAnalyticsQuery'
-            queryText: 'AppRequests | where TimeGenerated > ago(5m) | where AppRoleName != "ahm-survey" | summarize Value = countif(Success == false)'
+            // Auto-instrumentation marks every 4xx as unsuccessful, so scanner 404s and 405s would count. Only 5xx
+            // (including unhandled exceptions, which answer 500) say the server failed.
+            queryText: 'AppRequests | where TimeGenerated > ago(5m) | summarize Value = countif(toint(ResultCode) >= 500)'
             valueColumnName: 'Value'
             dataUnit: 'Count'
             timeGrain: 'PT5M'
@@ -334,42 +296,10 @@ resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
             }
           }
           {
-            name: 'failed-postgres-dependencies'
-            displayName: 'Failed PostgreSQL dependencies'
-            signalKind: 'LogAnalyticsQuery'
-            queryText: 'AppDependencies | where TimeGenerated > ago(5m) | where AppRoleName != "ahm-survey" | where Target has "postgres" or Name has "PostgreSQL" | summarize Value = countif(Success == false)'
-            valueColumnName: 'Value'
-            dataUnit: 'Count'
-            timeGrain: 'PT5M'
-            refreshInterval: 'PT5M'
-            evaluationRules: {
-              unhealthyRule: {
-                operator: 'GreaterThan'
-                threshold: 0
-              }
-            }
-          }
-          {
-            name: 'failed-queue-dependencies'
-            displayName: 'Failed Queue dependencies'
-            signalKind: 'LogAnalyticsQuery'
-            queryText: 'AppDependencies | where TimeGenerated > ago(5m) | where AppRoleName != "ahm-survey" | where Target has "queue.${environment().suffixes.storage}" or Name has "Queue" | summarize Value = countif(Success == false)'
-            valueColumnName: 'Value'
-            dataUnit: 'Count'
-            timeGrain: 'PT5M'
-            refreshInterval: 'PT5M'
-            evaluationRules: {
-              unhealthyRule: {
-                operator: 'GreaterThan'
-                threshold: 0
-              }
-            }
-          }
-          {
             name: 'exceptions'
             displayName: 'Application exceptions'
             signalKind: 'LogAnalyticsQuery'
-            queryText: 'AppExceptions | where TimeGenerated > ago(5m) | where AppRoleName != "ahm-survey" | summarize Value = count()'
+            queryText: 'AppExceptions | where TimeGenerated > ago(5m) | summarize Value = count()'
             valueColumnName: 'Value'
             dataUnit: 'Count'
             timeGrain: 'PT5M'
@@ -391,7 +321,7 @@ resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
             queryText: 'AppAvailabilityResults | where TimeGenerated > ago(15m) | where Name == "${availabilityTestName}" | summarize Value = round(100.0 * countif(Success) / count(), 2) | where not(isnan(Value))'
             valueColumnName: 'Value'
             dataUnit: 'Percent'
-            timeGrain: 'PT5M'
+            timeGrain: 'PT15M'
             refreshInterval: 'PT5M'
             evaluationRules: {
               degradedRule: {
@@ -410,125 +340,70 @@ resource containerApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
   }
 }
 
-resource postgres 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+// Bound to the project, which Resource Health does not cover. The signals read the web app's own
+// foundry.agent.* spans; the web app is the only caller of the hosted agent. An idle window leaves the
+// failure count at 0 (Healthy) and drops the latency row, so latency reads Unknown instead of a healthy zero.
+resource hostedAgent 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
-  name: 'postgres'
+  name: 'hosted-agent'
   properties: {
-    displayName: 'PostgreSQL Flexible Server'
+    displayName: 'Foundry Hosted Agent'
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 460
+      x: 420
       y: 490
     }
     signalGroups: {
       azureResource: {
         authenticationSetting: authenticationSettingName
-        azureResourceId: monitoredResources.postgres
-        azureResourceKind: 'PostgreSQLFlexibleServer'
+        azureResourceId: monitoredResources.foundryProject
+        azureResourceKind: 'CognitiveServicesAccount'
         resourceHealth: {
-          enabled: 'Enabled'
+          enabled: 'Disabled'
         }
+      }
+      azureLogAnalytics: {
+        authenticationSetting: authenticationSettingName
+        logAnalyticsWorkspaceResourceId: monitoredResources.logAnalyticsWorkspace
         signals: [
           {
-            name: 'database-alive'
-            displayName: 'Database alive'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.DBforPostgreSQL/flexibleServers'
-            metricName: 'is_db_alive'
-            aggregationType: 'Average'
+            name: 'agent-task-failures'
+            displayName: 'Failed agent tasks'
+            signalKind: 'LogAnalyticsQuery'
+            queryText: 'AppDependencies | where TimeGenerated > ago(15m) | where Name startswith "foundry.agent." | summarize Value = countif(Success == false)'
+            valueColumnName: 'Value'
             dataUnit: 'Count'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
+            timeGrain: 'PT15M'
+            refreshInterval: 'PT5M'
             evaluationRules: {
-              unhealthyRule: {
-                operator: 'LessThan'
-                threshold: 1
-              }
-            }
-          }
-          {
-            name: 'failed-connections'
-            displayName: 'Failed connections'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.DBforPostgreSQL/flexibleServers'
-            metricName: 'connections_failed'
-            aggregationType: 'Total'
-            dataUnit: 'Count'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
-            evaluationRules: {
-              unhealthyRule: {
+              degradedRule: {
                 operator: 'GreaterThan'
                 threshold: 0
               }
-            }
-          }
-          {
-            name: 'cpu-percent'
-            displayName: 'CPU percent'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.DBforPostgreSQL/flexibleServers'
-            metricName: 'cpu_percent'
-            aggregationType: 'Average'
-            dataUnit: 'Percent'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
-            evaluationRules: {
               unhealthyRule: {
                 operator: 'GreaterThan'
-                threshold: 95
+                threshold: 2
               }
             }
           }
           {
-            name: 'memory-percent'
-            displayName: 'Memory percent'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.DBforPostgreSQL/flexibleServers'
-            metricName: 'memory_percent'
-            aggregationType: 'Average'
-            dataUnit: 'Percent'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
+            name: 'agent-task-latency'
+            displayName: 'Agent task latency (p95)'
+            signalKind: 'LogAnalyticsQuery'
+            queryText: 'AppDependencies | where TimeGenerated > ago(15m) | where Name startswith "foundry.agent." | summarize Value = percentile(DurationMs, 95) | where not(isnan(Value))'
+            valueColumnName: 'Value'
+            dataUnit: 'MilliSeconds'
+            timeGrain: 'PT15M'
+            refreshInterval: 'PT5M'
             evaluationRules: {
+              degradedRule: {
+                operator: 'GreaterThan'
+                threshold: 120000
+              }
               unhealthyRule: {
                 operator: 'GreaterThan'
-                threshold: 95
-              }
-            }
-          }
-          {
-            name: 'storage-percent'
-            displayName: 'Storage percent'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.DBforPostgreSQL/flexibleServers'
-            metricName: 'storage_percent'
-            aggregationType: 'Average'
-            dataUnit: 'Percent'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
-            evaluationRules: {
-              unhealthyRule: {
-                operator: 'GreaterThan'
-                threshold: 90
-              }
-            }
-          }
-          {
-            name: 'cpu-credits'
-            displayName: 'CPU credits remaining'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.DBforPostgreSQL/flexibleServers'
-            metricName: 'cpu_credits_remaining'
-            aggregationType: 'Average'
-            dataUnit: 'Count'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
-            evaluationRules: {
-              unhealthyRule: {
-                operator: 'LessThan'
-                threshold: 5
+                threshold: 300000
               }
             }
           }
@@ -538,11 +413,15 @@ resource postgres 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-previe
   }
 }
 
-resource queueStorage 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+// The Azure MCP server the agent reads Azure through. Resource Health does not cover Container Apps. The server cannot
+// export requests to Application Insights (its exporter has no credential and the component accepts only Entra
+// tokens), so there is no request-based signal: the availability probe reports it instead. Thresholds are assumptions:
+// no traffic has run through the server yet, and tool calls that query Log Analytics take seconds.
+resource mcpServer 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
-  name: 'queue-storage'
+  name: 'mcp-server'
   properties: {
-    displayName: 'Queue Storage'
+    displayName: 'Azure MCP Server'
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
@@ -552,137 +431,88 @@ resource queueStorage 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pr
     signalGroups: {
       azureResource: {
         authenticationSetting: authenticationSettingName
-        azureResourceId: monitoredResources.storage
-        azureResourceKind: 'StorageAccount'
+        azureResourceId: monitoredResources.mcpApp
+        azureResourceKind: 'ContainerApp'
         resourceHealth: {
-          enabled: 'Enabled'
+          enabled: 'Disabled'
         }
         signals: [
           {
-            name: 'availability'
-            displayName: 'Storage availability'
+            name: 'cpu-percentage'
+            displayName: 'CPU percentage'
             signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.Storage/storageAccounts'
-            metricName: 'Availability'
+            metricNamespace: 'Microsoft.App/containerApps'
+            metricName: 'CpuPercentage'
             aggregationType: 'Average'
             dataUnit: 'Percent'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
+            timeGrain: 'PT5M'
+            refreshInterval: 'PT5M'
             evaluationRules: {
               unhealthyRule: {
-                operator: 'LessThan'
-                threshold: 99
+                operator: 'GreaterThan'
+                threshold: 95
               }
             }
           }
           {
-            name: 'end-to-end-latency'
-            displayName: 'Queue end-to-end latency'
+            name: 'memory-percentage'
+            displayName: 'Memory percentage'
             signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.Storage/storageAccounts'
-            metricName: 'SuccessE2ELatency'
+            metricNamespace: 'Microsoft.App/containerApps'
+            metricName: 'MemoryPercentage'
+            aggregationType: 'Average'
+            dataUnit: 'Percent'
+            timeGrain: 'PT5M'
+            refreshInterval: 'PT5M'
+            evaluationRules: {
+              unhealthyRule: {
+                operator: 'GreaterThan'
+                threshold: 95
+              }
+            }
+          }
+          {
+            name: 'response-time'
+            displayName: 'HTTP response time'
+            signalKind: 'AzureResourceMetric'
+            metricNamespace: 'Microsoft.App/containerApps'
+            metricName: 'ResponseTime'
             aggregationType: 'Average'
             dataUnit: 'MilliSeconds'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
+            timeGrain: 'PT5M'
+            refreshInterval: 'PT5M'
             evaluationRules: {
               unhealthyRule: {
                 operator: 'GreaterThan'
-                threshold: 5000
-              }
-            }
-          }
-          {
-            name: 'transactions'
-            displayName: 'Storage transactions'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.Storage/storageAccounts'
-            metricName: 'Transactions'
-            aggregationType: 'Total'
-            dataUnit: 'Count'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
-            evaluationRules: {
-              unhealthyRule: {
-                operator: 'GreaterThan'
-                threshold: 1000000
-              }
-            }
-          }
-          {
-            name: 'queue-message-count'
-            displayName: 'Queue message count'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.Storage/storageAccounts/queueServices'
-            metricName: 'QueueMessageCount'
-            aggregationType: 'Average'
-            dataUnit: 'Count'
-            timeGrain: 'PT1H'
-            refreshInterval: 'PT1H'
-            evaluationRules: {
-              unhealthyRule: {
-                operator: 'GreaterThan'
-                threshold: 100000
+                threshold: 10000
               }
             }
           }
         ]
       }
-    }
-  }
-}
-
-resource agentWebApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
-  parent: model
-  name: 'agent-web-app'
-  properties: {
-    displayName: 'Agent Web Container App'
-    healthObjective: 99
-    impact: 'Standard'
-    canvasPosition: {
-      x: 840
-      y: 490
-    }
-    signalGroups: {
-      azureResource: {
+      azureLogAnalytics: {
         authenticationSetting: authenticationSettingName
-        azureResourceId: monitoredResources.agentWebApp
-        azureResourceKind: 'ContainerApp'
-        resourceHealth: {
-          enabled: 'Enabled'
-        }
+        logAnalyticsWorkspaceResourceId: monitoredResources.logAnalyticsWorkspace
         signals: [
           {
-            name: 'cpu-percentage'
-            displayName: 'CPU percentage'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.App/containerApps'
-            metricName: 'CpuPercentage'
-            aggregationType: 'Average'
+            name: 'availability-test'
+            displayName: 'Synthetic availability'
+            signalKind: 'LogAnalyticsQuery'
+            // The trailing NaN filter drops the row when no probe has reported, so the signal reads Unknown
+            // instead of claiming a healthy zero.
+            queryText: 'AppAvailabilityResults | where TimeGenerated > ago(15m) | where Name == "${mcpAvailabilityTestName}" | summarize Value = round(100.0 * countif(Success) / count(), 2) | where not(isnan(Value))'
+            valueColumnName: 'Value'
             dataUnit: 'Percent'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
+            timeGrain: 'PT15M'
+            refreshInterval: 'PT5M'
             evaluationRules: {
-              unhealthyRule: {
-                operator: 'GreaterThan'
-                threshold: 95
+              degradedRule: {
+                operator: 'LessThan'
+                threshold: 100
               }
-            }
-          }
-          {
-            name: 'memory-percentage'
-            displayName: 'Memory percentage'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.App/containerApps'
-            metricName: 'MemoryPercentage'
-            aggregationType: 'Average'
-            dataUnit: 'Percent'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
-            evaluationRules: {
               unhealthyRule: {
-                operator: 'GreaterThan'
-                threshold: 95
+                operator: 'LessThan'
+                threshold: 67
               }
             }
           }
@@ -692,75 +522,15 @@ resource agentWebApp 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-pre
   }
 }
 
-resource agentAppEntity 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+resource foundryAccount 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
   parent: model
-  name: 'agent-app'
-  properties: {
-    displayName: 'Agent Backend Container App'
-    healthObjective: 99
-    impact: 'Standard'
-    canvasPosition: {
-      x: 1020
-      y: 490
-    }
-    signalGroups: {
-      azureResource: {
-        authenticationSetting: authenticationSettingName
-        azureResourceId: monitoredResources.agentApp
-        azureResourceKind: 'ContainerApp'
-        resourceHealth: {
-          enabled: 'Enabled'
-        }
-        signals: [
-          {
-            name: 'cpu-percentage'
-            displayName: 'CPU percentage'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.App/containerApps'
-            metricName: 'CpuPercentage'
-            aggregationType: 'Average'
-            dataUnit: 'Percent'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
-            evaluationRules: {
-              unhealthyRule: {
-                operator: 'GreaterThan'
-                threshold: 95
-              }
-            }
-          }
-          {
-            name: 'memory-percentage'
-            displayName: 'Memory percentage'
-            signalKind: 'AzureResourceMetric'
-            metricNamespace: 'Microsoft.App/containerApps'
-            metricName: 'MemoryPercentage'
-            aggregationType: 'Average'
-            dataUnit: 'Percent'
-            timeGrain: 'PT1M'
-            refreshInterval: 'PT1M'
-            evaluationRules: {
-              unhealthyRule: {
-                operator: 'GreaterThan'
-                threshold: 95
-              }
-            }
-          }
-        ]
-      }
-    }
-  }
-}
-
-resource openAiAccount 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
-  parent: model
-  name: 'openai-account'
+  name: 'foundry-account'
   properties: {
     displayName: 'Foundry Account'
     healthObjective: 99
     impact: 'Standard'
     canvasPosition: {
-      x: 1200
+      x: 860
       y: 490
     }
     signalGroups: {
@@ -806,6 +576,89 @@ resource openAiAccount 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-p
               }
             }
           }
+          {
+            name: 'throttled-requests'
+            displayName: 'Throttled model requests'
+            signalKind: 'AzureResourceMetric'
+            metricNamespace: 'Microsoft.CognitiveServices/accounts'
+            metricName: 'ModelRequests'
+            aggregationType: 'Total'
+            dimensionFilter: 'StatusCode eq \'429\''
+            dataUnit: 'Count'
+            timeGrain: 'PT5M'
+            refreshInterval: 'PT5M'
+            evaluationRules: {
+              degradedRule: {
+                operator: 'GreaterThan'
+                threshold: 0
+              }
+              unhealthyRule: {
+                operator: 'GreaterThan'
+                threshold: 10
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+
+// Bound to the blob service, which Resource Health does not cover.
+resource sessionStorage 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01-preview' = {
+  parent: model
+  name: 'session-storage'
+  properties: {
+    displayName: 'Session Storage'
+    healthObjective: 99
+    impact: 'Standard'
+    canvasPosition: {
+      x: 1080
+      y: 490
+    }
+    signalGroups: {
+      azureResource: {
+        authenticationSetting: authenticationSettingName
+        azureResourceId: monitoredResources.sessionsBlobService
+        azureResourceKind: 'StorageAccount'
+        resourceHealth: {
+          enabled: 'Disabled'
+        }
+        signals: [
+          {
+            name: 'availability'
+            displayName: 'Blob availability'
+            signalKind: 'AzureResourceMetric'
+            metricNamespace: 'Microsoft.Storage/storageAccounts/blobServices'
+            metricName: 'Availability'
+            aggregationType: 'Average'
+            dataUnit: 'Percent'
+            timeGrain: 'PT1M'
+            refreshInterval: 'PT1M'
+            evaluationRules: {
+              unhealthyRule: {
+                operator: 'LessThan'
+                threshold: 99
+              }
+            }
+          }
+          {
+            name: 'end-to-end-latency'
+            displayName: 'Blob end-to-end latency'
+            signalKind: 'AzureResourceMetric'
+            metricNamespace: 'Microsoft.Storage/storageAccounts/blobServices'
+            metricName: 'SuccessE2ELatency'
+            aggregationType: 'Average'
+            dataUnit: 'MilliSeconds'
+            timeGrain: 'PT1M'
+            refreshInterval: 'PT1M'
+            evaluationRules: {
+              unhealthyRule: {
+                operator: 'GreaterThan'
+                threshold: 5000
+              }
+            }
+          }
         ]
       }
     }
@@ -835,7 +688,7 @@ resource platformContext 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01
             queryText: 'AzureActivity | where TimeGenerated > ago(15m) | where CategoryValue == "ServiceHealth" | summarize Value = countif(Level in ("Error", "Critical"))'
             valueColumnName: 'Value'
             dataUnit: 'Count'
-            timeGrain: 'PT5M'
+            timeGrain: 'PT15M'
             refreshInterval: 'PT5M'
             evaluationRules: {
               unhealthyRule: {
@@ -846,12 +699,14 @@ resource platformContext 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01
           }
           {
             name: 'failed-arm-operations'
-            displayName: 'Failed ARM operations'
+            displayName: 'Failed ARM operations in this resource group'
             signalKind: 'LogAnalyticsQuery'
-            queryText: 'AzureActivity | where TimeGenerated > ago(15m) | where CategoryValue == "Administrative" | summarize Value = countif(ActivityStatusValue == "Failed")'
+            // The activity log is subscription-wide and the workspace records a failed operation as "Failure", not
+            // "Failed". Other workloads in the subscription must not turn this model degraded.
+            queryText: 'AzureActivity | where TimeGenerated > ago(15m) | where CategoryValue == "Administrative" | where ResourceGroup =~ "${resourceGroup().name}" | summarize Value = countif(ActivityStatusValue in ("Failed", "Failure"))'
             valueColumnName: 'Value'
             dataUnit: 'Count'
-            timeGrain: 'PT5M'
+            timeGrain: 'PT15M'
             refreshInterval: 'PT5M'
             evaluationRules: {
               unhealthyRule: {
@@ -867,7 +722,7 @@ resource platformContext 'Microsoft.CloudHealth/healthmodels/entities@2026-05-01
             queryText: 'AzureActivity | where TimeGenerated > ago(15m) | where CategoryValue == "Alert" | summarize Value = count()'
             valueColumnName: 'Value'
             dataUnit: 'Count'
-            timeGrain: 'PT5M'
+            timeGrain: 'PT15M'
             refreshInterval: 'PT5M'
             evaluationRules: {
               unhealthyRule: {
@@ -904,23 +759,20 @@ resource discoveredTopology 'Microsoft.CloudHealth/healthmodels/entities@2026-05
 
 output entityNames object = {
   root: root.name
-  sendHealthReports: sendHealthReports.name
-  requestJourney: requestJourney.name
   viewHealthModel: viewHealthModel.name
-  askCopilot: askCopilot.name
+  sendHealthReports: sendHealthReports.name
+  runAgentTasks: runAgentTasks.name
   systemAppHosting: systemAppHosting.name
-  systemDatabase: systemDatabase.name
-  systemQueueing: systemQueueing.name
   systemAgentRuntime: systemAgentRuntime.name
   systemAiInference: systemAiInference.name
+  systemSessionStore: systemSessionStore.name
   containerApp: containerApp.name
-  postgres: postgres.name
-  queueStorage: queueStorage.name
-  agentWebApp: agentWebApp.name
-  agentApp: agentAppEntity.name
-  openAiAccount: openAiAccount.name
+  hostedAgent: hostedAgent.name
+  mcpServer: mcpServer.name
+  foundryAccount: foundryAccount.name
+  sessionStorage: sessionStorage.name
   platformContext: platformContext.name
   discoveredTopology: discoveredTopology.name
 }
 
-output deterministicEntityCount int = 18
+output deterministicEntityCount int = 15

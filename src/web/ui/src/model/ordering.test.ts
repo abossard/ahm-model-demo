@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { HEALTH_SORT_ORDER, orderEntities, orderWithinRanks, type SortKey } from "./ordering";
+import { HEALTH_SORT_ORDER, SORT_CHOICES, orderEntities, orderWithinRanks, type SortKey } from "./ordering";
 import type { GraphLayout, NodeSize, Point } from "./layout";
 import type { Entity, HealthState } from "./types";
 
@@ -33,6 +33,7 @@ const ENTITIES: readonly Entity[] = [
 ];
 
 const EXPECTED: Readonly<Record<SortKey, readonly string[]>> = {
+  shortest: ["alpha", "bravo", "charlie", "delta"],
   name: ["alpha", "bravo", "charlie", "delta"],
   observed: ["delta", "bravo", "alpha", "charlie"],
   health: ["alpha", "charlie", "bravo", "delta"],
@@ -60,6 +61,15 @@ describe("orderEntities", () => {
       }
     },
   );
+
+  it("lists entities by name for the shortest connections arrangement, whichever way the toggle is", () => {
+    expect(names(orderEntities(ENTITIES, "shortest", true))).toEqual(EXPECTED.shortest);
+  });
+
+  it("offers the shortest connections first", () => {
+    expect(SORT_CHOICES.map((choice) => choice.key)).toEqual(["shortest", "name", "observed", "health"]);
+    expect(SORT_CHOICES[0]?.label).toBe("Shortest connections");
+  });
 
   it("ranks health by severity, not alphabetically", () => {
     const states: readonly HealthState[] = ["Healthy", "Degraded", "Unhealthy", "Unknown", "Deleted"];

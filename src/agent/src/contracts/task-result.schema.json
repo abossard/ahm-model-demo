@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskResult",
+  "description": "What the agent passes to submit_result. An explain result traces a health state to its causes; a diff result proposes changes to a health model.",
+  "type": "object",
+  "required": ["kind"],
+  "properties": {
+    "kind": { "enum": ["explain", "diff"] }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["kind"], "properties": { "kind": { "const": "explain" } } },
+      "then": { "$ref": "#/$defs/explain" }
+    },
+    {
+      "if": { "required": ["kind"], "properties": { "kind": { "const": "diff" } } },
+      "then": { "$ref": "#/$defs/diff" }
+    }
+  ],
+  "$defs": {
+    "text": { "type": "string", "minLength": 1 },
+    "nullableText": { "type": ["string", "null"], "minLength": 1 },
+    "reading": { "type": ["string", "number", "null"] },
+    "healthState": { "enum": ["Healthy", "Degraded", "Unhealthy", "Unknown"] },
+    "armName": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{1,258}[a-zA-Z0-9]$" },
+    "explain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "entity", "state", "summary", "causes"],
+      "properties": {
+        "kind": { "const": "explain" },
+        "entity": { "$ref": "#/$defs/text" },
+        "state": { "$ref": "#/$defs/healthState" },
+        "summary": { "$ref": "#/$defs/text" },
+        "causes": { "type": "array", "items": { "$ref": "#/$defs/cause" } }
+      }
+    },
+    "cause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity", "signal", "state", "threshold", "value", "rollup", "note"],
+      "properties": {
+        "entity": { "$ref": "#/$defs/text" },
+        "signal": { "$ref": "#/$defs/nullableText" },
+        "state": { "$ref": "#/$defs/healthState" },
+        "threshold": { "$ref": "#/$defs/nullableText" },
+        "value": { "$ref": "#/$defs/reading" },
+        "rollup": { "$ref": "#/$defs/nullableText" },
+        "note": { "$ref": "#/$defs/text" }
+      }
+    },
+    "diff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "summary", "changes", "verification", "findings"],
+      "properties": {
+        "kind": { "const": "diff" },
+        "summary": { "$ref": "#/$defs/text" },
+        "changes": { "type": "array", "items": { "$ref": "#/$defs/change" } },
+        "verification": { "type": "array", "items": { "$ref": "#/$defs/verification" } },
+        "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } }
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "op", "kind", "name", "after", "reason"],
+      "properties": {
+        "id": { "$ref": "#/$defs/text" },
+        "op": { "enum": ["add", "change", "remove"] },
+        "kind": { "enum": ["entity", "signalDefinition", "relationship"] },
+        "name": { "$ref": "#/$defs/armName" },
+        "after": { "type": ["object", "null"] },
+        "reason": { "$ref": "#/$defs/text" }
+      },
+      "if": { "required": ["op"], "properties": { "op": { "const": "remove" } } },
+      "then": { "properties": { "after": { "type": "null" } } },
+      "else": { "properties": { "after": { "type": "object" } } }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity", "signal", "status", "query", "value", "error"],
+      "properties": {
+        "entity": { "$ref": "#/$defs/text" },
+        "signal": { "$ref": "#/$defs/text" },
+        "status": { "enum": ["verified", "failing", "not_run"] },
+        "query": { "$ref": "#/$defs/nullableText" },
+        "value": { "$ref": "#/$defs/reading" },
+        "error": { "$ref": "#/$defs/nullableText" }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "entity", "text", "changeIds"],
+      "properties": {
+        "severity": { "enum": ["high", "medium", "low"] },
+        "entity": { "$ref": "#/$defs/nullableText" },
+        "text": { "$ref": "#/$defs/text" },
+        "changeIds": { "type": "array", "items": { "$ref": "#/$defs/text" } }
+      }
+    }
+  }
+}

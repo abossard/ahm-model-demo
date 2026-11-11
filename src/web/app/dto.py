@@ -229,3 +229,30 @@ def signal_history_dto(item):
         "occurredAt": iso(field(item, "occurred_at", "occurredAt")),
         **context_fields(additional_context),
     }
+
+
+def graph_dto(entities, relationships, model_name):
+    relationship_dtos = [relationship_dto(item) for item in relationships]
+    order = entity_order(entities, relationship_dtos, model_name)
+    entity_by_name = {field(item, "name"): item for item in entities}
+    parent_names = {name: [] for name in entity_by_name}
+    child_names = {name: [] for name in entity_by_name}
+    for relation in relationship_dtos:
+        parent = relation["parentEntityName"]
+        child = relation["childEntityName"]
+        if parent in child_names and child in parent_names:
+            child_names[parent].append(child)
+            parent_names[child].append(parent)
+    entity_dtos = [
+        entity_dto(entity_by_name[name], parent_names[name], child_names[name])
+        for name in order
+    ]
+    order_index = {name: index for index, name in enumerate(order)}
+    relationship_dtos.sort(
+        key=lambda item: (
+            order_index.get(item["parentEntityName"], 10_000),
+            order_index.get(item["childEntityName"], 10_000),
+            (item["name"] or "").casefold(),
+        )
+    )
+    return {"entities": entity_dtos, "relationships": relationship_dtos}
