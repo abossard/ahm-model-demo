@@ -5,6 +5,7 @@ import { LAYOUT_CHOICES } from "../src/model/layout";
 import type { HealthModel } from "../src/model/types";
 import { healthModel, installStubs } from "./fixture";
 import { DENSE_SEED, denseModel, realAnbomovModel } from "./denseModel";
+import { openView } from "./views";
 
 const evidenceDir = resolve("../../../.playwright-mcp/visual-c1");
 const longModel: HealthModel = {
@@ -40,7 +41,7 @@ const summaryModel: HealthModel = {
 
 async function boot(page: Page, model = healthModel): Promise<void> {
   await installStubs(page, { healthModelFails: false, model });
-  await page.goto("/");
+  await openView(page, "zoom");
   await expect(page.locator(".react-flow__node")).toHaveCount(model.entities.length);
 }
 
@@ -207,7 +208,7 @@ for (const theme of ["light", "dark"] as const) {
         };
       }));
       expect(controls.filter((control) => !control.reachable)).toEqual([]);
-      await page.getByRole("radio", { name: "Hide with edges", exact: true }).check();
+      await page.getByRole("radio", { name: "Hide with their lines", exact: true }).check();
       await page.getByRole("checkbox", { name: "Degraded", exact: true }).uncheck();
       await expect(page.locator('.react-flow__node[data-id="svc-b"]')).toHaveCount(0);
       await expectContained(page, `${layout}/hide`);
@@ -235,6 +236,8 @@ for (const theme of ["light", "dark"] as const) {
         const bounds = element.getBoundingClientRect();
         for (const child of element.querySelectorAll<HTMLElement>("button, input, select, p")) {
           const rect = child.getBoundingClientRect();
+          // A control that is not shown (the view switch keeps its dropdown in the DOM at wide widths) has no box.
+          if (rect.width === 0 && rect.height === 0) continue;
           if (rect.left < bounds.left - 1 || rect.right > bounds.right + 1 ||
               rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1) {
             errors.push(`${element.className}: ${child.tagName} outside region`);

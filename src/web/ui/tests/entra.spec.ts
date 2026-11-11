@@ -5,17 +5,21 @@ import type { Page, Request, Route } from "@playwright/test";
 import { SUBSCRIPTION_A, installStubs } from "./fixture";
 import { MODEL_QUERY, SESSION_WITH_TASK } from "./workspaceHelpers";
 import { SESSION_ID, catalogWithDesign, installWorkspace, reviewEvents } from "./workspaceStub";
+import { openView } from "./views";
 
 // Entra mode, end to end in the browser: the real MSAL library runs the real redirect flow, and the Entra
 // endpoints (`https://login.microsoftonline.com`) are answered here, so nothing leaves the machine. The app is served
 // under the Content-Security-Policy the web app sends, so the origins MSAL needs are proved by the run itself.
 
 const TENANT = "7f1c0b1e-0000-4000-8000-00000000aaaa";
+const CONSUMERS = "9188040d-6c67-4c5b-b112-36a304b66dad";
 const CLIENT = "c11e47aa-0000-4000-8000-00000000bbbb";
 const SCOPE = `api://${CLIENT}/access_as_user`;
+/** What the app asks of Entra: every permission of its API at once, so one consent covers the Azure access too. */
+const DEFAULT_SCOPE = `api://${CLIENT}/.default`;
 const AUTHORITY = "https://login.microsoftonline.com";
 const OID = "5d0e0f2a-0000-4000-8000-00000000cccc";
-const ENTRA_CONFIG = { authMode: "entra", tenantId: TENANT, clientId: CLIENT, apiScope: SCOPE } as const;
+const ENTRA_CONFIG = { authMode: "entra", clientId: CLIENT, apiScope: SCOPE } as const;
 const CLAIMS = '{"access_token":{"acr":{"essential":true,"value":"c1"}}}';
 const DEEP_LINK = `${MODEL_QUERY}&session=${SESSION_ID}&task=1`;
 
@@ -54,23 +58,29 @@ interface Idp {
   readonly logouts: URL[];
   /** Every host the page asked other than its own: the origins the policy has to name. */
   readonly hosts: Set<string>;
+  /** The directory the stand-in issues tokens for: a test changes it to let a personal account, say, into a directory. */
+  tenant: string;
+  /** The first path segment of every request to the authority: `organizations`, a domain or a directory id. */
+  readonly authorities: Set<string>;
 }
 
 /** A stand-in for the Entra endpoints MSAL calls in the auth code flow with PKCE: metadata, authorize, token and logout. */
-async function installIdp(page: Page): Promise<Idp> {
-  const idp: Idp = { session: true, prompts: 0, authorizations: [], tokenRequests: [], logouts: [], hosts: new Set() };
+async function installIdp(page: Page, tenant = TENANT): Promise<Idp> {
+  const idp: Idp = { session: true, prompts: 0, authorizations: [], tokenRequests: [], logouts: [], hosts: new Set(), tenant, authorities: new Set() };
   const codes = new Map<string, { nonce: string; claims: string | null }>();
 
   await page.route(`${AUTHORITY}/**`, async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
     idp.hosts.add(url.origin);
+    idp.authorities.add(url.pathname.split("/")[1] ?? "");
     if (request.method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers: CORS });
       return;
     }
     const json = (body: unknown): Promise<void> => route.fulfill({ status: 200, contentType: "application/json", headers: CORS, body: JSON.stringify(body) });
-    const base = `${AUTHORITY}/${TENANT}`;
+    const tenant = idp.tenant;
+    const base = `${AUTHORITY}/${tenant}`;
 
     if (url.pathname.endsWith("/.well-known/openid-configuration")) {
       await json({
@@ -125,7 +135,7 @@ async function installIdp(page: Page): Promise<Idp> {
       const challenge = asked !== null && "access_token" in (JSON.parse(asked) as object);
       codes.set(code, { nonce: url.searchParams.get("nonce") ?? "", claims: challenge ? asked : null });
       const redirect = new URL(url.searchParams.get("redirect_uri") ?? "");
-      const answer = new URLSearchParams({ code, state: url.searchParams.get("state") ?? "", client_info: b64url({ uid: OID, utid: TENANT }) }).toString();
+      const answer = new URLSearchParams({ code, state: url.searchParams.get("state") ?? "", client_info: b64url({ uid: OID, utid: tenant }) }).toString();
       const location = url.searchParams.get("response_mode") === "query" ? `${redirect.origin}${redirect.pathname}?${answer}` : `${redirect.origin}${redirect.pathname}#${answer}`;
       await comeBack(route, location);
       return;
@@ -138,7 +148,7 @@ async function installIdp(page: Page): Promise<Idp> {
       const now = Math.floor(Date.now() / 1000);
       const idToken = [
         b64url({ alg: "none", typ: "JWT" }),
-        b64url({ iss: `${base}/v2.0`, sub: "subject-1", aud: CLIENT, exp: now + 3600, iat: now, nbf: now, name: "Ada Lovelace", preferred_username: "ada@contoso.com", oid: OID, tid: TENANT, nonce: issued.nonce, ver: "2.0" }),
+        b64url({ iss: `${base}/v2.0`, sub: "subject-1", aud: CLIENT, exp: now + 3600, iat: now, nbf: now, name: "Ada Lovelace", preferred_username: "ada@contoso.com", oid: OID, tid: tenant, nonce: issued.nonce, ver: "2.0" }),
         "signature",
       ].join(".");
       await json({
@@ -149,7 +159,7 @@ async function installIdp(page: Page): Promise<Idp> {
         access_token: issued.claims ? "access-with-claims" : "access-1",
         refresh_token: "refresh-1",
         id_token: idToken,
-        client_info: b64url({ uid: OID, utid: TENANT }),
+        client_info: b64url({ uid: OID, utid: tenant }),
       });
       return;
     }
@@ -220,6 +230,11 @@ async function installApi(page: Page, scenario: Scenario = {}): Promise<{ readon
   return { calls, challenges: () => challenges };
 }
 
+/** The first visit shows the sign-in page, and nothing has left for Entra until the user asks to sign in. */
+async function signIn(page: Page): Promise<void> {
+  await page.getByTestId("sign-in").click();
+}
+
 /** Serves the document under the policy the web app sends. The Entra stand-in answers its own origin. */
 async function underPolicy(page: Page, baseURL: string, policy = servedPolicy()): Promise<{ readonly violations: string[] }> {
   const violations: string[] = [];
@@ -253,18 +268,26 @@ test("no API call leaves without the bearer token, and the user menu shows who s
     if (request.url().includes("/events")) requested.push(request.headers()["authorization"] ?? "none");
   });
 
-  // The address a visitor opens: the model, the Session and the Task. Signing in goes through Entra and back.
-  await page.goto(`/?${DEEP_LINK}`);
+  // The address a visitor opens: the model, the Session and the Task. The page asks to sign in, and that goes through Entra and back.
+  await openView(page, "zoom", `/?${DEEP_LINK}`);
+  await expect(page.getByTestId("sign-in-choices")).toBeVisible();
+  expect(idp.authorizations).toHaveLength(0);
+  await signIn(page);
   await expect(page.getByTestId("diff-result")).toBeVisible();
   await expect(page.locator(".react-flow__node .entity-node").first()).toBeVisible();
 
   expect(idp.authorizations).toHaveLength(1);
-  expect(idp.authorizations[0]!.searchParams.get("scope")).toContain(SCOPE);
+  // Any work or school directory, and the whole API in one consent.
+  expect([...idp.authorities].filter((authority) => authority !== "")).toEqual(expect.arrayContaining(["organizations"]));
+  expect(idp.authorizations[0]!.searchParams.get("scope")).toContain(DEFAULT_SCOPE);
+  expect(idp.authorizations[0]!.searchParams.get("prompt")).toBe("select_account");
   expect(idp.authorizations[0]!.searchParams.get("code_challenge_method")).toBe("S256");
   expect(idp.authorizations[0]!.searchParams.get("redirect_uri")).toBe(`${new URL(page.url()).origin}/`);
   expect(page.url()).toContain(`session=${SESSION_ID}&task=1`);
   expect(new URL(page.url()).searchParams.get("model")).toBe("hm-demo");
   expect(new URL(page.url()).searchParams.get("subscription")).toBe(SUBSCRIPTION_A);
+  // The view in the link survives the round trip to Entra and back.
+  expect(new URL(page.url()).searchParams.get("view")).toBe("zoom");
 
   // Every call but the one that asks how to sign in carries the token, and none was refused for lacking it.
   expect(calls.length).toBeGreaterThan(3);
@@ -295,7 +318,8 @@ test("the policy is what lets MSAL reach Entra: without the authority in connect
   await installIdp(page);
   await installApi(page);
 
-  await page.goto("/");
+  await openView(page, "zoom");
+  await signIn(page);
 
   await expect(page.getByTestId("auth-failed")).toBeVisible();
   await expect(page.getByTestId("status-bar")).toHaveCount(0);
@@ -306,7 +330,8 @@ test("an address with no model in it still signs in and lands on the default mod
   await installIdp(page);
   const { calls } = await installApi(page);
 
-  await page.goto("/");
+  await openView(page, "zoom");
+  await signIn(page);
 
   await expect(page.getByTestId("model-name")).toHaveText("Contoso Platform Health");
   expect(calls.every((call) => call.authorization === "Bearer access-1")).toBe(true);
@@ -315,18 +340,21 @@ test("an address with no model in it still signs in and lands on the default mod
 test("signing out leaves the app, and the next visit asks Entra who the user is", async ({ page, baseURL }) => {
   const idp = await installIdp(page);
   await installApi(page);
-  await page.goto(`/?${MODEL_QUERY}`);
+  await openView(page, "zoom", `/?${MODEL_QUERY}`);
+  await signIn(page);
   await expect(page.getByTestId("user-menu")).toBeVisible();
 
   await page.getByTestId("user-menu").click();
   await page.getByTestId("sign-out").click();
 
-  // Entra ends the session and the app, back at its root, finds nobody signed in: it is Entra that asks.
-  await expect(page.locator("#idp-sign-in")).toBeVisible();
+  // Entra ends the session and the app, back at its root, finds nobody signed in: the page asks to sign in again.
+  await expect(page.getByTestId("sign-in-choices")).toBeVisible();
   expect(idp.logouts).toHaveLength(1);
   expect(idp.logouts[0]!.searchParams.get("post_logout_redirect_uri")).toBe(`${new URL(baseURL!).origin}/`);
   expect(await page.evaluate(() => Object.keys(sessionStorage).filter((key) => key.includes("accesstoken") || key.includes("idtoken")).length)).toBe(0);
 
+  await signIn(page);
+  await expect(page.locator("#idp-sign-in")).toBeVisible();
   expect(idp.prompts).toBe(1);
 
   await page.locator("#idp-sign-in").click();
@@ -339,7 +367,8 @@ test("a Conditional Access challenge sends the user through one interactive step
   const idp = await installIdp(page);
   const api = await installApi(page, { challenge: true });
 
-  await page.goto(`/?${DEEP_LINK}`);
+  await openView(page, "zoom", `/?${DEEP_LINK}`);
+  await signIn(page);
   await expect(page.getByTestId("diff-result")).toBeVisible();
 
   // First sign-in without claims, then exactly one more authorization, the one that carries the claims the server named.
@@ -360,9 +389,10 @@ test("a sign-in the API stops accepting is retried once with a fresh token, then
   const idp = await installIdp(page);
   const { calls } = await installApi(page, { rejectAll: true });
 
-  await page.goto("/");
+  await openView(page, "zoom");
+  await signIn(page);
 
-  await expect(page.getByTestId("catalog-error")).toContainText("Your sign-in is no longer accepted. Sign in again to go on.");
+  await expect(page.getByTestId("catalog-error")).toContainText("Your sign-in has expired. Sign in again to continue.");
   // One try, then one retry with a token renewed from the refresh token, and no more.
   expect(calls.filter((call) => call.path === "/api/health-models")).toHaveLength(2);
   expect(idp.tokenRequests.map((form) => form.get("grant_type"))).toEqual(["authorization_code", "refresh_token"]);
@@ -370,6 +400,125 @@ test("a sign-in the API stops accepting is retried once with a fresh token, then
 
   await page.getByTestId("catalog-sign-in").click();
   await expect.poll(() => idp.authorizations.length).toBe(2);
+});
+
+test.describe("who signs in and how", () => {
+  const ARM = "https://management.azure.com/subscriptions/**";
+  const SUBSCRIPTION = "11111111-1111-4111-8111-111111111111";
+  const ARM_HEADERS = { "access-control-allow-origin": "*", "access-control-expose-headers": "WWW-Authenticate" };
+
+  test("a directory domain signs in at that directory and nowhere else", async ({ page }) => {
+    const idp = await installIdp(page);
+    await installApi(page);
+
+    await openView(page, "zoom");
+    await expect(page.getByTestId("directory-form")).toHaveCount(0);
+    await page.getByTestId("directory-toggle").click();
+    await expect(page.getByTestId("directory-continue")).toBeDisabled();
+    await page.getByTestId("directory-input").fill(" Contoso.com ");
+    await page.getByTestId("directory-continue").click();
+
+    await expect(page.getByTestId("user-name")).toHaveText("Ada Lovelace");
+    expect(idp.authorities.has("contoso.com")).toBe(true);
+    expect(idp.authorizations).toHaveLength(1);
+    expect(idp.authorizations[0]!.searchParams.get("scope")).toContain(DEFAULT_SCOPE);
+    // The code is redeemed at the directory that was asked, and no other directory is asked for a token.
+    expect(idp.tokenRequests.map((form) => form.get("grant_type"))).toEqual(["authorization_code"]);
+    expect(idp.authorities.has("organizations")).toBe(false);
+  });
+
+  test("a subscription ID is turned into its directory by an anonymous request to Azure, under the policy", async ({ page, baseURL }) => {
+    const policy = await underPolicy(page, baseURL!);
+    const idp = await installIdp(page);
+    await installApi(page);
+    const asked: { url: string; headers: Record<string, string> }[] = [];
+    await page.route(ARM, async (route) => {
+      asked.push({ url: route.request().url(), headers: route.request().headers() });
+      await route.fulfill({ status: 401, headers: { ...ARM_HEADERS, "www-authenticate": `Bearer authorization_uri="https://login.windows.net/${TENANT}", error="invalid_token"` }, body: "" });
+    });
+
+    await openView(page, "zoom");
+    await page.getByTestId("directory-toggle").click();
+    await page.getByTestId("directory-input").fill(SUBSCRIPTION);
+    await page.getByTestId("directory-continue").click();
+
+    await expect(page.getByTestId("user-name")).toHaveText("Ada Lovelace");
+    expect(asked.map((call) => call.url)).toEqual([`https://management.azure.com/subscriptions/${SUBSCRIPTION}?api-version=2022-12-01`]);
+    expect(Object.keys(asked[0]!.headers).filter((name) => /^(authorization|cookie)$/i.test(name))).toEqual([]);
+    expect(idp.authorities.has(TENANT)).toBe(true);
+    expect(policy.violations).toEqual([]);
+  });
+
+  test("an ID Azure does not know as a subscription is taken as a directory ID", async ({ page }) => {
+    const idp = await installIdp(page);
+    await installApi(page);
+    await page.route(ARM, (route) => route.fulfill({ status: 404, headers: ARM_HEADERS, contentType: "application/json", body: JSON.stringify({ error: { code: "SubscriptionNotFound" } }) }));
+
+    await openView(page, "zoom");
+    await page.getByTestId("directory-toggle").click();
+    await page.getByTestId("directory-input").fill(TENANT);
+    await page.getByTestId("directory-continue").click();
+
+    await expect(page.getByTestId("user-name")).toHaveText("Ada Lovelace");
+    expect(idp.authorities.has(TENANT)).toBe(true);
+  });
+
+  for (const { name, text, message } of [
+    { name: "a subscription that cannot be looked up", text: SUBSCRIPTION, message: "could not be looked up" },
+    { name: "text that names no directory", text: "ada@contoso.com", message: "Enter a subscription ID" },
+  ]) {
+    test(`says what to do about ${name}, and starts no sign-in`, async ({ page }) => {
+      const idp = await installIdp(page);
+      await installApi(page);
+      await page.route(ARM, (route) => route.abort());
+
+      await openView(page, "zoom");
+      await page.getByTestId("directory-toggle").click();
+      await page.getByTestId("directory-input").fill(text);
+      await page.getByTestId("directory-continue").click();
+
+      await expect(page.getByTestId("directory-form")).toContainText(message);
+      expect(idp.authorizations).toHaveLength(0);
+      await expect(page.getByTestId("sign-in")).toBeVisible();
+    });
+  }
+
+  test("a personal account that lands in no directory is told why, and the directory it names gets the account first", async ({ page }) => {
+    const idp = await installIdp(page, CONSUMERS);
+    await installApi(page);
+
+    await openView(page, "zoom");
+    await signIn(page);
+
+    await expect(page.getByTestId("auth-personal")).toContainText("ada@contoso.com");
+    await expect(page.getByTestId("auth-personal")).toContainText("reaches Azure through a directory");
+    await expect(page.getByTestId("directory-input")).toBeVisible();
+    await expect(page.getByTestId("status-bar")).toHaveCount(0);
+    // The personal account stays cached, and a reload says the same instead of calling the API with its token.
+    await page.reload();
+    await expect(page.getByTestId("auth-personal")).toBeVisible();
+
+    idp.tenant = TENANT;
+    await page.getByTestId("directory-input").fill("contoso.com");
+    await page.getByTestId("directory-continue").click();
+
+    await expect(page.getByTestId("user-name")).toHaveText("Ada Lovelace");
+    expect(idp.authorizations).toHaveLength(2);
+    expect(idp.authorizations[1]!.searchParams.get("login_hint")).toBe("ada@contoso.com");
+    expect(idp.authorities.has("contoso.com")).toBe(true);
+  });
+
+  test("a user who can read no health model is told what decides that", async ({ page }) => {
+    await installIdp(page);
+    await installApi(page);
+    await page.route("**/api/health-models", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: [], default: null }) }));
+
+    await openView(page, "zoom");
+    await signIn(page);
+
+    await expect(page.getByTestId("no-models")).toContainText("No health models in your directory");
+    await expect(page.getByTestId("user-menu")).toBeVisible();
+  });
 });
 
 test.describe("when signing in fails", () => {
@@ -393,12 +542,41 @@ test.describe("when signing in fails", () => {
       return route.fulfill({ status: 404, headers: CORS, body: "" });
     });
 
-    await page.goto("/");
+    await openView(page, "zoom");
+    await signIn(page);
 
-    await expect(page.getByTestId("auth-failed")).toContainText("Sign-in failed");
+    await expect(page.getByTestId("auth-failed")).toContainText("We could not sign you in");
     await expect(page.getByTestId("auth-failed-message")).toContainText("AADSTS50105");
-    await expect(page.getByTestId("auth-retry")).toHaveText("Sign in again");
+    // The same ways to sign in are offered again.
+    await expect(page.getByTestId("sign-in")).toBeVisible();
     await expect(page.getByTestId("status-bar")).toHaveCount(0);
+  });
+
+  test("a user the directory does not know is told what to do and the directory is asked for", async ({ page }) => {
+    await installStubs(page, { healthModelFails: false, catalog: catalogWithDesign, authConfig: ENTRA_CONFIG });
+    await page.route(`${AUTHORITY}/**`, async (route) => {
+      const url = new URL(route.request().url());
+      if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: CORS });
+      if (url.pathname.endsWith("/.well-known/openid-configuration")) {
+        return route.fulfill({ status: 200, contentType: "application/json", headers: CORS, body: JSON.stringify({ token_endpoint: `${AUTHORITY}/${TENANT}/oauth2/v2.0/token`, jwks_uri: `${AUTHORITY}/k`, issuer: `${AUTHORITY}/${TENANT}/v2.0`, authorization_endpoint: `${AUTHORITY}/${TENANT}/oauth2/v2.0/authorize`, end_session_endpoint: `${AUTHORITY}/${TENANT}/oauth2/v2.0/logout` }) });
+      }
+      if (url.pathname.endsWith("/discovery/instance")) {
+        return route.fulfill({ status: 200, contentType: "application/json", headers: CORS, body: JSON.stringify({ tenant_discovery_endpoint: `${AUTHORITY}/${TENANT}/v2.0/.well-known/openid-configuration`, metadata: [{ preferred_network: "login.microsoftonline.com", preferred_cache: "login.windows.net", aliases: ["login.microsoftonline.com", "login.windows.net"] }] }) });
+      }
+      if (url.pathname.endsWith("/oauth2/v2.0/authorize")) {
+        const redirect = url.searchParams.get("redirect_uri")!;
+        const answer = new URLSearchParams({ error: "access_denied", error_description: "AADSTS50020: User account 'ada@example.test' from identity provider 'live.com' does not exist in tenant 'Contoso' and cannot access the application.", state: url.searchParams.get("state") ?? "" });
+        return comeBack(route, `${redirect}#${answer.toString()}`);
+      }
+      return route.fulfill({ status: 404, headers: CORS, body: "" });
+    });
+
+    await openView(page, "zoom");
+    await signIn(page);
+
+    await expect(page.getByTestId("auth-failed-hint")).toContainText("not a member or a guest of the directory you signed in to");
+    await expect(page.getByTestId("auth-failed-message")).toContainText("AADSTS50020");
+    await expect(page.getByTestId("directory-input")).toBeVisible();
   });
 
   test("the sign-in settings that cannot be loaded are said as such, and Try again loads them", async ({ page }) => {
@@ -410,8 +588,8 @@ test.describe("when signing in fails", () => {
         : route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "unavailable", message: "The app is starting.", retryable: true, operationId: "op" } }) }),
     );
 
-    await page.goto("/");
-    await expect(page.getByTestId("auth-failed")).toContainText("The sign-in settings could not be loaded");
+    await openView(page, "zoom");
+    await expect(page.getByTestId("auth-failed")).toContainText("The app could not start signing you in");
     await expect(page.getByTestId("auth-failed-message")).toHaveText("The app is starting.");
 
     up = true;

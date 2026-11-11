@@ -1,19 +1,19 @@
 import { memo, useMemo } from "react";
 import type { JSX } from "react";
 import {
-  Button,
   Text,
   createCustomFocusIndicatorStyle,
   makeStyles,
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
-import { Add20Regular } from "@fluentui/react-icons";
 import { formatDuration, taskDuration } from "../model/duration";
-import { isUnfinished, targetLabel, taskLabel } from "../model/tasks";
+import { isUnfinished, targetLabel, taskTitle } from "../model/tasks";
 import type { TaskSummary } from "../model/types";
 import { actions, useStore } from "../store/store";
+import { StartButtons } from "./TaskLauncher";
 import { TaskStatusBadge } from "./TaskStatusBadge";
+import { useEntityLabel } from "./useEntityLabel";
 import { useNow } from "./useNow";
 import { useWindowedRows } from "./useWindowedRows";
 
@@ -59,7 +59,7 @@ const useStyles = makeStyles({
   },
   current: { backgroundColor: tokens.colorSubtleBackgroundSelected },
   line: { display: "flex", alignItems: "center", columnGap: tokens.spacingHorizontalS, minWidth: 0 },
-  title: { fontWeight: tokens.fontWeightSemibold, whiteSpace: "nowrap" },
+  title: { fontWeight: tokens.fontWeightSemibold, whiteSpace: "nowrap", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" },
   grow: { flex: 1 },
   meta: {
     minWidth: 0,
@@ -97,6 +97,9 @@ const TaskRow = memo(function TaskRow({
 }): JSX.Element {
   const styles = useStyles();
   const elapsed = taskDuration(task, now);
+  const entityLabel = useEntityLabel(task.target.entity);
+  // The list has no result to read the state from, so an Explain is named by its entity alone.
+  const title = taskTitle(task, entityLabel, null);
   return (
     <div
       role="listitem"
@@ -114,8 +117,8 @@ const TaskRow = memo(function TaskRow({
         data-testid={`task-open-${task.seq}`}
       >
         <span className={styles.line}>
-          <span className={styles.title}>
-            {taskLabel(task.type)} #{task.seq}
+          <span className={styles.title} title={title}>
+            {title}
           </span>
           <TaskStatusBadge status={task.status} />
           <span className={styles.grow} />
@@ -141,10 +144,9 @@ export function TaskList({ tasks }: { readonly tasks: readonly TaskSummary[] }):
   if (tasks.length === 0) {
     return (
       <div className={styles.empty} data-testid="task-list-empty">
-        <Text>This Session has no Tasks yet.</Text>
-        <Button appearance="primary" icon={<Add20Regular />} onClick={() => actions.setWorkspaceTab("new")} data-testid="task-list-new">
-          New task
-        </Button>
+        <Text>Nothing asked in this topic yet. Ask something and the answer opens here.</Text>
+        <StartButtons />
+        <Text size={200}>To ask about an entity, select it in the graph first.</Text>
       </div>
     );
   }
@@ -155,7 +157,7 @@ export function TaskList({ tasks }: { readonly tasks: readonly TaskSummary[] }):
       className={styles.scroller}
       onScroll={rows.onScroll}
       role="list"
-      aria-label="Tasks of this Session"
+      aria-label="Questions in this topic"
       data-testid="task-list"
     >
       <div className={styles.spacer} style={{ height: rows.total }}>

@@ -34,6 +34,10 @@ import {
   type StubScript,
   type WorkspaceOptions,
 } from "./workspaceStub";
+import { openView } from "./views";
+
+// The question an Explain asks, in the state its entity has: the stub answers while it still runs, so either reads.
+const EXPLAIN_TITLE = /^Why is Service C (Unhealthy|in this state)\?$/;
 
 test.describe("the workspace pane", () => {
   test("starts collapsed, opens from the top bar, resizes and collapses again", async ({ page }) => {
@@ -94,7 +98,7 @@ test.describe("Sessions", () => {
     await boot(page, { sessions: [sessionSummary({ taskCount: 2, lastTaskAt: at(60) }), sessionSummary({ id: "s-2", title: "Payments design" })] });
     await openWorkspace(page);
     await expect(page.getByTestId(`session-open-${SESSION_ID}`)).toContainText("Queue review");
-    await expect(page.getByTestId(`session-open-${SESSION_ID}`)).toContainText("0 Tasks");
+    await expect(page.getByTestId(`session-open-${SESSION_ID}`)).toContainText("0 questions");
     await expect(page.getByTestId("session-open-s-2")).toContainText("Payments design");
   });
 
@@ -124,7 +128,7 @@ test.describe("Sessions", () => {
 
   test("shows a Session link that points nowhere", async ({ page }) => {
     await boot(page, {}, `/?${MODEL_QUERY}&session=gone`);
-    await expect(page.getByTestId("session-error")).toContainText("The Session does not exist.");
+    await expect(page.getByTestId("session-error")).toContainText("This topic was not found");
     await page.getByTestId("session-back").click();
     await expect(page.getByTestId("session-list-view")).toBeVisible();
   });
@@ -147,7 +151,7 @@ test.describe("starting Tasks", () => {
         body: { type: "review", target: { name: "hm-demo", resourceGroup: "rg-demo", subscriptionId: SUBSCRIPTION_A }, instruction: "Look at the queue first." },
       },
     ]);
-    await expect(page.getByTestId("task-title")).toHaveText("Review #1");
+    await expect(page.getByTestId("task-title")).toHaveText("Check hm-demo");
     await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "running");
     await expect(page.getByTestId("timeline-event-6")).toBeVisible();
     await expect(page.getByTestId("timeline-event-7")).toHaveCount(0);
@@ -173,7 +177,7 @@ test.describe("starting Tasks", () => {
     await boot(page, sessions());
     await openForm(page);
     await page.getByTestId("task-submit").click();
-    await expect(page.getByTestId("task-title")).toHaveText("Review #1");
+    await expect(page.getByTestId("task-title")).toHaveText("Check hm-demo");
 
     await page.getByTestId("task-back").click();
     await expect(page.getByTestId("task-list")).toBeVisible();
@@ -185,9 +189,9 @@ test.describe("starting Tasks", () => {
     await boot(page, { sessions: [sessionSummary({ taskCount: 1 })], tasks: [{ task: taskOf(1, { status: "running" }), script: OTHER_USERS_TASK }] });
     await openForm(page);
     await expect(page.getByTestId("task-submit")).toBeDisabled();
-    await expect(page.getByTestId("task-hint")).toContainText("A Task is running in this Session");
+    await expect(page.getByTestId("task-hint")).toContainText("The assistant is still working on something");
     await page.getByTestId("show-running-task").click();
-    await expect(page.getByTestId("task-title")).toHaveText("Review #1");
+    await expect(page.getByTestId("task-title")).toHaveText("Check hm-demo");
     await expect(page.getByTestId("workspace-running")).toBeVisible();
   });
 
@@ -199,7 +203,7 @@ test.describe("starting Tasks", () => {
 
     const message = page.getByTestId("task-start-error");
     await expect(message).toHaveAttribute("data-code", "task_running");
-    await expect(message).toContainText("A Task is already running");
+    await expect(message).toContainText("The assistant is already working on something");
     await page.getByTestId("open-running-task").click();
     await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "running");
   });
@@ -209,10 +213,10 @@ test.describe("starting Tasks", () => {
     await openForm(page);
     await page.getByTestId("task-type-explain").click();
     await expect(page.getByTestId("task-submit")).toBeDisabled();
-    await expect(page.getByTestId("task-form")).toContainText("Select an entity in the graph to explain it.");
+    await expect(page.getByTestId("task-form")).toContainText("Select an entity in the graph first.");
 
     await node(page, "topology", "svc-c").click();
-    await expect(page.getByTestId("entity-panel")).toBeVisible();
+    await expect(page.getByTestId("entity-details")).toBeVisible();
     await expect(page.getByTestId("task-entity")).toHaveValue("Service C");
     await expect(page.getByTestId("task-submit")).toBeEnabled();
     await page.getByTestId("task-submit").click();
@@ -223,14 +227,24 @@ test.describe("starting Tasks", () => {
     });
   });
 
-  test("Explain this entity opens the workspace on a prefilled form", async ({ page }) => {
-    await boot(page, sessions());
+  test("Add an instruction opens the Explain form without a Session, and sending it makes the Session", async ({ page }) => {
+    const stub = await boot(page, sessions());
     await node(page, "topology", "svc-c").click();
-    await page.getByTestId("explain-entity").click();
+    await page.getByTestId("explain-add-instruction").click();
     await expect(workspace(page)).toBeVisible();
-    await page.getByTestId(`session-open-${SESSION_ID}`).click();
+    await expect(page.getByTestId("new-task-view")).toBeVisible();
     await expect(page.getByTestId("task-type-explain")).toHaveAttribute("aria-selected", "true");
     await expect(page.getByTestId("task-entity")).toHaveValue("Service C");
+    await expect(page.getByTestId("task-session-hint")).toHaveText("Your question is kept in History.");
+    await expect(page.getByTestId("task-instruction-input")).toBeFocused();
+    expect(stub.sessions).toHaveLength(1);
+
+    await page.getByTestId("task-instruction-input").fill("Why is it unhealthy?");
+    await page.getByTestId("task-submit").click();
+    await expect(page.getByTestId("task-title")).toHaveText(EXPLAIN_TITLE);
+    await expect(page.getByTestId("task-instruction")).toContainText("Why is it unhealthy?");
+    expect(stub.sessions).toHaveLength(2);
+    expect(stub.posts[0]?.body.instruction).toBe("Why is it unhealthy?");
   });
 
   test("a Design targets the design model and checks the repository", async ({ page }) => {
@@ -241,7 +255,7 @@ test.describe("starting Tasks", () => {
     await expect(page.getByTestId("task-workload")).toHaveValue("rg-demo");
 
     await page.getByTestId("task-repository").fill("https://example.com/owner/repo");
-    await expect(page.getByTestId("task-form")).toContainText("Enter a public repository as https://github.com/owner/repository.");
+    await expect(page.getByTestId("task-form")).toContainText("Enter a public GitHub repository, such as https://github.com/owner/repository.");
     await expect(page.getByTestId("task-submit")).toBeDisabled();
 
     await page.getByTestId("task-repository").fill("https://github.com/contoso/orders");
@@ -252,7 +266,7 @@ test.describe("starting Tasks", () => {
       workload: { resourceGroup: "rg-demo", repositoryUrl: "https://github.com/contoso/orders" },
       instruction: "",
     });
-    await expect(page.getByTestId("task-title")).toHaveText("Design #1");
+    await expect(page.getByTestId("task-title")).toHaveText("Design for contoso/orders");
     await expect(page.getByTestId("diff-result")).toBeVisible();
   });
 
@@ -276,7 +290,19 @@ test.describe("starting Tasks", () => {
     await expect(page.getByTestId("task-failed")).toContainText("The agent did not answer in time.");
     await expect(page.getByTestId("timeline-event-4")).toBeVisible();
     await page.getByTestId("task-retry").click();
+    await expect(page.getByTestId("task-title")).toHaveText("Check hm-demo");
+    await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
+  });
+
+  test("a failed Task can also be started again from its instruction", async ({ page }) => {
+    const error = { code: "agent_timeout", message: "The agent did not answer in time." };
+    await boot(page, {
+      sessions: [sessionSummary({ taskCount: 1 })],
+      tasks: [{ task: taskOf(1, { status: "failed", error, instruction: "Check the queue." }), script: { events: reviewEvents(4), outcome: { status: "failed", error } } }],
+    }, `/?${MODEL_QUERY}&session=${SESSION_ID}&task=1`);
+    await page.getByTestId("task-edit").click();
     await expect(page.getByTestId("task-form")).toBeVisible();
+    await expect(page.getByTestId("task-instruction-input")).toHaveValue("Check the queue.");
   });
 });
 
@@ -316,7 +342,7 @@ test.describe("Explain results", () => {
     await page.route("**/api/health-model*", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(recovered) }));
     await page.getByTestId("refresh-now").click();
 
-    await expect(page.getByTestId("model-observed")).toContainText("2026-07-30T16:30:00Z");
+    await expect(page.getByTestId("model-observed")).toHaveAttribute("title", "2026-07-30T16:30:00Z");
     await expect(node(page, "topology", "svc-c")).toHaveAttribute("aria-label", /Healthy/);
     for (const name of ["svc-c", "svc-b", "svc-a"]) await expect(node(page, "topology", name)).toHaveAttribute("data-chain", "true");
     await expect(page.getByTestId("explain-chain").getByRole("listitem")).toHaveCount(3);
@@ -390,7 +416,7 @@ test.describe("Health model diffs", () => {
     await expect(page.getByTestId("change-group-svc-g")).toContainText("Service G");
     await expect(page.getByTestId("change-op-c3")).toHaveText("Add");
     await expect(page.getByTestId("change-op-c5")).toHaveText("Remove");
-    await expect(page.getByTestId("change-needs-c3")).toContainText("Applies with: sd-queue-depth, r5");
+    await expect(page.getByTestId("change-needs-c3")).toContainText("Applied together with: sd-queue-depth, r5");
 
     await page.getByTestId("change-expand-c1").click();
     await expect(page.getByTestId("change-details-c1")).toContainText("properties.displayName");
@@ -400,7 +426,7 @@ test.describe("Health model diffs", () => {
     await expect(page.getByTestId("verification-popover-c3-failing")).toContainText("The query returned no rows.");
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("verification-popover-c3-failing")).toHaveCount(0);
-    await expect(page.getByTestId("verification-summary")).toContainText("1 verified, 1 failing");
+    await expect(page.getByTestId("verification-summary")).toContainText("1 passed, 1 failed");
   });
 
   test("the group checkbox selects every change of the entity", async ({ page }) => {
@@ -417,7 +443,7 @@ test.describe("Health model diffs", () => {
     });
     await page.getByTestId("select-all").click();
     await expect(page.getByTestId("apply-button")).toBeDisabled();
-    await expect(page.getByTestId("apply-blocked")).toHaveText("This Health model diff cannot be applied.");
+    await expect(page.getByTestId("apply-blocked")).toHaveText("These changes cannot be applied.");
   });
 
   test("a diff with no changes says so", async ({ page }) => {
@@ -430,14 +456,14 @@ test.describe("Health model diffs", () => {
   });
 });
 
-test.describe("comparing the Base model and the Proposed model", () => {
+test.describe("comparing now and after the changes", () => {
   test("draws both graphs with badges on the side the change exists on", async ({ page }) => {
     await openDiffTask(page);
     await page.getByTestId("compare-toggle").click();
 
     await expect(page.getByTestId("compare-view")).toBeVisible();
-    await expect(page.getByTestId("graph-base")).toContainText("Base model");
-    await expect(page.getByTestId("graph-proposed")).toContainText("Proposed model");
+    await expect(page.getByTestId("graph-base")).toContainText("Model now");
+    await expect(page.getByTestId("graph-proposed")).toContainText("Model after the changes");
     await expect(page.getByTestId("topology")).toHaveCount(0);
 
     await expect(node(page, "graph-base", "svc-f")).toHaveAttribute("data-badge", "removed");
@@ -481,7 +507,7 @@ test.describe("comparing the Base model and the Proposed model", () => {
     await expect(page.getByTestId("change-select-c2")).toBeChecked();
     await expect(node(page, "graph-proposed", "svc-g")).toHaveAttribute("data-marked", "true");
     // The panel stays shut: while comparing, a click means "these changes".
-    await expect(page.getByTestId("entity-panel")).toHaveCount(0);
+    await expect(page.getByTestId("entity-details")).toHaveCount(0);
 
     await node(page, "graph-proposed", "svc-g").click();
     await expect(page.getByTestId("selection-count")).toHaveText("0 of 5 selected");
@@ -518,10 +544,10 @@ test.describe("Apply", () => {
     const stub = await openDiffTask(page);
     await selectAndApply(page);
     const dialog = page.getByTestId("apply-dialog");
-    await expect(dialog).toContainText("Apply to hm-demo?");
+    await expect(dialog).toContainText("Change the live model hm-demo?");
     await expect(page.getByTestId("apply-dialog-target")).toHaveText("hm-demo (rg-demo)");
-    await expect(dialog).toContainText("cannot be undone");
-    await expect(dialog).toContainText("sd-queue-depth (needed by a selected change)");
+    await expect(dialog).toContainText("cannot undo it");
+    await expect(dialog).toContainText("sd-queue-depth (needed by a change you picked)");
     await page.getByTestId("apply-cancel").click();
     await expect(dialog).toHaveCount(0);
     expect(stub.applies).toEqual([]);
@@ -541,7 +567,7 @@ test.describe("Apply", () => {
     // The diff came back with the outcome in its history, and its changes are marked written.
     await expect(page.getByTestId("change-applied-c3")).toBeVisible();
     await expect(page.getByTestId("change-select-c3")).toBeDisabled();
-    await expect(page.getByTestId("earlier-applies")).toContainText("Earlier Apply outcomes (1)");
+    await expect(page.getByTestId("earlier-applies")).toContainText("Earlier changes to the live model (1)");
   });
 
   test("reports a partial outcome and where it stopped", async ({ page }) => {
@@ -554,7 +580,7 @@ test.describe("Apply", () => {
     await page.getByTestId("apply-confirm").click();
     const result = page.getByTestId("apply-result");
     await expect(result).toHaveAttribute("data-outcome", "partial");
-    await expect(result).toContainText("1 of 3 changes written to hm-demo");
+    await expect(result).toContainText("1 of 3 changes were written to hm-demo");
     await expect(result).toContainText("Apply stopped at svc-g: The service rejected the entity.");
   });
 
@@ -570,8 +596,9 @@ test.describe("Apply", () => {
     await page.getByTestId("apply-confirm").click();
     await expect(page.getByTestId("apply-result")).toHaveAttribute("data-outcome", "base_changed");
     await page.getByTestId("apply-new-review").click();
-    await expect(page.getByTestId("task-form")).toBeVisible();
-    await expect(page.getByTestId("task-type-review")).toHaveAttribute("aria-selected", "true");
+    // A new Review of the changed model starts at once: nothing is left to fill in.
+    await expect(page.getByTestId("task-title")).toHaveText("Check hm-demo");
+    await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
   });
 
   test("a 403 says the signed-in user lacks the Azure role to write to the target model", async ({ page }) => {
@@ -581,9 +608,9 @@ test.describe("Apply", () => {
     await page.getByTestId("apply-confirm").click();
     const result = page.getByTestId("apply-result");
     await expect(result).toHaveAttribute("data-outcome", "forbidden");
-    await expect(result).toContainText("You cannot Apply here");
-    await expect(result).toContainText("Your account has no Azure role that lets you write to hm-demo");
-    await expect(result).toContainText("nothing was applied");
+    await expect(result).toContainText("You cannot change this model");
+    await expect(result).toContainText("Your Azure account is not allowed to write to hm-demo");
+    await expect(result).toContainText("nothing was changed");
   });
 });
 
@@ -591,7 +618,7 @@ test.describe("deep links", () => {
   test("a link opens the Session and the Task, and the address follows the workspace", async ({ page }) => {
     await boot(page, SESSION_WITH_TASK(), `/?${MODEL_QUERY}&session=${SESSION_ID}&task=1`);
     await expect(workspace(page)).toBeVisible();
-    await expect(page.getByTestId("task-title")).toHaveText("Review #1");
+    await expect(page.getByTestId("task-title")).toHaveText("Check hm-demo");
     await expect(page.getByTestId("diff-result")).toBeVisible();
     expect(new URL(page.url()).searchParams.get("task")).toBe("1");
 
@@ -662,15 +689,15 @@ test.describe("the Activity timeline", () => {
     await expect(page.getByTestId("timeline-event-6")).toBeVisible();
     const log = page.getByTestId("timeline-log");
     await expect(log).toHaveAttribute("aria-live", "polite");
-    await expect(log).toContainText("Task started");
-    await expect(log).not.toContainText("Inspect hm-demo");
+    await expect(log).toContainText("The assistant started working");
+    await expect(log).not.toContainText("Reading the health model hm-demo");
 
     stub.release(1);
     await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
     // The result opens in place of the timeline, and the announcements go on.
     await expect(page.getByTestId("diff-result")).toBeVisible();
-    await expect(log).toContainText("Result ready");
-    await expect(log).toContainText("The Task finished. Its result is ready.");
+    await expect(log).toContainText("The proposed changes are ready");
+    await expect(log).toContainText("Model check ready. 5 proposed changes.");
     await expect(log).not.toContainText("submit_result");
   });
 
@@ -686,7 +713,7 @@ test.describe("the Activity timeline", () => {
 test.describe("states", () => {
   test("a Task that cannot be opened shows the error and retries", async ({ page }) => {
     await boot(page, { sessions: [sessionSummary()] }, `/?${MODEL_QUERY}&session=${SESSION_ID}&task=9`);
-    await expect(page.getByTestId("task-error")).toContainText("The Task does not exist.");
+    await expect(page.getByTestId("task-error")).toContainText("This question was not found");
   });
 
   test("a diff that cannot be built shows the error and loads on retry", async ({ page }) => {
@@ -696,8 +723,8 @@ test.describe("states", () => {
     stub.diffFailures = 1;
     await page.getByTestId("task-back").click();
     await page.getByTestId("task-open-1").click();
-    await expect(page.getByTestId("diff-error")).toContainText("The Health model diff could not be built.");
-    await page.getByTestId("diff-error").getByRole("button", { name: "Retry" }).click();
+    await expect(page.getByTestId("diff-error")).toContainText("The proposed changes could not be built.");
+    await page.getByTestId("diff-error").getByRole("button", { name: "Try again" }).click();
     await expect(page.getByTestId("diff-result")).toBeVisible();
   });
 
@@ -705,9 +732,10 @@ test.describe("states", () => {
     await boot(page, { sessions: [sessionSummary()] });
     await openWorkspace(page);
     await page.getByTestId(`session-open-${SESSION_ID}`).click();
-    await expect(page.getByTestId("task-list-empty")).toContainText("This Session has no Tasks yet.");
-    await page.getByTestId("task-list-new").click();
+    await expect(page.getByTestId("task-list-empty")).toContainText("Nothing asked in this topic yet.");
+    await page.getByTestId("start-design").click();
     await expect(page.getByTestId("task-form")).toBeVisible();
+    await expect(page.getByTestId("task-type-design")).toHaveAttribute("aria-selected", "true");
   });
 });
 
@@ -726,7 +754,7 @@ test("the workspace passes a keyboard walk: toggle, session, tab, form, submit",
   await expect(page.getByTestId("session-tab-new")).toHaveAttribute("aria-selected", "true");
   await page.getByTestId("task-submit").focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByTestId("task-title")).toHaveText("Review #1");
+  await expect(page.getByTestId("task-title")).toHaveText("Check hm-demo");
   expect(stub.posts).toHaveLength(1);
 });
 
@@ -793,25 +821,23 @@ test.describe("what the app refuses and what fails", () => {
 
       const message = page.getByTestId("task-start-error");
       await expect(message).toHaveAttribute("data-code", "agents_busy");
-      await expect(message).toContainText("All agents are busy");
+      await expect(message).toContainText("The assistant is busy");
       await expect(message).toContainText("Try again in a few minutes.");
       await page.getByTestId("task-start-retry").click();
-      await expect(page.getByTestId("task-title")).toHaveText("Review #1");
+      await expect(page.getByTestId("task-title")).toHaveText("Check hm-demo");
       expect(stub.posts).toHaveLength(2);
     });
 
-    test("a full Session offers a new Session", async ({ page }) => {
+    test("a full Session starts the Task in a new Session", async ({ page }) => {
       const stub = await boot(page, sessions());
       stub.startRefusals.push(REFUSALS.taskLimit);
       await openForm(page);
       await page.getByTestId("task-submit").click();
 
-      const message = page.getByTestId("task-start-error");
-      await expect(message).toHaveAttribute("data-code", "task_limit");
-      await expect(message).toContainText("This Session is full");
-      await expect(page.getByTestId("task-start-retry")).toHaveCount(0);
-      await page.getByTestId("task-start-new-session").click();
-      await expect(page.getByTestId("session-list-view")).toBeVisible();
+      await expect(page.getByTestId("task-title")).toHaveText("Check hm-demo");
+      await expect(page.getByTestId("task-start-error")).toHaveCount(0);
+      expect(stub.posts.map((post) => post.sessionId)).toEqual([SESSION_ID, "s-2"]);
+      await expect(page).toHaveURL(/session=s-2&task=1/);
     });
 
     test("a request that is too large says what to shorten and offers no retry", async ({ page }) => {
@@ -822,9 +848,9 @@ test.describe("what the app refuses and what fails", () => {
 
       const message = page.getByTestId("task-start-error");
       await expect(message).toHaveAttribute("data-code", "payload_too_large");
-      await expect(message).toContainText("Shorten the Task instruction");
+      await expect(message).toContainText("Shorten the note");
       await expect(page.getByTestId("task-start-retry")).toHaveCount(0);
-      await expect(page.getByTestId("task-start-new-session")).toHaveCount(0);
+      await expect(page.getByTestId("task-start-sessions")).toHaveCount(0);
     });
   });
 
@@ -837,7 +863,7 @@ test.describe("what the app refuses and what fails", () => {
       await page.getByTestId("new-session").click();
 
       const message = page.getByTestId("session-create-error");
-      await expect(message).toContainText("The app has no room for another Session");
+      await expect(message).toContainText("No room for another topic");
       await expect(page.getByTestId("session-create-retry")).toHaveCount(0);
       await expect(page.getByTestId("session-title")).toHaveValue("Queue review");
     });
@@ -867,10 +893,10 @@ test.describe("what the app refuses and what fails", () => {
     );
     const failed = page.getByTestId("task-failed");
     await expect(failed).toHaveAttribute("data-code", "interrupted");
-    await expect(failed).toContainText("The Task was interrupted");
-    await expect(failed).toContainText("Start it again");
+    await expect(failed).toContainText("The question was interrupted");
+    await expect(failed).toContainText("Ask again");
     await page.getByTestId("task-retry").click();
-    await expect(page.getByTestId("task-form")).toBeVisible();
+    await expect(page.getByTestId("task-title")).toHaveText("Check hm-demo");
   });
 
   test.describe("the live Activity timeline", () => {
@@ -880,8 +906,8 @@ test.describe("what the app refuses and what fails", () => {
     });
 
     for (const { refusal, title, text } of [
-      { refusal: REFUSALS.tooManySubscribers, title: "Too many viewers", text: "Reconnect in a moment." },
-      { refusal: REFUSALS.invalidLastEventId, title: "The timeline could not resume", text: "replay it from the start" },
+      { refusal: REFUSALS.tooManySubscribers, title: "Too many people are watching", text: "Reconnect in a moment." },
+      { refusal: REFUSALS.invalidLastEventId, title: "The live view could not continue", text: "replay it from the start" },
     ]) {
       test(`${refusal.code} is explained and the timeline reconnects once the app accepts it`, async ({ page }) => {
         const stub = await boot(page, running());
@@ -961,7 +987,7 @@ test.describe("what the deployed app returned that the fixtures never had", () =
     expect(clipped).toBe(false);
     await expect(page.getByTestId("finding-2")).toBeVisible();
 
-    await page.getByTestId("verification-rows").getByRole("button", { name: /Verification details \(2\)/ }).click();
+    await page.getByTestId("verification-rows").getByRole("button", { name: /Signal test details \(2\)/ }).click();
     await expect(page.getByTestId("verification-rows")).toContainText("cpu-percentage");
     await expect(page.getByTestId("verification-rows")).toContainText("the resource was not found.");
     await expect(page.getByTestId("verification-rows")).toContainText("Query: AppRequests");
@@ -974,7 +1000,7 @@ test.describe("what the deployed app returned that the fixtures never had", () =
       ...options,
       tasks: [{ task: taskOf(1, { target: other, result: reviewResult() }), script: options.tasks![0]!.script }],
     });
-    await expect(page.getByTestId("diff-off-screen")).toContainText("This Review task ran on hm-payments, which is not the model on screen.");
+    await expect(page.getByTestId("diff-off-screen")).toContainText("This was about hm-payments, which is not the model on screen.");
     await page.getByTestId("diff-open-target").click();
     await expect(page.getByTestId("model-picker-selected")).toContainText("hm-payments");
     await expect(page.getByTestId("diff-off-screen")).toHaveCount(0);
@@ -994,10 +1020,10 @@ test.describe("what the deployed app returned that the fixtures never had", () =
       },
       `/?${MODEL_QUERY}&session=${SESSION_ID}&task=1`,
     );
-    await expect(page.getByTestId("diff-off-screen")).toContainText("This Design task ran on hm-demo-design");
+    await expect(page.getByTestId("diff-off-screen")).toContainText("This was about hm-demo-design");
     await page.getByTestId("compare-toggle").click();
     await expect(page.getByTestId("compare-view")).toBeVisible();
-    await expect(page.locator('[data-testid="graph-empty"][data-graph="graph-base"]')).toHaveText("The Base model has no entities.");
+    await expect(page.locator('[data-testid="graph-empty"][data-graph="graph-base"]')).toHaveText("Model now: no entities.");
     await expect(page.locator('[data-testid="graph-empty"][data-graph="graph-proposed"]')).toHaveCount(0);
     await expect(node(page, "graph-proposed", "web")).toBeVisible();
     await expect(page.getByTestId("compare-count-added")).toHaveText("2 entities added");
@@ -1007,13 +1033,13 @@ test.describe("what the deployed app returned that the fixtures never had", () =
   test("a Design without a design model in the catalog has no target to start", async ({ page }) => {
     await installStubs(page, { healthModelFails: false, catalog: modelCatalog, model: healthModel });
     const stub = await installWorkspace(page, { sessions: [sessionSummary()] });
-    await page.goto("/");
+    await openView(page, "zoom");
     await page.waitForSelector(".react-flow__node .entity-node");
     await openForm(page);
     await page.getByTestId("task-type-design").click();
 
-    await expect(page.getByTestId("task-target")).toHaveValue("No design model");
-    await expect(page.getByTestId("task-form")).toContainText("This deployment has no design model, so Design is unavailable.");
+    await expect(page.getByTestId("task-target")).toHaveValue("No separate design model");
+    await expect(page.getByTestId("task-form")).toContainText("There is no separate model to save a design in, so designing is not available here.");
     await expect(page.getByTestId("task-submit")).toBeDisabled();
     expect(stub.posts).toEqual([]);
   });
@@ -1040,7 +1066,8 @@ test.describe("what the deployed app returned that the fixtures never had", () =
       const title = row.querySelector("span[title]") as HTMLElement;
       return { clipped: title.scrollHeight > title.clientHeight + 1, row: row.getBoundingClientRect().height, text: title.textContent };
     });
-    expect(shown).toEqual({ clipped: false, row: 36, text: b });
+    // The step reads as what the assistant does and still keeps the part that tells it from the one before.
+    expect(shown).toEqual({ clipped: false, row: 36, text: "Reading the health model hm-contosodemo, starting at container-app (Causes)" });
   });
 });
 

@@ -21,7 +21,8 @@ Terms follow [GLOSSARY.md](GLOSSARY.md).
   It is the only caller of the hosted agent and the only writer of health models.
 - Hosted agent: `src/agent` runs each Task with the healthmodel skills and ends it with `submit_result`.
   The web app calls it through the Foundry project endpoint.
-- Azure MCP: the agent starts `azmcp` over stdio, read-only, to read health models, metrics, logs and resources.
+- Azure MCP: `src/mcp` is a read-only `azmcp` Container App. The agent calls it over HTTP with the signed-in user's token,
+  which it gets from the web app's token broker, to read health models, metrics, logs and resources.
 - Contracts: the HTTP API, the Task result and the Session store layout are in
   [docs/redesign/plan.md](docs/redesign/plan.md). The reasons are in [docs/adr](docs/adr/).
 - Deployment: `azure.yaml` deploys the web service, then its `postdeploy` hook runs `src/agent/deploy/deploy-agent.sh`.

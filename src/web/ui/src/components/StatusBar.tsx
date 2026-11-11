@@ -3,12 +3,10 @@ import type { JSX } from "react";
 import {
   Badge,
   Button,
-  Field,
   MessageBar,
   MessageBarActions,
   MessageBarBody,
   MessageBarTitle,
-  Select,
   Spinner,
   Text,
   Tooltip,
@@ -24,18 +22,15 @@ import {
   WeatherSunny20Regular,
 } from "@fluentui/react-icons";
 import { accessMessage } from "../model/errors";
+import { formatUpdated } from "../model/wording";
 import { hasRunningTask } from "../model/tasks";
 import { actions, useStore } from "../store/store";
 import { HealthBadge } from "./HealthBadge";
 import { ModelPicker } from "./ModelPicker";
+import { LiveControl } from "../live/LiveControl";
+import { TimelineToggle } from "../timeline/TimelineToggle";
+import { TaskMenu, TaskNotifier } from "./TaskLauncher";
 import { UserMenu } from "./UserMenu";
-import { useInlineField } from "./inlineField";
-
-const AUTO_REFRESH_CHOICES: readonly { readonly ms: number; readonly label: string }[] = [
-  { ms: 0, label: "Off" },
-  { ms: 60_000, label: "Every 1 min" },
-  { ms: 300_000, label: "Every 5 min" },
-];
 
 const useStyles = makeStyles({
   bar: {
@@ -91,16 +86,9 @@ function RefreshIndicator(): JSX.Element | null {
 
 function RefreshControls(): JSX.Element {
   const styles = useStyles();
-  const inlineField = useInlineField();
-  const autoRefreshMs = useStore((state) => state.autoRefreshMs);
   const countdown = useStore((state) => state.refreshCountdown);
 
-  useEffect(() => {
-    if (autoRefreshMs <= 0) return;
-    const timer = setInterval(() => void actions.loadHealthModel(), autoRefreshMs);
-    return () => clearInterval(timer);
-  }, [autoRefreshMs]);
-
+  // After a health report is accepted the model is read again once its countdown ends.
   useEffect(() => {
     if (countdown <= 0) return;
     const timer = setTimeout(actions.tickRefreshCountdown, 1000);
@@ -109,6 +97,7 @@ function RefreshControls(): JSX.Element {
 
   return (
     <div className={styles.refresh}>
+      <LiveControl />
       {countdown > 0 ? (
         <Badge appearance="tint" color="brand" shape="circular" data-testid="refresh-countdown">
           {countdown}
@@ -118,49 +107,45 @@ function RefreshControls(): JSX.Element {
         size="small"
         icon={<ArrowSync20Regular />}
         data-testid="refresh-now"
-        onClick={() => void actions.loadHealthModel()}
+        onClick={() => void actions.loadHealthModel({ fresh: true })}
       >
         Refresh
       </Button>
-      <Field label="Auto-refresh" orientation="horizontal" size="small" className={inlineField.root}>
-        <Select
-          size="small"
-          data-testid="auto-refresh"
-          value={autoRefreshMs}
-          onChange={(_, data) => actions.setAutoRefresh(Number(data.value))}
-        >
-          {AUTO_REFRESH_CHOICES.map((choice) => (
-            <option key={choice.ms} value={choice.ms}>
-              {choice.label}
-            </option>
-          ))}
-        </Select>
-      </Field>
     </div>
   );
 }
 
 function WorkspaceToggle(): JSX.Element {
   const open = useStore((state) => state.workspaceOpen);
+  // A Task of the open Session runs, or one the user turned away from and that is followed in the background.
   const running = useStore(
-    (state) => state.sessionDetail.kind === "success" && hasRunningTask(state.sessionDetail.value.tasks),
+    (state) =>
+      state.watching !== null || (state.sessionDetail.kind === "success" && hasRunningTask(state.sessionDetail.value.tasks)),
   );
+  // A Task ended while the user looked elsewhere: its toast fades, this mark stays until the result is opened.
+  const finished = useStore((state) => state.notice !== null);
   return (
-    <Button
-      size="small"
-      appearance={open ? "primary" : "secondary"}
-      icon={open ? <PanelLeftContract20Regular /> : <PanelLeftExpand20Regular />}
-      aria-expanded={open}
-      aria-controls="session-workspace"
-      aria-label={running ? "Sessions, a Task is running" : "Sessions"}
-      onClick={() => actions.toggleWorkspace()}
-      data-testid="workspace-toggle"
-    >
-      Sessions
-      {running ? (
-        <Badge size="extra-small" color="brand" appearance="filled" aria-hidden="true" data-testid="workspace-running" />
-      ) : null}
-    </Button>
+    <>
+      <Button
+        size="small"
+        appearance={open ? "primary" : "secondary"}
+        icon={open ? <PanelLeftContract20Regular /> : <PanelLeftExpand20Regular />}
+        aria-expanded={open}
+        aria-controls="session-workspace"
+        aria-label={finished ? "History, an answer is ready" : running ? "History, the assistant is working" : "History"}
+        onClick={() => actions.toggleWorkspace()}
+        data-testid="workspace-toggle"
+      >
+        History
+        {finished ? (
+          <Badge size="extra-small" color="success" appearance="filled" aria-hidden="true" data-testid="workspace-finished" />
+        ) : running ? (
+          <Badge size="extra-small" color="brand" appearance="filled" aria-hidden="true" data-testid="workspace-running" />
+        ) : null}
+      </Button>
+      <TaskMenu />
+      <TaskNotifier />
+    </>
   );
 }
 
@@ -208,8 +193,8 @@ export function StatusBar(): JSX.Element {
                 <Spinner size="tiny" label="Loading…" labelPosition="after" />
               ) : null}
               {model.kind === "success" ? (
-                <Text size={200} data-testid="model-observed">
-                  Observed {model.value.observedAt}
+                <Text size={200} title={lastObservedAt ?? model.value.observedAt} data-testid="model-observed">
+                  Updated {formatUpdated(lastObservedAt ?? model.value.observedAt)}
                 </Text>
               ) : null}
               <RefreshIndicator />
@@ -219,6 +204,7 @@ export function StatusBar(): JSX.Element {
         <div className={styles.controls}>
           <ModelPicker />
           <RefreshControls />
+          <TimelineToggle />
           <ThemeControl />
           <UserMenu />
         </div>
@@ -230,8 +216,8 @@ export function StatusBar(): JSX.Element {
             <span data-testid="status-error-message">{accessMessage(modelError, "browse")}</span>{" "}
             <span data-testid="status-last-observed">
               {lastObservedAt
-                ? `Last successful observation ${lastObservedAt}`
-                : "No successful observation yet"}
+                ? `Last updated ${formatUpdated(lastObservedAt)}`
+                : "Not updated yet"}
             </span>
           </MessageBarBody>
           <MessageBarActions>
@@ -241,7 +227,7 @@ export function StatusBar(): JSX.Element {
               </Button>
             ) : (
               <Button size="small" data-testid="status-retry" onClick={() => void actions.loadHealthModel()}>
-                Retry
+                Try again
               </Button>
             )}
           </MessageBarActions>
@@ -260,7 +246,7 @@ export function StatusBar(): JSX.Element {
               </Button>
             ) : (
               <Button size="small" data-testid="catalog-retry" onClick={() => void actions.loadModelCatalog()}>
-                Retry catalog
+                Try again
               </Button>
             )}
           </MessageBarActions>

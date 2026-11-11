@@ -1,0 +1,285 @@
+/* Swimlanes view. Sizes come from model/swimlaneCard.ts; the card draws exactly the lines it measured. */
+.swim-shell,
+.swim-fold-shell {
+  pointer-events: none;
+}
+
+.swim-lane {
+  position: relative;
+  box-sizing: border-box;
+  pointer-events: none;
+  border-top: 1px solid var(--colorNeutralStroke2);
+  background: transparent;
+}
+
+.swim-lane[data-parity="odd"] {
+  background: color-mix(in srgb, var(--colorNeutralForeground1) 4%, transparent);
+}
+
+.swim-lane__title {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  box-sizing: border-box;
+  font-size: 10.5px;
+  line-height: 13px;
+  color: var(--colorNeutralForeground2);
+}
+
+.swim-lane__name {
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.swim-lane__count {
+  font-weight: var(--fontWeightRegular);
+}
+
+.swim-card {
+  position: relative;
+  box-sizing: border-box;
+  border-width: 1.5px;
+  border-style: solid;
+  border-radius: var(--borderRadiusLarge);
+  box-shadow: var(--shadow2);
+  font-family: var(--fontFamilyBase);
+  color: var(--colorNeutralForeground1);
+  cursor: pointer;
+  outline: none;
+  pointer-events: all;
+  overflow: hidden;
+}
+
+.swim-card[data-state="Degraded"] {
+  border-width: 2px;
+}
+
+.swim-card[data-state="Unhealthy"] {
+  border-width: 2.5px;
+}
+
+.swim-card[data-badge] {
+  border-width: 2px;
+}
+
+.swim-card.is-selected {
+  box-shadow: 0 0 0 2px var(--colorBrandStroke1);
+}
+
+.swim-card:focus-visible {
+  box-shadow: 0 0 0 2px var(--colorStrokeFocus1), 0 0 0 4px var(--colorStrokeFocus2);
+}
+
+.swim-card.is-highlighted {
+  box-shadow: 0 0 0 3px var(--colorBrandStroke1);
+}
+
+.swim-card.is-marked {
+  box-shadow: 0 0 0 2px var(--changed-line);
+}
+
+.swim-card-ring {
+  position: relative;
+}
+
+.swim-card-ring.is-chain::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 2px dashed var(--colorBrandStroke1);
+  border-radius: calc(var(--borderRadiusLarge) + 4px);
+  pointer-events: none;
+}
+
+.swim-card__step {
+  position: absolute;
+  top: -11px;
+  left: -11px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--colorBrandBackground);
+  color: var(--colorNeutralForegroundOnBrand);
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.swim-card__header {
+  box-sizing: border-box;
+  padding: 9px 10px 0 10px;
+}
+
+.swim-card__top {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 20px;
+}
+
+.swim-card__icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  color: var(--colorNeutralForeground2);
+}
+
+.swim-card__names {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 20px;
+}
+
+.swim-card__name {
+  display: block;
+  height: 16px;
+  line-height: 16px;
+  font-size: 12.5px;
+  font-weight: var(--fontWeightSemibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.swim-card__state {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  box-sizing: border-box;
+  padding: 0 9px 0 5px;
+  border: 1px solid;
+  border-radius: 10px;
+  background: var(--colorNeutralBackground1);
+  font-size: 10.5px;
+  font-weight: var(--fontWeightSemibold);
+  white-space: nowrap;
+}
+
+.swim-card__chips {
+  display: flex;
+  gap: 4px;
+  height: 22px;
+  align-items: center;
+  padding-left: 26px;
+}
+
+.swim-card__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 16px;
+  box-sizing: border-box;
+  padding: 0 7px;
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: 8px;
+  background: var(--colorNeutralBackground1);
+  font-size: 10px;
+  font-weight: var(--fontWeightSemibold);
+  color: var(--colorNeutralForeground2);
+  white-space: nowrap;
+}
+
+.swim-card__rows {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 5px 0 6px;
+  list-style: none;
+  border-top: 1px solid var(--colorNeutralStroke2);
+}
+
+.swim-card__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 12px 0 10px;
+  font-size: 11px;
+}
+
+.swim-card__row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.swim-card__row-value {
+  flex: 0 0 auto;
+  font-weight: var(--fontWeightSemibold);
+}
+
+.swim-card__row[data-state="Healthy"] .swim-card__row-name,
+.swim-card__row[data-state="Healthy"] .swim-card__row-value {
+  color: var(--colorNeutralForeground2);
+  font-weight: var(--fontWeightRegular);
+}
+
+.swim-card__summary {
+  height: 18px;
+  padding: 0 12px 0 28px;
+  font-size: 10.5px;
+  line-height: 18px;
+  color: var(--colorNeutralForeground2);
+}
+
+.swim-card__badge {
+  border-color: currentColor;
+}
+
+.swim-fold {
+  pointer-events: all;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0 10px;
+  border: 1.2px dashed var(--colorNeutralForeground3);
+  border-radius: 15px;
+  background: var(--colorNeutralBackground1);
+  color: var(--colorNeutralForeground2);
+  font: inherit;
+  font-size: 11px;
+  font-weight: var(--fontWeightSemibold);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.swim-fold:hover {
+  background: var(--colorNeutralBackground1Hover);
+}
+
+.swim-fold:focus-visible {
+  outline: 2px solid var(--colorStrokeFocus2);
+  outline-offset: 2px;
+}
+
+.swim-fold__states {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .swim-card,
+  .swim-fold {
+    transition: none;
+  }
+}

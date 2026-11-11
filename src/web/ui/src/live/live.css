@@ -1,0 +1,16 @@
+/* A changed entity is outlined for a moment: quiet, and still when the viewer asks for less motion. */
+@keyframes live-changed-fade {
+  from { outline-color: var(--colorBrandForeground1, #0f6cbd); }
+  to { outline-color: transparent; }
+}
+
+.live-changed {
+  outline: 3px solid var(--colorBrandForeground1, #0f6cbd);
+  outline-offset: 3px;
+  border-radius: 8px;
+  animation: live-changed-fade 2.2s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-changed { animation: none; }
+}

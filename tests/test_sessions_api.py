@@ -15,6 +15,7 @@ from unittest import mock
 
 from azure.core.exceptions import HttpResponseError, ServiceRequestError, ServiceResponseError
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -202,6 +203,15 @@ class SessionRouteTests(ApiCase):
                     self.assertEqual(response.status_code, status)
                     self.assertEqual(response.json()["error"]["code"], code)
             self.assertEqual(client.get("/api/sessions").json(), {"sessions": []})
+
+    def test_a_listed_session_names_its_running_task_so_no_task_has_to_be_scanned_for(self):
+        with TestClient(self.module.app) as client:
+            quiet = self.new_session(client, title="Quiet")
+            running = self.seed_task(status="running")
+            done = self.seed_task(status="done", title="Done")
+            listed = {item["id"]: item for item in client.get("/api/sessions").json()["sessions"]}
+
+        self.assertEqual({sid: item["openTask"] for sid, item in listed.items()}, {quiet: None, running: 1, done: None})
 
     def test_exactly_120_characters_are_allowed(self):
         with TestClient(self.module.app) as client:
@@ -741,6 +751,69 @@ class DiffRouteTests(DiffAndApplyCase):
 
                 self.assertEqual(diff.status_code, 200)
                 self.assertIs(diff.json()["appliable"], True)
+
+
+class OptionalFieldRouteTests(ApiCase):
+    VALUES = {
+        "confidence": {"level": "high", "why": ["two signals agree", {"nested": None}]},
+        "window": {"from": "2026-11-11T09:00:00Z", "to": "2026-11-11T10:00:00Z", "hours": 1},
+    }
+
+    def agent_adding_optional_fields(self):
+        values = self.VALUES
+
+        class Adding(self.fake_agent.FakeAgent):
+            async def stream_response(inner, conversation_id, text):
+                async for event in super().stream_response(conversation_id, text):
+                    item = event.data.get("item") if isinstance(event.data, dict) else None
+                    if event.name == "response.output_item.done" and item and item.get("type") == "function_call" and item.get("name") == "submit_result":
+                        arguments = json.loads(item["arguments"])
+                        result = arguments["result"]
+                        result["confidence"] = values["confidence"]
+                        if result["kind"] == "explain":
+                            result["window"] = values["window"]
+                        event = event._replace(data={**event.data, "item": {**item, "arguments": json.dumps(arguments)}})
+                    yield event
+
+        return Adding(delay=0)
+
+    def schema_open_to_the_optional_fields(self):
+        schema = json.loads(self.model_diff.SCHEMA_PATH.read_text(encoding="utf-8"))
+        for kind, names in (("diff", ("confidence",)), ("explain", ("confidence", "window"))):
+            schema["$defs"][kind]["properties"].update({name: {} for name in names})
+        return Draft202012Validator(schema)
+
+    def test_confidence_and_window_reach_the_stored_task_the_task_route_and_the_diff_untouched(self):
+        with mock.patch.object(self.model_diff, "VALIDATOR", self.schema_open_to_the_optional_fields()):
+            self.install(self.agent_adding_optional_fields())
+            with TestClient(self.module.app) as client:
+                reviewed = self.review(client)
+                review_task = client.get(f"/api/sessions/{reviewed}/tasks/1").json()
+                diff = client.get(f"/api/sessions/{reviewed}/tasks/1/diff").json()
+                explained = self.new_session(client)
+                self.assertEqual(self.start(client, explained, type="explain", target={**TARGET, "entity": "orders-api"}).status_code, 202)
+                explain_task = self.finish(client, explained)
+                stored = {
+                    "review": asyncio.run(self.store.get_task(OWNER, reviewed, 1)),
+                    "explain": asyncio.run(self.store.get_task(OWNER, explained, 1)),
+                }
+
+        self.assertEqual((review_task["status"], explain_task["status"]), ("done", "done"))
+        self.assertEqual(review_task["result"]["confidence"], self.VALUES["confidence"])
+        self.assertNotIn("window", review_task["result"])
+        self.assertEqual(diff["confidence"], self.VALUES["confidence"])
+        self.assertEqual((explain_task["result"]["confidence"], explain_task["result"]["window"]), (self.VALUES["confidence"], self.VALUES["window"]))
+        self.assertEqual(stored["review"]["result"], review_task["result"])
+        self.assertEqual(stored["explain"]["result"], explain_task["result"])
+
+    def test_without_the_optional_fields_neither_the_task_nor_the_diff_gains_them(self):
+        with TestClient(self.module.app) as client:
+            sid = self.review(client)
+            task = client.get(f"/api/sessions/{sid}/tasks/1").json()
+            diff = client.get(f"/api/sessions/{sid}/tasks/1/diff").json()
+
+        self.assertNotIn("confidence", task["result"])
+        self.assertNotIn("confidence", diff)
 
 
 class ApplyRouteTests(DiffAndApplyCase):
@@ -1632,7 +1705,7 @@ class EventLoopTests(ApiCase):
             self.assertTrue(all(thread != loop_thread for _, _, thread in calls))
 
     def test_handlers_that_call_azure_are_not_coroutines(self):
-        for name in ("health_models", "health_model", "entity_detail", "_ingest_health_report", "_resolve_target"):
+        for name in ("health_models", "entity_detail", "_ingest_health_report", "_resolve_target"):
             with self.subTest(handler=name):
                 self.assertFalse(inspect.iscoroutinefunction(getattr(self.module, name)))
 
@@ -1680,7 +1753,7 @@ class LocalModeTests(ApiCase):
             response = client.get("/api/config")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"authMode": "local", "tenantId": None, "clientId": None, "apiScope": None})
+        self.assertEqual(response.json(), {"authMode": "local", "clientId": None, "apiScope": None})
 
     def test_requests_need_no_token_and_always_belong_to_the_one_local_user(self):
         cases = [

@@ -5,28 +5,39 @@ import {
   type AccountInfo,
   type Configuration,
 } from "@azure/msal-browser";
-import { NAVIGATING, type Auth, type AuthAccount, type TokenRequest } from "./auth";
+import { NAVIGATING, PersonalAccountError, type Auth, type AuthAccount, type SignInRequest, type TokenRequest } from "./auth";
+import { CONSUMERS_TENANT_ID, authorityOf } from "./directory";
 import { rememberReturn, takeReturn } from "./returnLink";
 
 export interface EntraSettings {
-  readonly tenantId: string;
   readonly clientId: string;
   /** The scope of the web app's own API, such as `api://<client id>/access_as_user`. */
   readonly apiScope: string;
 }
 
-export const AUTHORITY_HOST = "https://login.microsoftonline.com";
+/**
+ * What a sign-in or an interactive step asks for: the whole API the user consents to, `api://<client id>/.default`. The
+ * first sign-in in a directory then asks for the app's permissions at once, including the Azure ones it uses on the
+ * user's behalf, and the consent covers the Azure MCP server as well. A silent renewal asks for the API's own scope
+ * instead, because a token is cached under the scopes it was issued for and a `.default` request would never find it.
+ */
+export function defaultScope(apiScope: string): string {
+  const resource = apiScope.slice(0, apiScope.lastIndexOf("/"));
+  if (!resource.startsWith("api://")) throw new Error("The app's sign-in settings are incomplete: the API scope is not api://<client id>/<scope>.");
+  return `${resource}/.default`;
+}
 
 /**
- * The browser's MSAL configuration: authorization code with PKCE through a full-page redirect to one tenant.
- * The redirect target is the origin's root, the cache lives in session storage, and a silent renewal never opens
- * a hidden frame (see `silentRequest`), so the page needs one origin besides its own: the authority.
+ * The browser's MSAL configuration: authorization code with PKCE through a full-page redirect. The configured authority
+ * is any work or school directory; a sign-in to one directory names it, and a token request names the directory the
+ * account belongs to. The redirect target is the origin's root, the cache lives in session storage, and a silent renewal
+ * never opens a hidden frame (see `silentRequest`), so the page needs one origin besides its own: the authority.
  */
 export function msalConfiguration(settings: EntraSettings, origin: string): Configuration {
   return {
     auth: {
       clientId: settings.clientId,
-      authority: `${AUTHORITY_HOST}/${settings.tenantId}`,
+      authority: authorityOf(),
       redirectUri: `${origin}/`,
       postLogoutRedirectUri: `${origin}/`,
     },
@@ -39,9 +50,10 @@ export function msalConfiguration(settings: EntraSettings, origin: string): Conf
  * also try a hidden frame, which needs `frame-src` and fails where third-party cookies are blocked. Without a
  * frame, a session that cannot renew quietly ends in the redirect below.
  */
-function silentRequest(scope: string, account: AccountInfo, refresh: boolean): Parameters<PublicClientApplication["acquireTokenSilent"]>[0] {
+function silentRequest(apiScope: string, account: AccountInfo, refresh: boolean): Parameters<PublicClientApplication["acquireTokenSilent"]>[0] {
   return {
-    scopes: [scope],
+    scopes: [apiScope],
+    authority: authorityOf(account.tenantId),
     account,
     cacheLookupPolicy: refresh ? CacheLookupPolicy.RefreshToken : CacheLookupPolicy.AccessTokenAndRefreshToken,
   };
@@ -51,8 +63,11 @@ function accountOf(info: AccountInfo): AuthAccount {
   return { name: info.name ?? info.username, username: info.username, tenantId: info.tenantId };
 }
 
+const inAnyDirectory = (info: AccountInfo): boolean => info.tenantId.toLowerCase() !== CONSUMERS_TENANT_ID;
+
 export function createEntraAuth(settings: EntraSettings, client?: PublicClientApplication): Auth {
   const msal = client ?? new PublicClientApplication(msalConfiguration(settings, window.location.origin));
+  const scope = defaultScope(settings.apiScope);
   let signedIn: AccountInfo | null = null;
 
   const keepAddress = (): void => rememberReturn(window.sessionStorage, window.location.search);
@@ -63,14 +78,20 @@ export function createEntraAuth(settings: EntraSettings, client?: PublicClientAp
   };
 
   const redirectForToken = async (request: TokenRequest): Promise<never> => {
+    const account = requireAccount();
     keepAddress();
-    await msal.acquireTokenRedirect({ scopes: [settings.apiScope], account: requireAccount(), ...(request.claims ? { claims: request.claims } : {}) });
+    await msal.acquireTokenRedirect({ scopes: [scope], authority: authorityOf(account.tenantId), account, ...(request.claims ? { claims: request.claims } : {}) });
     return NAVIGATING;
   };
 
-  const signIn = async (): Promise<void> => {
+  const signIn = async (request: SignInRequest = {}): Promise<void> => {
     keepAddress();
-    await msal.loginRedirect({ scopes: [settings.apiScope] });
+    // MSAL sends either a hint or the account picker: with a hint the account is already chosen.
+    await msal.loginRedirect({
+      scopes: [scope],
+      authority: authorityOf(request.directory),
+      ...(request.loginHint ? { loginHint: request.loginHint } : { prompt: "select_account" }),
+    });
   };
 
   return {
@@ -82,10 +103,11 @@ export function createEntraAuth(settings: EntraSettings, client?: PublicClientAp
       await msal.initialize();
       // Without a redirect to keep the address, a returning visit keeps the one it opened on.
       const returned = await msal.handleRedirectPromise({ navigateToLoginRequestUrl: false });
-      const found = returned?.account ?? msal.getActiveAccount() ?? msal.getAllAccounts()[0] ?? null;
+      const known = [returned?.account, msal.getActiveAccount(), ...msal.getAllAccounts()].filter((info): info is AccountInfo => info != null);
+      const found = known.find(inAnyDirectory) ?? null;
       if (found === null) {
-        await signIn();
-        return NAVIGATING;
+        if (known.length > 0) throw new PersonalAccountError(known[0]!.username);
+        return null;
       }
       msal.setActiveAccount(found);
       signedIn = found;

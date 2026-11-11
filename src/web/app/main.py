@@ -12,6 +12,7 @@ from typing import Annotated
 
 from azure.core.exceptions import AzureError, ClientAuthenticationError, HttpResponseError
 from azure.identity import DefaultAzureCredential
+from azure.storage.blob import ContainerClient
 from azure.monitor.opentelemetry import configure_azure_monitor
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -24,7 +25,9 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers, MutableHeaders
 
 import apply
+import history_store
 import inventory
+import live_data
 import model_diff
 import reports
 from auth import (
@@ -32,6 +35,7 @@ from auth import (
     AuthUnavailable,
     Authenticator,
     Caller,
+    TenantRefused,
     TokenRules,
     Unauthenticated,
     signing_keys,
@@ -41,6 +45,7 @@ from config import (
     FAKE_AGENT_ENDPOINT,
     GITHUB_REPOSITORY,
     INSTRUCTION_MAX_CHARS,
+    LIVE_RETRY_MS,
     MAX_BODY_BYTES,
     MEMORY_STORE_URL,
     NONCE_MAX_CHARS,
@@ -78,6 +83,8 @@ from sessions_store import (
     session_summary,
     utc_now,
 )
+from model_hub import HubSettings, ModelHub, Refusal
+from timeline import TimelineReader, TimelineRequestError, build_structure
 from task_runner import AgentsBusy, TaskRunner, TaskRunning, TooManySubscribers, UserBusy
 
 
@@ -85,6 +92,7 @@ RUNTIME_SCOPE = require_runtime_config(os.environ)
 
 AUTH_MODE = RUNTIME_SCOPE["auth_mode"]
 TENANT_ID = RUNTIME_SCOPE["tenant_id"]
+ALLOWED_TENANTS = RUNTIME_SCOPE["allowed_tenants"]
 CLIENT_ID = RUNTIME_SCOPE["client_id"]
 API_SCOPE = RUNTIME_SCOPE["api_scope"]
 MCP_SCOPE = RUNTIME_SCOPE["mcp_scope"]
@@ -112,9 +120,9 @@ if AUTH_MODE == "local":
     credentials = Developer(DefaultAzureCredential(exclude_managed_identity_credential=True))
     authenticator = None
 else:
-    credentials = OnBehalfOf(application_factory(TENANT_ID, CLIENT_ID, MANAGED_IDENTITY_CLIENT_ID))
+    credentials = OnBehalfOf(application_factory(CLIENT_ID, MANAGED_IDENTITY_CLIENT_ID))
     authenticator = Authenticator(
-        TokenRules(TENANT_ID, CLIENT_ID, API_SCOPE.rsplit("/", 1)[-1]), signing_keys(TENANT_ID)
+        TokenRules(TENANT_ID, CLIENT_ID, API_SCOPE.rsplit("/", 1)[-1], ALLOWED_TENANTS), signing_keys()
     )
 if RUNTIME_SCOPE["sessions_container_url"] == MEMORY_STORE_URL:
     store = MemorySessionsStore()
@@ -122,7 +130,11 @@ else:
     store = BlobSessionsStore(RUNTIME_SCOPE["sessions_container_url"], credential)
 if RUNTIME_SCOPE["foundry_project_endpoint"] == FAKE_AGENT_ENDPOINT:
     agent = FakeAgent()
-    health = FixtureHealthModels(DEFAULT_MODEL, DESIGN_MODEL)
+    health = FixtureHealthModels(
+        DEFAULT_MODEL,
+        DESIGN_MODEL,
+        live_seconds=int(os.environ["FIXTURE_LIVE_SECONDS"]) if os.environ.get("FIXTURE_LIVE_SECONDS", "").isdigit() else None,
+    )
 else:
     agent = FoundryAgent(
         credential,
@@ -131,6 +143,32 @@ else:
     )
     health = HealthModels(credentials)
 runner = TaskRunner(store, agent, health)
+
+
+def read_state(user, selection):
+    """One observation of a model, as a viewer: its inventory and its structure for the timeline."""
+    subscription_id, resource_group, model_name = selection
+    raw = inventory.read_raw(user.client(subscription_id), resource_group, model_name)
+    return inventory.inventory_from(*raw, model_name), build_structure(raw[1], raw[2], model_name)
+
+
+def warm_structure(selection):
+    hub = live_hub.warm(selection)
+    return hub.structure if hub else None
+
+
+history = history_store.LayeredHistory(
+    history_store.MemoryHistory(),
+    None
+    if RUNTIME_SCOPE["sessions_container_url"] == MEMORY_STORE_URL
+    else history_store.BlobHistory(ContainerClient.from_container_url(RUNTIME_SCOPE["sessions_container_url"], credential=credential)),
+)
+timeline = TimelineReader(history=history, structure=warm_structure)
+live_hub = ModelHub(
+    read_state,
+    timeline.read_tail,
+    HubSettings(**({"poll_seconds": float(os.environ["HUB_POLL_SECONDS"])} if os.environ.get("HUB_POLL_SECONDS", "").replace(".", "", 1).isdigit() else {})),
+)
 
 
 def _serve_shell():
@@ -248,6 +286,21 @@ async def unauthenticated(_request, error):
     return response
 
 
+TENANT_REFUSALS = {
+    "personal_account": (
+        "A personal Microsoft account reaches Azure through a directory, not on its own. "
+        "Sign in with the directory your account belongs to."
+    ),
+    "tenant_not_allowed": "The directory you signed in to is not allowed to use this app.",
+}
+
+
+@app.exception_handler(TenantRefused)
+async def tenant_refused(_request, error):
+    logger.info("request refused reason=%s", error.reason)
+    return error_response(403, error.reason, TENANT_REFUSALS[error.reason], False)
+
+
 @app.exception_handler(AuthUnavailable)
 async def auth_unavailable(_request, _error):
     return error_response(
@@ -276,8 +329,8 @@ async def consent_required(_request, _error):
     return error_response(
         403,
         "consent_required",
-        "The app has no consent to reach Azure for you. A tenant administrator must grant "
-        "admin consent for the app registrations (az ad app permission admin-consent), then sign in again.",
+        "The app has not been approved to reach Azure for you. An administrator of your directory has to "
+        "approve it for the organization, then sign in again.",
         False,
     )
 
@@ -293,7 +346,6 @@ async def public_config():
     return JSONResponse(
         {
             "authMode": AUTH_MODE,
-            "tenantId": None if local else TENANT_ID,
             "clientId": None if local else CLIENT_ID,
             "apiScope": None if local else API_SCOPE,
         }
@@ -303,26 +355,23 @@ async def public_config():
 @api.get("/health-models")
 def health_models(caller: Authed):
     user = health.as_user(caller)
+    default = default_for(caller)
     with tracer.start_as_current_span("healthmodel.catalog", kind=SpanKind.CLIENT) as span:
         span.set_attribute("cloudhealth.operation", "catalog.read")
-        models = inventory.list_models(user, DEFAULT_MODEL)
+        models = inventory.list_models(user, default)
         span.set_attribute("cloudhealth.model_count", len(models))
-        return JSONResponse(
-            {
-                "models": models,
-                "default": {
-                    "name": MODEL_NAME,
-                    "resourceGroup": RESOURCE_GROUP,
-                    "subscriptionId": SUBSCRIPTION_ID,
-                },
-            }
-        )
+        return JSONResponse({"models": models, "default": inventory.default_model(models, default)})
 
 
-def _resolve_selection(params, user):
+def default_for(caller):
+    """The deployment's own model is the default of a user of its directory only: anyone else has their own models."""
+    return DEFAULT_MODEL if caller.in_home_tenant else None
+
+
+def _resolve_selection(params, user, caller):
     try:
         selection, rejected = inventory.resolve_selection(
-            params, user.has_model, DEFAULT_MODEL
+            params, user.has_model, default_for(caller)
         )
     except HttpResponseError as error:
         return None, sdk_error_response(error, "model.select")
@@ -333,17 +382,86 @@ def _resolve_selection(params, user):
     return selection, None
 
 
-def _selected_model(request, user):
-    return _resolve_selection(request.query_params, user)
+def _selected_model(request, user, caller):
+    return _resolve_selection(request.query_params, user, caller)
+
+
+def _live_frame(event):
+    data = json.dumps(event["data"], separators=(",", ":"), ensure_ascii=False)
+    return f"id: {event['id']}\nevent: {event['event']}\ndata: {data}\n\n"
+
+
+def _closed_frame(closed):
+    data = {"reason": closed.reason, **({"error": closed.error} if closed.error else {})}
+    return f"event: {closed.kind}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+
+async def _live_stream(subscription):
+    try:
+        yield f"retry: {LIVE_RETRY_MS}\n\n"
+        for event in subscription.initial:
+            yield _live_frame(event)
+        while True:
+            item = await subscription.next(SSE_KEEP_ALIVE_SECONDS)
+            if item is None:
+                yield ": keep-alive\n\n"
+            elif isinstance(item, dict):
+                yield _live_frame(item)
+            else:
+                yield _closed_frame(item)
+                return
+    finally:
+        subscription.close()
+
+
+@api.get("/health-model/stream")
+async def health_model_stream(request: Request, caller: Authed):
+    if set(request.query_params) - set(inventory.SELECTOR_KEYS):
+        return validation_error("unsupported_query", "The live stream takes only the model selector.")
+    last_id = request.headers.get("last-event-id")
+    if last_id is not None and live_data.parse_event_id(last_id) is None:
+        return validation_error("invalid_last_event_id", "Last-Event-ID is not an id of this stream.")
+    user = health.as_user(caller)
+    selection, rejected = await run_in_threadpool(_selected_model, request, user, caller)
+    if rejected:
+        return rejected
+    try:
+        subscription = await live_hub.subscribe(caller, user, selection, last_id, caller.expires_at)
+    except Refusal as refusal:
+        return error_response(refusal.status, refusal.code, refusal.message, refusal.retryable)
+    except AzureError as error:
+        return sdk_error_response(error, "live.subscribe")
+    return StreamingResponse(
+        _live_stream(subscription),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _refresh_live(selection, user):
+    """A write changed the model: a warm hub reads it again now, so the next read and the stream show the change."""
+    try:
+        await live_hub.refresh(selection, user)
+    except Exception:
+        logger.warning("live refresh failed after a write")
 
 
 @api.get("/health-model")
-def health_model(request: Request, caller: Authed):
+async def health_model(request: Request, caller: Authed):
     user = health.as_user(caller)
-    selection, rejected = _selected_model(request, user)
+    selection, rejected = await run_in_threadpool(_selected_model, request, user, caller)
     if rejected:
         return rejected
+    if request.query_params.get("refresh") == "1":
+        await _refresh_live(selection, user)
+    return await run_in_threadpool(_read_health_model, selection, user)
+
+
+def _read_health_model(selection, user):
     subscription_id, resource_group, model_name = selection
+    warm = live_hub.warm(selection)
+    if warm is not None:
+        return JSONResponse(warm.inventory)
     with tracer.start_as_current_span("healthmodel.read", kind=SpanKind.CLIENT) as span:
         span.set_attribute("cloudhealth.operation", "inventory.read")
         span.set_attribute("cloudhealth.model", model_name)
@@ -357,6 +475,27 @@ def health_model(request: Request, caller: Authed):
             return sdk_error_response(error, "inventory.read")
 
 
+@api.get("/timeline")
+def timeline_history(request: Request, caller: Authed):
+    user = health.as_user(caller)
+    selection, rejected = _selected_model(request, user, caller)
+    if rejected:
+        return rejected
+    with tracer.start_as_current_span("healthmodel.timeline", kind=SpanKind.CLIENT) as span:
+        span.set_attribute("cloudhealth.operation", "timeline.read")
+        span.set_attribute("cloudhealth.model", selection[2])
+        try:
+            body = timeline.read(
+                caller, user, selection, request.query_params, request.query_params.getlist("entity")
+            )
+        except TimelineRequestError as error:
+            return validation_error(error.code, error.message)
+        except AzureError as error:
+            return sdk_error_response(error, "timeline.read")
+        span.set_attribute("cloudhealth.partial", body["partial"])
+        return JSONResponse(body)
+
+
 @api.get("/entities/{entity_name:path}")
 def entity_detail(entity_name: str, request: Request, caller: Authed):
     if set(request.query_params) - set(inventory.SELECTOR_KEYS):
@@ -364,7 +503,7 @@ def entity_detail(entity_name: str, request: Request, caller: Authed):
             "unsupported_query", "History selection is server controlled."
         )
     user = health.as_user(caller)
-    selection, rejected = _selected_model(request, user)
+    selection, rejected = _selected_model(request, user, caller)
     if rejected:
         return rejected
     subscription_id, selected_group, selected_model = selection
@@ -463,7 +602,13 @@ async def ingest_health_report(entity_name: str, request: Request, caller: Authe
         body = await request.json()
     except Exception:
         body = None
-    return await run_in_threadpool(_ingest_health_report, entity_name, request, body, caller)
+    response = await run_in_threadpool(_ingest_health_report, entity_name, request, body, caller)
+    if response.status_code == 202:
+        user = health.as_user(caller)
+        selection, _ = await run_in_threadpool(_selected_model, request, user, caller)
+        if selection:
+            await _refresh_live(selection, user)
+    return response
 
 
 def _ingest_health_report(entity_name, request, body, caller):
@@ -471,7 +616,7 @@ def _ingest_health_report(entity_name, request, body, caller):
     if invalid:
         return validation_error(*invalid)
     user = health.as_user(caller)
-    selection, rejected = _selected_model(request, user)
+    selection, rejected = _selected_model(request, user, caller)
     if rejected:
         return rejected
     subscription_id, selected_group, selected_model = selection
@@ -592,7 +737,7 @@ async def _task(owner, sid, tid):
     return await runner.settled(owner, sid, task) if task else None
 
 
-def _resolve_target(target, needs_entity, user):
+def _resolve_target(target, needs_entity, user, caller):
     params = {}
     if isinstance(target, dict):
         params = {
@@ -605,7 +750,7 @@ def _resolve_target(target, needs_entity, user):
         return None, validation_error(
             "unknown_model", "The requested Health Model is not available to this app."
         )
-    selection, rejected = _resolve_selection(params, user)
+    selection, rejected = _resolve_selection(params, user, caller)
     if rejected:
         return None, rejected
     subscription_id, resource_group, model_name = selection
@@ -661,10 +806,14 @@ def _design_fields(body):
     }, None
 
 
-async def _task_fields(body, user):
+async def _task_fields(body, user, caller):
     task_type = body.get("type")
     if task_type not in TASK_TYPES:
         return None, validation_error("invalid_task_type", "type must be review, explain or design.")
+    if task_type == "design" and not caller.in_home_tenant:
+        return None, validation_error(
+            "design_unavailable", "Designing a model is only available in the directory this app belongs to.", 403
+        )
     instruction = body.get("instruction")
     if instruction is None:
         instruction = ""
@@ -679,7 +828,7 @@ async def _task_fields(body, user):
     else:
         design = None
         target, rejected = await run_in_threadpool(
-            _resolve_target, body.get("target"), task_type == "explain", user
+            _resolve_target, body.get("target"), task_type == "explain", user, caller
         )
     if rejected:
         return None, rejected
@@ -688,7 +837,7 @@ async def _task_fields(body, user):
 
 @api.get("/sessions")
 async def list_sessions(caller: Authed):
-    return JSONResponse({"sessions": await store.list_sessions(caller.oid)})
+    return JSONResponse({"sessions": await store.list_sessions(caller.owner)})
 
 
 @api.post("/sessions")
@@ -704,7 +853,7 @@ async def create_session(request: Request, caller: Authed):
             "invalid_title", f"title must be text of at most {SESSION_TITLE_MAX_CHARS} characters."
         )
     try:
-        session = await store.create_session(caller.oid, title.strip())
+        session = await store.create_session(caller.owner, title.strip())
     except SessionLimit:
         return error_response(
             409, "session_limit", "The app has reached its limit of sessions.", False
@@ -714,11 +863,11 @@ async def create_session(request: Request, caller: Authed):
 
 @api.get("/sessions/{sid}")
 async def get_session(sid: str, caller: Authed):
-    session = await _session(caller.oid, sid)
+    session = await _session(caller.owner, sid)
     if session is None:
         return _not_found("session_not_found", "The session was not found.")
     tasks = [
-        await runner.settled(caller.oid, sid, task) for task in await store.list_tasks(caller.oid, sid)
+        await runner.settled(caller.owner, sid, task) for task in await store.list_tasks(caller.owner, sid)
     ]
     last = max((task.get("finishedAt") or task["createdAt"] for task in tasks), default=None)
     return JSONResponse(
@@ -731,12 +880,12 @@ async def get_session(sid: str, caller: Authed):
 
 @api.post("/sessions/{sid}/tasks")
 async def create_task(sid: str, request: Request, caller: Authed):
-    if await _session(caller.oid, sid) is None:
+    if await _session(caller.owner, sid) is None:
         return _not_found("session_not_found", "The session was not found.")
     body, rejected = await _json_body(request)
     if rejected:
         return rejected
-    fields, rejected = await _task_fields(body, health.as_user(caller))
+    fields, rejected = await _task_fields(body, health.as_user(caller), caller)
     if rejected:
         return rejected
     try:
@@ -764,7 +913,7 @@ async def create_task(sid: str, request: Request, caller: Authed):
 
 @api.get("/sessions/{sid}/tasks/{tid}")
 async def get_task(sid: str, tid: str, caller: Authed):
-    task = await _task(caller.oid, sid, tid)
+    task = await _task(caller.owner, sid, tid)
     if task is None:
         return _not_found("task_not_found", "The task was not found.")
     return JSONResponse(task)
@@ -814,7 +963,7 @@ async def _event_stream(owner, sid, seq, last, queue):
 
 @api.get("/sessions/{sid}/tasks/{tid}/events")
 async def task_events(sid: str, tid: str, request: Request, caller: Authed):
-    task = await _task(caller.oid, sid, tid)
+    task = await _task(caller.owner, sid, tid)
     if task is None:
         return _not_found("task_not_found", "The task was not found.")
     raw = request.headers.get("last-event-id") or request.query_params.get("lastEventId") or ""
@@ -823,16 +972,16 @@ async def task_events(sid: str, tid: str, request: Request, caller: Authed):
             "invalid_last_event_id", "lastEventId must be a whole number of at most 9 digits."
         )
     try:
-        queue = runner.attach(caller.oid, sid, task["seq"])
+        queue = runner.attach(caller.owner, sid, task["seq"])
     except TooManySubscribers:
         return error_response(
             503, "too_many_subscribers", "Too many viewers are following this task. Try again shortly.", True
         )
     return StreamingResponse(
-        _event_stream(caller.oid, sid, task["seq"], int(raw or 0), queue),
+        _event_stream(caller.owner, sid, task["seq"], int(raw or 0), queue),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
-        background=BackgroundTask(runner.detach, caller.oid, sid, queue) if queue is not None else None,
+        background=BackgroundTask(runner.detach, caller.owner, sid, queue) if queue is not None else None,
     )
 
 
@@ -846,8 +995,8 @@ async def _finished_diff(owner, sid, tid):
 
 @api.get("/sessions/{sid}/tasks/{tid}/diff")
 async def task_diff(sid: str, tid: str, caller: Authed):
-    task = await _finished_diff(caller.oid, sid, tid)
-    base = await store.load_base(caller.oid, sid, task["seq"]) if task else None
+    task = await _finished_diff(caller.owner, sid, tid)
+    base = await store.load_base(caller.owner, sid, task["seq"]) if task else None
     if base is None:
         return _not_found("diff_not_found", "The task has no diff.")
     target = task["target"]
@@ -857,7 +1006,7 @@ async def task_diff(sid: str, tid: str, caller: Authed):
             base,
             target["name"],
             target,
-            await store.read_applies(caller.oid, sid, task["seq"]),
+            await store.read_applies(caller.owner, sid, task["seq"]),
             True,
         )
     )
@@ -865,7 +1014,7 @@ async def task_diff(sid: str, tid: str, caller: Authed):
 
 @api.post("/sessions/{sid}/tasks/{tid}/apply")
 async def task_apply(sid: str, tid: str, request: Request, caller: Authed):
-    task = await _finished_diff(caller.oid, sid, tid)
+    task = await _finished_diff(caller.owner, sid, tid)
     if task is None:
         return _not_found("diff_not_found", "The task has no diff.")
     body, rejected = await _json_body(request)
@@ -881,10 +1030,9 @@ async def task_apply(sid: str, tid: str, request: Request, caller: Authed):
         return validation_error(
             "invalid_change_ids", "changeIds must list at least one change of this diff."
         )
+    user = health.as_user(caller)
     try:
-        outcome = await apply.apply_changes(
-            store, health.as_user(caller), caller.oid, sid, task, change_ids
-        )
+        outcome = await apply.apply_changes(store, user, caller.owner, sid, task, change_ids)
     except apply.BaseChanged:
         return error_response(
             409,
@@ -894,6 +1042,9 @@ async def task_apply(sid: str, tid: str, request: Request, caller: Authed):
         )
     except AzureError as error:
         return sdk_error_response(error, "apply.read")
+    finally:
+        # Whatever was written, whole or in part, shows at once.
+        await _refresh_live(apply.reference(task["target"]), user)
     return JSONResponse({key: outcome[key] for key in ("outcome", "written", "failed", "expanded")})
 
 

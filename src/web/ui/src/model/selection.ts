@@ -1,3 +1,4 @@
+import { DEFAULT_VIEW, type ViewId } from "./views";
 import type { ModelCatalog, ModelRef, ModelSelection } from "./types";
 
 export interface SelectionResolution {
@@ -30,7 +31,7 @@ export function selectionFromSearch(
     : undefined;
   if (found) return { selected: found, unavailable: null };
   const selected =
-    catalog.models.find((item) => sameModel(item, catalog.default)) ??
+    (catalog.default ? catalog.models.find((item) => sameModel(item, catalog.default!)) : undefined) ??
     catalog.models[0] ??
     null;
   return {
@@ -64,14 +65,21 @@ export function workspaceFromSearch(search: string): WorkspaceLocation {
   return { session, task: task !== null && /^[1-9][0-9]{0,8}$/.test(task) ? Number(task) : null };
 }
 
-/** The address bar for the model on screen and, when one is open, its Session and Task. */
+/**
+ * The address bar for the model on screen, the view when it is not the default one, and, when one
+ * is open, its Session and Task. The view comes before the Session so a link still ends with it.
+ */
 export function searchFromLocation(
   selection: ModelSelection | null,
   workspace: WorkspaceLocation,
+  view: ViewId = DEFAULT_VIEW,
+  extra: Readonly<Record<string, string>> = {},
 ): string {
   const params = selection
     ? new URLSearchParams(searchFromSelection(selection))
     : new URLSearchParams();
+  if (view !== DEFAULT_VIEW) params.set("view", view);
+  for (const [key, value] of Object.entries(extra)) params.set(key, value);
   if (workspace.session !== null) {
     params.set("session", workspace.session);
     if (workspace.task !== null) params.set("task", String(workspace.task));

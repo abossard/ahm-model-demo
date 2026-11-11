@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import hashlib
+import inspect
 import json
 import secrets
 import sys
@@ -19,6 +20,8 @@ from opentelemetry.trace import SpanKind, StatusCode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "web" / "app"))
 
+import activity  # noqa: E402
+import config  # noqa: E402
 import dto  # noqa: E402
 import fake_agent  # noqa: E402
 import fixture_models  # noqa: E402
@@ -265,7 +268,7 @@ class FailureTests(unittest.IsolatedAsyncioTestCase):
             ("response.failed", [failed("tool_start_failed", "The MCP child exited.")], "agent_failed", "The MCP child exited."),
             ("error event", [stream(("error", {"code": "invalid_prompt", "message": "Boom."}))], "agent_failed", "Boom."),
             ("no submission", [stream(("response.completed", {"response": {}}))], "no_result", "without submitting"),
-            ("only a rejected submission", [script(REVIEW, REJECTED)], "no_result", "without submitting"),
+            ("only a rejected submission", [script(REVIEW, REJECTED)], "no_result", "The last one was rejected: nope"),
             ("wrong kind", [script(EXPLAIN)], "invalid_result", "needs a diff result"),
             ("schema invalid", [script(schema_invalid)], "invalid_result", "changes[0].name"),
             ("change of a missing entity", [script(missing_entity)], "invalid_result", "does not exist in the model"),
@@ -642,6 +645,253 @@ class LimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(third)
         gate.set()
         await env.runner.shutdown()
+
+
+SERVER_ERROR = {"code": "server_error", "message": "An internal server error occurred."}
+CREATED = ("response.created", {"response": {"id": "r"}})
+BUSY = stream(CREATED, ("response.failed", {"response": {"error": SERVER_ERROR}}))
+BUSY_AS_ERROR = stream(CREATED, ("error", SERVER_ERROR))
+
+
+def rejections(*problem_lists):
+    calls = [
+        event
+        for number, problems in enumerate(problem_lists, 1)
+        for event in fake_agent.call(number, "submit_result", {"result": REVIEW}, json.dumps({"status": "rejected", "problems": problems}))
+    ]
+    return stream(CREATED, *calls, ("response.completed", {"response": {"id": "r"}}))
+
+
+class BusyTests(unittest.IsolatedAsyncioTestCase):
+    async def run_without_waiting(self, responses, logged=True):
+        env = Env(*responses)
+        sid = await env.session()
+        sleeps, real_sleep = [], asyncio.sleep
+
+        async def recording(delay, *args):
+            sleeps.append(delay)
+            await real_sleep(0)
+
+        logs = self.assertLogs("ahm-demo", level="WARNING") if logged else nullcontext()
+        with logs, mock.patch.object(task_runner.asyncio, "sleep", recording):
+            task, events = await env.run(sid, env.fields())
+        return env, task, events, [delay for delay in sleeps if delay in config.BUSY_RETRY_SECONDS]
+
+    async def test_a_busy_model_before_any_event_is_retried_with_growing_pauses_and_then_gives_up(self):
+        ok = script(REVIEW)
+        cases = [
+            ("busy once", [BUSY, ok], "done", [5], 2),
+            ("busy twice", [BUSY, BUSY, ok], "done", [5, 15], 3),
+            ("busy three times", [BUSY, BUSY, BUSY, ok], "done", [5, 15, 30], 4),
+            ("busy four times", [BUSY, BUSY, BUSY, BUSY], "failed", [5, 15, 30], 4),
+            ("busy as an error event", [BUSY_AS_ERROR, ok], "done", [5], 2),
+            ("busy as a failure and as an error event", [BUSY_AS_ERROR, BUSY, ok], "done", [5, 15], 3),
+        ]
+        for label, responses, status, pauses, calls in cases:
+            with self.subTest(label=label):
+                env, task, events, slept = await self.run_without_waiting(responses)
+
+                self.assertEqual(task["status"], status, task.get("error"))
+                self.assertEqual(slept, pauses)
+                self.assertEqual(len(env.agent.calls), calls)
+                self.assertEqual({conversation for conversation, _ in env.agent.calls}, {"conv-1"})
+                self.assertEqual(len({text for _, text in env.agent.calls}), 1)
+                waits = [e for e in events if e["summary"] == "The assistant is busy, trying again"]
+                self.assertEqual([(e["kind"], e["payload"]) for e in waits], [("status", {"attempt": n, "of": 3, "waitSeconds": p}) for n, p in enumerate(pauses, 1)])
+                errors = [e for e in events if e["kind"] == "error"]
+                if status == "done":
+                    self.assertEqual(errors, [])
+                else:
+                    self.assertEqual(task["error"], {"code": "agent_failed", "message": activity.SERVER_ERROR_MESSAGE})
+                    self.assertEqual([e["payload"]["code"] for e in errors], ["server_error"])
+                    self.assertEqual(events[-1]["kind"], "error")
+                self.assertEqual([e["seq"] for e in events], list(range(1, len(events) + 1)))
+
+    async def test_a_retried_run_reads_in_the_timeline_as_a_wait_and_a_fresh_start(self):
+        env, task, events, _ = await self.run_without_waiting([BUSY, script(REVIEW)])
+
+        self.assertEqual(task["status"], "done")
+        self.assertEqual(
+            [(e["kind"], e["summary"]) for e in events][:6],
+            [
+                ("status", "Review task started"),
+                ("status", "Base model captured (5 entities)"),
+                ("status", "Agent started"),
+                ("status", "The assistant is busy, trying again"),
+                ("status", "Agent started"),
+                ("text", "Working on it."),
+            ],
+        )
+
+    async def test_what_follows_a_held_back_failure_is_held_back_with_it_and_keeps_its_order(self):
+        failing = stream(CREATED, ("response.failed", {"response": {"error": SERVER_ERROR}}), CREATED)
+        cases = [
+            ("retried and then fine", [failing, script(REVIEW)], "done", 2),
+            ("never fine", [failing] * 4, "failed", 5),
+        ]
+        for label, responses, status, starts in cases:
+            with self.subTest(label=label):
+                env, task, events, _ = await self.run_without_waiting(responses)
+
+                self.assertEqual(task["status"], status)
+                self.assertEqual([e["summary"] for e in events].count("Agent started"), starts)
+                if status == "failed":
+                    tail = [(e["kind"], e["summary"]) for e in events][-2:]
+                    self.assertEqual(tail, [("error", activity.SERVER_ERROR_MESSAGE), ("status", "Agent started")])
+                else:
+                    self.assertEqual([e["kind"] for e in events if e["kind"] == "error"], [])
+
+    async def test_nothing_is_retried_once_anything_has_arrived_or_when_the_failure_is_another_one(self):
+        failure = ("response.failed", {"response": {"error": SERVER_ERROR}})
+        denied = ("response.failed", {"response": {"error": {"code": "denied", "message": "No."}}})
+        cases = [
+            ("a text arrived", stream(CREATED, *fake_agent.message(1, "Looking."), failure)),
+            ("a text delta arrived", stream(CREATED, ("response.output_text.delta", {"item_id": "m", "delta": "Lo"}), failure)),
+            ("a tool call arrived", stream(CREATED, *fake_agent.call(1, "monitor_healthmodels_get", {"model": "m"}, "ok"), failure)),
+            ("a tool call started", stream(CREATED, ("response.output_item.added", {"item": {"id": "f", "type": "function_call", "call_id": "c", "name": "x", "arguments": ""}}), failure)),
+            ("an event nobody maps arrived", stream(CREATED, ("response.content_part.added", {"part": {}}), failure)),
+            ("a rejected result arrived", stream(CREATED, *fake_agent.call(1, "submit_result", {"result": REVIEW}, REJECTED), failure)),
+            ("another failure code", stream(CREATED, denied)),
+        ]
+        for label, response in cases:
+            with self.subTest(label=label):
+                env, task, events, slept = await self.run_without_waiting([response, script(REVIEW)])
+
+                self.assertEqual((task["status"], task["error"]["code"]), ("failed", "agent_failed"))
+                self.assertEqual(slept, [])
+                self.assertEqual(len(env.agent.calls), 1)
+                self.assertEqual(len([e for e in events if e["kind"] == "error"]), 1)
+                self.assertNotIn("The assistant is busy, trying again", [e["summary"] for e in events])
+
+    async def test_other_ways_for_the_agent_to_fail_are_not_retried(self):
+        cases = [
+            ("the service is unavailable", [foundry_agent.AgentError("agent_unavailable", "down")], "agent_unavailable"),
+            ("an unexpected error", [RuntimeError("SECRET")], "internal_error"),
+        ]
+        for label, response, code in cases:
+            with self.subTest(label=label):
+                logs = self.assertLogs("ahm-demo", level="ERROR") if code == "internal_error" else nullcontext()
+                with logs:
+                    env, task, events, slept = await self.run_without_waiting([response, script(REVIEW)], logged=False)
+
+                self.assertEqual(task["error"]["code"], code)
+                self.assertEqual((slept, len(env.agent.calls)), ([], 1))
+
+    async def test_a_busy_model_and_a_lost_conversation_are_each_retried_on_their_own(self):
+        lost = [foundry_agent.ConversationNotFound("gone")]
+        cases = [
+            ("busy, then lost, then fine", [BUSY, lost, script(REVIEW)], "done", [5], 3, 2),
+            ("lost, then busy, then fine", [lost, BUSY, script(REVIEW)], "done", [5], 3, 2),
+            ("busy, lost, then lost again", [BUSY, lost, lost], "failed", [5], 3, 2),
+            ("busy after the new conversation four times", [lost, BUSY, BUSY, BUSY, BUSY], "failed", [5, 15, 30], 5, 2),
+        ]
+        for label, responses, status, pauses, calls, conversations in cases:
+            with self.subTest(label=label):
+                env, task, events, slept = await self.run_without_waiting(responses)
+
+                self.assertEqual(task["status"], status, task.get("error"))
+                self.assertEqual((slept, len(env.agent.calls), env.agent.created), (pauses, calls, conversations))
+
+    async def test_the_pauses_are_the_configured_ones_and_count_against_the_task_time(self):
+        with mock.patch.object(task_runner, "BUSY_RETRY_SECONDS", (0, 0)):
+            env, task, events, _ = await self.run_without_waiting([BUSY, BUSY, BUSY])
+
+        self.assertEqual(task["status"], "failed")
+        self.assertEqual(len(env.agent.calls), 3)
+        self.assertEqual(len([e for e in events if e["summary"] == "The assistant is busy, trying again"]), 2)
+        env = Env(BUSY, BUSY, timeout=0.05)
+        sid = await env.session()
+        with mock.patch.object(task_runner, "BUSY_RETRY_SECONDS", (30,)), self.assertLogs("ahm-demo", level="WARNING"):
+            task, events = await env.run(sid, env.fields())
+
+        self.assertEqual((task["status"], task["error"]["code"]), ("failed", "timeout"))
+        self.assertNotIn("error", [e["kind"] for e in events][:-1])
+
+
+class ProblemTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_task_without_an_accepted_result_names_the_last_rejection_and_carries_its_problems(self):
+        many = [f"changes[{n}]: bad" for n in range(60)]
+        said = "The agent got no result accepted. The last one was rejected: "
+        cases = [
+            ("one rejection, one problem", [["only one"]], said + "only one", ["only one"]),
+            ("two rejections", [["old a", "old b"], ["new a", "new b", "new c"]], said + "new a (and 2 more)", ["new a", "new b", "new c"]),
+            ("a long list is bounded", [many], said + "changes[0]: bad (and 59 more)", [*many[:50], "10 more problems not shown"]),
+            ("a long first problem is clipped", [["z" * 400]], said + "z" * 120 + "... [105 more characters]", ["z" * 200 + "... [200 more characters]"]),
+        ]
+        for label, lists, message, problems in cases:
+            with self.subTest(label=label):
+                env = Env(rejections(*lists))
+                sid = await env.session()
+
+                task, events = await env.run(sid, env.fields())
+
+                self.assertEqual(task["status"], "failed")
+                self.assertEqual(task["error"], {"code": "no_result", "message": message, "problems": problems})
+                (error,) = [e for e in events if e["kind"] == "error"]
+                self.assertEqual(error["payload"], {"code": "no_result", "message": message, "problems": problems})
+                shown = [e["payload"]["problems"] for e in events if e["kind"] == "tool_result"]
+                self.assertEqual(len(shown), len(lists))
+                self.assertEqual(shown[-1], problems)
+                self.assertEqual(shown[0][0], activity.clip_problems(lists[0])[0])
+                self.assertEqual(json.loads(json.dumps(task["error"])), task["error"])
+
+    async def test_a_task_that_was_never_rejected_or_failed_for_another_reason_carries_no_problems(self):
+        cases = [
+            ("nothing submitted", [stream(CREATED, ("response.completed", {"response": {"id": "r"}}))], "no_result"),
+            ("a rejection that listed nothing", [rejections([])], "no_result"),
+            ("an agent failure", [stream(CREATED, ("response.failed", {"response": {"error": {"code": "denied", "message": "No."}}}))], "agent_failed"),
+            ("an agent error", [[foundry_agent.AgentError("agent_unavailable", "down")]], "agent_unavailable"),
+        ]
+        for label, responses, code in cases:
+            with self.subTest(label=label):
+                env = Env(*responses)
+                sid = await env.session()
+                logs = self.assertLogs("ahm-demo", level="WARNING") if code == "agent_failed" else nullcontext()
+
+                with logs:
+                    task, events = await env.run(sid, env.fields())
+
+                self.assertEqual(task["error"]["code"], code)
+                self.assertNotIn("problems", task["error"])
+                self.assertTrue(all("problems" not in e["payload"] for e in events if e["kind"] == "error"))
+
+    async def test_an_invalid_result_carries_every_problem_of_the_web_side_check_too(self):
+        def ghosts(count):
+            changes = [{**REVIEW["changes"][0], "id": f"c{n}", "name": f"ghost-{n:02d}"} for n in range(count)]
+            return {**REVIEW, "changes": changes, "findings": []}
+
+        cases = [("two problems", 2, 2, "(and 1 more)"), ("a capped list", 30, 21, "(and 20 more)")]
+        for label, count, listed, more in cases:
+            with self.subTest(label=label):
+                env = Env(script(ghosts(count)))
+                sid = await env.session()
+
+                task, events = await env.run(sid, env.fields())
+
+                (error,) = [e for e in events if e["kind"] == "error"]
+                self.assertEqual(task["error"]["code"], "invalid_result")
+                self.assertEqual(len(task["error"]["problems"]), listed)
+                self.assertEqual(task["error"]["problems"], error["payload"]["problems"])
+                self.assertIn("does not exist in the model", task["error"]["problems"][0])
+                self.assertTrue(task["error"]["message"].endswith(more), task["error"]["message"])
+                if count > 20:
+                    self.assertEqual(task["error"]["problems"][-1], f"{count - 20} more problems not shown")
+
+
+class TimeLimitTests(unittest.IsolatedAsyncioTestCase):
+    def test_a_task_gets_ten_minutes_unless_told_otherwise(self):
+        self.assertEqual(config.TASK_TIMEOUT_SECONDS, 600)
+        self.assertEqual(inspect.signature(task_runner.TaskRunner).parameters["timeout"].default, 600)
+
+    async def test_the_timeout_failure_names_the_limit_in_minutes(self):
+        real_timeout = asyncio.timeout
+        env = Env([asyncio.Event()], timeout=600)
+        sid = await env.session()
+
+        with mock.patch.object(task_runner.asyncio, "timeout", lambda delay: real_timeout(0.05)):
+            task, _ = await env.run(sid, env.fields())
+
+        self.assertEqual(task["error"], {"code": "timeout", "message": "The task did not finish within 10 minutes."})
 
 
 class FinalSaveTests(unittest.IsolatedAsyncioTestCase):

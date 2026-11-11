@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import contextvars
 import json
+import logging
 import os
 import re
 import shutil
@@ -9,6 +10,7 @@ import signal
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -16,7 +18,17 @@ from agent_framework import AgentSession, ContextProvider, FunctionTool, Session
 from pydantic import Field
 
 from contracts import validate_task_result
+from grounding import MetricRun, RepoScan, grounded_problems, letters, removed_names, scan_repository, scan_signature, squash, words_of
+from clone import CLONE_TOOL, clone_tool
+from history import window_problems
+from instructions import instructions_for
+from plain import plain_problems
+from reduction import decision_lines, reduce_result, reduction_notice
+from redaction import redact
 from tokens import AzureUnavailable, TokenSource
+from webchecks import removal_problems, web_problems
+
+logger = logging.getLogger("health-model-agent")
 
 SHELL_TIMEOUT_DEFAULT = 60
 SHELL_TIMEOUT_CAP = 300
@@ -51,8 +63,12 @@ KILL_ROUNDS = 3
 
 
 SUBMIT_TOOL = "submit_result"
-QUERY_TOOLS = ("monitor_metrics_query", "monitor_workspace_log_query")
+METRICS_TOOL = "monitor_metrics_query"
+LOG_QUERY_TOOL = "monitor_workspace_log_query"
+QUERY_TOOLS = (METRICS_TOOL, LOG_QUERY_TOOL)
 INSPECT_TOOL = "monitor_healthmodels_inspect"
+LIST_TOOL = "group_resource_list"
+SHELL_TOOL = "run_shell"
 READ_ONLY_KEYS = frozenset(
     {
         "provisioningState",
@@ -73,7 +89,13 @@ READ_ONLY_KEYS = frozenset(
 class RunRecord:
     """What this run read and ran: the properties of each entity monitor_healthmodels_inspect returned, and the
     metrics and log queries, one entry each: did it return? Changes and verification rows must rest on them.
-    `nonce` is the Task's secret for the token broker; `blocked` is why Azure cannot be read, when it cannot."""
+    `nonce` is the Task's secret for the token broker; `blocked` is why Azure cannot be read, when it cannot;
+    `read_failures` counts the reads of the model that failed. What grounds a result: the resources `group_resource_list`
+    `listed` (id to name), the words of this workload (`vocabulary`: its resource names, instruction, resource group and
+    repository address), the `repository` the Task names and whether a clone was tried, the log queries that ran
+    (`log_runs`: query to status and columns) and the metrics queries that returned. `scope` is the Task target's
+    subscription and resource group, `groups` the resource groups the Task names. The counters (`rejections`, `repeats`,
+    `idle`, `model_calls`, `started`) decide when the agent submits a reduced result itself."""
 
     queries: list[bool] = field(default_factory=list)
     entities: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -86,6 +108,27 @@ class RunRecord:
     rejected: list[str] = field(default_factory=list)
     nonce: str = ""
     blocked: str = ""
+    read_failures: int = 0
+    repository: str = ""
+    clone_attempted: bool = False
+    listed: dict[str, str] = field(default_factory=dict)
+    vocabulary: set[str] = field(default_factory=set)
+    log_runs: dict[str, tuple[str, frozenset[str]]] = field(default_factory=dict)
+    metric_runs: list[MetricRun] = field(default_factory=list)
+    scan: tuple[Any, RepoScan] | None = None
+    folder: Path | None = None
+    instruction: str = ""
+    scope: tuple[str, str] | None = None
+    groups: frozenset[str] = frozenset()
+    rejections: int = 0
+    repeats: int = 0
+    last_result: dict[str, Any] | None = None
+    idle: int = 0
+    reduced: dict[str, Any] | None = None
+    reduced_sent: bool = False
+    model_calls: int = 0
+    started: float | None = None
+    history_window: tuple[datetime, datetime] | None = None
 
     def read_entities(self, text: str, requested: str | None = None) -> None:
         """An entity is named by itself, else by the last segment of its walk `path` (a `fields` filter can leave the
@@ -97,6 +140,73 @@ class RunRecord:
                 name = entity.get("name") or str(item.get("path") or "").rsplit("/", 1)[-1] or (requested if len(items) == 1 else None)
                 if name:
                     self.entities.setdefault(name.lower(), {}).update(entity.get("properties") or {})
+
+    def note_resources(self, text: str) -> None:
+        """The resources a group_resource_list call returned, and the words of their names."""
+        with contextlib.suppress(ValueError, KeyError, TypeError, AttributeError):
+            for item in json.loads(text)["results"]["resources"]:
+                self.listed[str(item["id"]).lower()] = str(item["name"])
+                self.vocabulary |= set(words_of(str(item["name"])))
+
+    def note_log_query(self, arguments: Mapping[str, Any], text: str | None) -> None:
+        """A log query of this run: it failed (`text` is None), returned no row, or returned one with these columns.
+        A run that returned stays on record when the same query fails later."""
+        query = squash(str(arguments.get("query") or ""))
+        status, columns = ("error", frozenset()) if text is None else ("empty", frozenset())
+        with contextlib.suppress(ValueError, KeyError, TypeError, AttributeError):
+            rows = json.loads(text or "")["results"]["results"]
+            if rows and isinstance(rows[0], dict):
+                status, columns = "ok", frozenset(rows[0])
+        if query and self.log_runs.get(query, ("", columns))[0] != "ok":
+            self.log_runs[query] = (status, columns)
+
+    def note_metric_query(self, arguments: Mapping[str, Any]) -> None:
+        names = frozenset(name.strip().lower() for name in str(arguments.get("metricnames") or "").split(",") if name.strip())
+        self.metric_runs.append(
+            MetricRun(
+                str(arguments.get("resource") or "").lower(),
+                names,
+                str(arguments.get("metricnamespace") or "").lower(),
+                str(arguments.get("aggregation") or "").lower(),
+            )
+        )
+
+    def note_shell(self, arguments: Mapping[str, Any]) -> None:
+        if re.search(r"\bgit\s+clone\b", str(arguments.get("command") or "")):
+            self.clone_attempted = True
+
+    def call_returned(self, tool: str, arguments: Mapping[str, Any], text: str) -> None:
+        """What a tool call that returned adds to the record. `arguments` are the call's own, names without separators."""
+        if tool == INSPECT_TOOL:
+            requested = arguments.get("entity")
+            self.read_entities(text, requested if isinstance(requested, str) and requested else None)
+        elif tool == LIST_TOOL:
+            self.note_resources(text)
+        elif tool in QUERY_TOOLS:
+            self.queries.append(True)
+            if tool == LOG_QUERY_TOOL:
+                self.note_log_query(arguments, text)
+            else:
+                self.note_metric_query(arguments)
+        elif tool == SHELL_TOOL:
+            self.note_shell(arguments)
+
+    def call_failed(self, tool: str, arguments: Mapping[str, Any]) -> None:
+        if tool == INSPECT_TOOL:
+            self.read_failures += 1
+        elif tool in QUERY_TOOLS:
+            self.queries.append(False)
+            if tool == LOG_QUERY_TOOL:
+                self.note_log_query(arguments, None)
+        elif tool == SHELL_TOOL:
+            self.note_shell(arguments)
+
+    def repository_scan(self, folder: Path) -> RepoScan:
+        """What the repositories cloned into the Task folder hold, scanned again when a clone appears."""
+        signature = scan_signature(folder)
+        if self.scan is None or self.scan[0] != signature:
+            self.scan = (signature, scan_repository(folder))
+        return self.scan[1]
 
 
 CURRENT_RUN: contextvars.ContextVar[RunRecord | None] = contextvars.ContextVar("current_run", default=None)
@@ -139,6 +249,12 @@ def find_task(texts: Sequence[str]) -> dict[str, Any] | None:
 def task_nonce(envelope: dict[str, Any] | None) -> str:
     nonce = envelope["task"].get("nonce") if envelope else None
     return nonce if isinstance(nonce, str) else ""
+
+
+def workload_repository(envelope: dict[str, Any] | None) -> str:
+    workload = envelope["task"].get("workload") if envelope else None
+    url = workload.get("repositoryUrl") if isinstance(workload, dict) else None
+    return url if isinstance(url, str) else ""
 
 
 def expected_reads(envelope: dict[str, Any] | None) -> frozenset[str]:
@@ -294,6 +410,7 @@ def edges_of(envelope: dict[str, Any] | None) -> dict[str, tuple[str, str]]:
 
 
 RESULT_KINDS = {"explain": "explain", "review": "diff", "design": "diff"}
+HEALTH_STATES = ("Healthy", "Degraded", "Unhealthy", "Unknown")
 
 
 def task_problems(result: dict[str, Any], record: RunRecord) -> list[str]:
@@ -396,8 +513,9 @@ def verification_problems(result: dict[str, Any], record: RunRecord) -> list[str
     elif "verified" in statuses and not any(record.queries):
         problems.append(
             "verification: no query returned in this Task, so no row can be `verified`. Set each such row's status to "
-            "`failing` and put the error in `error` (or to `not_run` and say why), or run a query that returns and keep "
-            "`verified` for that signal; then call submit_result again"
+            "`not_run` and put the reason in `error`, or run a query that returns and keep `verified` for that signal. "
+            "`failing` is for a signal the model already has; a new signal whose query fails is left out. Then call "
+            "submit_result again"
         )
     return problems + contradiction_problems(result)
 
@@ -426,12 +544,9 @@ def left_out(current: Any, after: Any, path: str = "") -> list[str]:
     return missing
 
 
-def letters(text: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", text.lower())
-
-
-def add_problems(index: int, change: dict[str, Any], record: RunRecord) -> list[str]:
-    """What the run already read exists: an `add` of it is a `change`, or nothing."""
+def add_problems(index: int, change: dict[str, Any], record: RunRecord, gone: set[str] = frozenset()) -> list[str]:
+    """What the run already read exists: an `add` of it is a `change`, or nothing. `gone` are the relationships this result
+    removes: a relationship that replaces one of them is no twin."""
     name = change["name"]
     if change["kind"] == "entity" and name.lower() in record.entities:
         return [f"changes[{index}]: entity '{name}' already exists in the model (the root exists too); use op `change`, or leave it out"]
@@ -441,7 +556,7 @@ def add_problems(index: int, change: dict[str, Any], record: RunRecord) -> list[
         return [f"changes[{index}]: relationship '{name}' already exists; use op `change`, or leave it out"]
     after = change["after"]
     pair = (str(after.get("parentEntityName", "")).lower(), str(after.get("childEntityName", "")).lower())
-    twin = next((listed for listed, edge in record.edges.items() if edge == pair), None)
+    twin = next((listed for listed, edge in record.edges.items() if edge == pair and listed not in gone), None)
     if twin:
         return [f"changes[{index}]: relationship '{name}' repeats {pair[0]} -> {pair[1]}, which already exists as '{twin}'; use that name or leave it out"]
     return []
@@ -463,9 +578,10 @@ def change_problems(result: dict[str, Any], record: RunRecord) -> list[str]:
     if result["kind"] != "diff":
         return []
     problems = []
+    gone = removed_names(result, "relationship")
     for index, change in enumerate(result["changes"]):
         if change["op"] == "add":
-            problems += add_problems(index, change, record)
+            problems += add_problems(index, change, record, gone)
         if change["op"] == "change" and change["kind"] == "relationship":
             problems += relationship_change_problems(index, change, record)
         if change["op"] != "change" or change["kind"] != "entity":
@@ -498,55 +614,127 @@ def change_problems(result: dict[str, Any], record: RunRecord) -> list[str]:
     return problems
 
 
-def blocked_problems(result: dict[str, Any], record: RunRecord) -> list[str]:
-    """Azure could not be read, so nothing in the result can rest on a reading: it says why and proposes nothing."""
+UNREADABLE_MODEL = "reading the model failed twice: the user may have no access to it, or it does not exist"
+
+
+def unreadable(record: RunRecord) -> str:
+    """Why nothing can be read: Azure is blocked for the run, or the model itself could not be read twice."""
+    return record.blocked or (UNREADABLE_MODEL if record.read_failures >= 2 and not record.entities else "")
+
+
+def blocked_problems(result: dict[str, Any], reason: str) -> list[str]:
+    """Nothing could be read, so nothing in the result can rest on a reading: it says why and proposes nothing."""
     proposed = result["causes"] if result["kind"] == "explain" else [*result["changes"], *result["verification"]]
     if not proposed:
         return []
     return [
-        f"Azure cannot be read for this Task ({record.blocked}), so the result has no readings to rest on: leave "
+        f"Azure cannot be read for this Task ({reason}), so the result has no readings to rest on: leave "
         "`causes`, `changes` and `verification` empty, and say why in `summary` and one `high` finding"
     ]
 
 
-REPEATED_REJECTION = (
-    "Same problems as your previous submit: that result was sent again unchanged. Edit the result itself where each "
-    "problem below points, then call submit_result with the edited result"
-)
+DECIDE_AFTER_REPEATS = 1
+REDUCE_AFTER_REPEATS = 2
+REDUCE_AFTER_TOTAL = 5
+MAX_IDLE = 3
+
+
+def result_problems(result: dict[str, Any], record: RunRecord, folder: Path) -> list[str]:
+    """Everything that keeps a result from being accepted: the schema, then the Task, what the run read and ran, what the web
+    app would answer, what ties the result to this workload, and how it is written."""
+    problems = validate_task_result(result)
+    if problems:
+        return problems
+    if task := task_problems(result, record):
+        return task
+    if reason := unreadable(record):
+        return blocked_problems(result, reason) + plain_problems(result, record) + window_problems(result, record.history_window)
+    return (
+        unread_problems(record)
+        + design_problems(result, record)
+        + verification_problems(result, record)
+        + change_problems(result, record)
+        + removal_problems(result, record)
+        + endpoint_problems(result, record)
+        + web_problems(result, record)
+        + grounded_problems(result, record, folder)
+        + plain_problems(result, record)
+        + window_problems(result, record.history_window)
+    )
+
+
+def accept(folder: Path, result: dict[str, Any], *, partial: bool = False) -> str:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return json.dumps({"status": "accepted", **({"partial": True} if partial else {})}, separators=(",", ":"))
+
+
+def log_rejection(folder: Path, record: RunRecord, problems: list[str]) -> None:
+    """The problems name entities and rules only: they go to the log, where the web app's timeline (five problems of 200
+    characters) cannot show them all."""
+    logger.info(
+        "submit_result rejected task=%s rejection=%d identical=%d problems=%d",
+        folder.name,
+        record.rejections,
+        record.repeats + 1,
+        len(problems),
+    )
+    for number, problem in enumerate(problems, 1):
+        logger.info("submit_result problem %d: %s", number, redact(problem, [record.nonce]))
+
+
+def read_state(record: RunRecord) -> str:
+    """The health state the run read for the entity of an explain, else Unknown."""
+    state = (record.entities.get(record.asked) or {}).get("healthState")
+    return state if state in HEALTH_STATES else "Unknown"
+
+
+def forced_result(record: RunRecord, folder: Path, why: str) -> dict[str, Any]:
+    """What the agent submits for the model when the Task cannot go on: the parts of its last result that pass every check,
+    the others as findings, or an empty result that says why. A Task whose Azure access is blocked proposes nothing."""
+    last = record.last_result or {}
+    kind = RESULT_KINDS.get(record.task_type) or (last.get("kind") if last.get("kind") in ("explain", "diff") else "diff")
+    if reason := unreadable(record):
+        last, why = {}, f"Azure cannot be read for this Task ({reason})"
+    return reduce_result(
+        last, lambda candidate: result_problems(candidate, record, folder), kind=kind, asked=record.asked, why=why, state=read_state(record)
+    )
 
 
 def submit(folder: Path, result: dict[str, Any], record: RunRecord) -> str:
-    problems = validate_task_result(result)
+    if record.reduced is not None and result == record.reduced:
+        logger.info("submit_result partial result accepted task=%s", folder.name)
+        return accept(folder, result, partial=True)
+    problems = result_problems(result, record, folder)
     if not problems:
-        problems = task_problems(result, record) or (
-            blocked_problems(result, record)
-            if record.blocked
-            else unread_problems(record)
-            + design_problems(result, record)
-            + verification_problems(result, record)
-            + change_problems(result, record)
-            + endpoint_problems(result, record)
-        )
-    if problems:
-        repeated = problems == record.rejected
-        record.rejected = problems
-        if repeated:
-            problems = [REPEATED_REJECTION, *problems]
-        return json.dumps({"status": "rejected", "problems": problems}, separators=(",", ":"))
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    return json.dumps({"status": "accepted"}, separators=(",", ":"))
+        return accept(folder, result)
+    record.rejections += 1
+    record.repeats = record.repeats + 1 if problems == record.rejected else 0
+    record.rejected, record.last_result, record.idle = problems, result, 0
+    log_rejection(folder, record, problems)
+    if record.repeats >= REDUCE_AFTER_REPEATS or record.rejections >= REDUCE_AFTER_TOTAL:
+        record.reduced = forced_result(record, folder, f"the proposal was rejected {record.rejections} times")
+        lines = reduction_notice(result, record.reduced)
+    elif record.repeats >= DECIDE_AFTER_REPEATS:
+        lines = decision_lines(result, problems, left=REDUCE_AFTER_REPEATS - record.repeats)
+    else:
+        lines = problems
+    return json.dumps({"status": "rejected", "problems": lines}, separators=(",", ":"))
 
 
-def task_tools(folder: Path, record: RunRecord) -> list[FunctionTool]:
-    @tool(
-        name="run_shell",
-        description=(
-            "Run a bash command in the Task folder: git clone --depth 1 of a public repository, reading files, "
-            "jq, python. No stdin. Output is capped; filter with grep, head or jq."
-        ),
-        approval_mode="never_require",
-    )
+SHELL_DESCRIPTION = (
+    "Run a bash command in the Task folder: read files, jq, python. No stdin, no git: repositories are cloned with "
+    "clone_repository. Output is capped; filter with grep, head or jq."
+)
+TYPE_TOOLS = {
+    "explain": (SUBMIT_TOOL,),
+    "review": (SUBMIT_TOOL,),
+    "design": (SHELL_TOOL, CLONE_TOOL, SUBMIT_TOOL),
+}
+
+
+def task_tools(folder: Path, record: RunRecord, wanted: Sequence[str] = (SHELL_TOOL, CLONE_TOOL, SUBMIT_TOOL)) -> list[FunctionTool]:
+    @tool(name=SHELL_TOOL, description=SHELL_DESCRIPTION, approval_mode="never_require")
     async def run_shell(
         command: Annotated[str, Field(description="Bash command line.")],
         timeout_seconds: Annotated[
@@ -566,12 +754,33 @@ def task_tools(folder: Path, record: RunRecord) -> list[FunctionTool]:
     def submit_result(result: Annotated[dict[str, Any], Field(description="The TaskResult object.")]) -> str:
         return submit(folder, result, record)
 
-    return [run_shell, submit_result]
+    tools = {SHELL_TOOL: run_shell, CLONE_TOOL: clone_tool(folder, record), SUBMIT_TOOL: submit_result}
+    return [tools[name] for name in wanted]
+
+
+def task_vocabulary(envelope: dict[str, Any] | None) -> set[str]:
+    """The words the Task itself brings about the workload: its instruction, resource group and repository address."""
+    task = envelope["task"] if envelope else {}
+    workload = task.get("workload") if isinstance(task.get("workload"), dict) else {}
+    texts = [task.get("instruction"), workload.get("resourceGroup"), workload.get("repositoryUrl")]
+    return {word for text in texts if isinstance(text, str) for word in words_of(text)}
+
+
+def task_scope(envelope: dict[str, Any] | None) -> tuple[tuple[str, str] | None, frozenset[str]]:
+    """The subscription and resource group of the Task's target, and every resource group the Task names (lower case)."""
+    task = envelope["task"] if envelope else {}
+    target = task.get("target") if isinstance(task.get("target"), dict) else {}
+    workload = task.get("workload") if isinstance(task.get("workload"), dict) else {}
+    subscription, group = target.get("subscriptionId"), target.get("resourceGroup")
+    scope = (subscription, group) if isinstance(subscription, str) and isinstance(group, str) and subscription and group else None
+    groups = {name.lower() for name in (group, workload.get("resourceGroup")) if isinstance(name, str) and name}
+    return scope, frozenset(groups)
 
 
 class TaskTools(ContextProvider):
-    """Gives each run tools bound to the folder of the Task in its latest user message, and fetches the Task's token
-    for the Azure MCP server before the run connects to it. Without a token the run goes on without Azure and says why."""
+    """Gives each run the instructions and tools of its Task type, bound to the folder of the Task in its latest user
+    message, and fetches the Task's token for the Azure MCP server before the run connects to it. Without a token the run
+    goes on without Azure and says why."""
 
     def __init__(self, workspace: Path, tokens: TokenSource | None = None) -> None:
         super().__init__("task-tools")
@@ -588,6 +797,9 @@ class TaskTools(ContextProvider):
     ) -> None:
         texts = [message.text for message in context.input_messages if message.role == "user"]
         envelope = find_envelope(texts)
+        folder = task_folder(self._workspace, envelope["task"] if envelope else None)
+        scope, groups = task_scope(envelope)
+        instruction = envelope["task"].get("instruction") if envelope else None
         record = RunRecord(
             expected=expected_reads(envelope),
             edges=edges_of(envelope),
@@ -596,6 +808,12 @@ class TaskTools(ContextProvider):
             task_type=envelope["task"].get("type", "") if envelope else "",
             asked=asked_entity(envelope),
             nonce=task_nonce(envelope),
+            repository=workload_repository(envelope),
+            vocabulary=task_vocabulary(envelope),
+            folder=folder,
+            instruction=instruction if isinstance(instruction, str) else "",
+            scope=scope,
+            groups=groups,
         )
         CURRENT_RUN.set(record)
         if self._tokens is not None:
@@ -604,6 +822,6 @@ class TaskTools(ContextProvider):
             except AzureUnavailable as error:
                 record.blocked = str(error)
                 context.extend_instructions(self.source_id, f"Azure cannot be read for this Task: {error}")
-        context.extend_tools(
-            self.source_id, task_tools(task_folder(self._workspace, envelope["task"] if envelope else None), record)
-        )
+        if text := instructions_for(record.task_type):
+            context.extend_instructions(self.source_id, text)
+        context.extend_tools(self.source_id, task_tools(folder, record, TYPE_TOOLS.get(record.task_type, tuple(TYPE_TOOLS["design"]))))

@@ -34,6 +34,7 @@ const ENTITIES: readonly Entity[] = [
 
 const EXPECTED: Readonly<Record<SortKey, readonly string[]>> = {
   shortest: ["alpha", "bravo", "charlie", "delta"],
+  custom: ["alpha", "bravo", "charlie", "delta"],
   name: ["alpha", "bravo", "charlie", "delta"],
   observed: ["delta", "bravo", "alpha", "charlie"],
   health: ["alpha", "charlie", "bravo", "delta"],
@@ -62,13 +63,14 @@ describe("orderEntities", () => {
     },
   );
 
-  it("lists entities by name for the shortest connections arrangement, whichever way the toggle is", () => {
-    expect(names(orderEntities(ENTITIES, "shortest", true))).toEqual(EXPECTED.shortest);
+  it.each(["shortest", "custom"] as const)("lists entities by name for the %s arrangement, whichever way the toggle is", (key) => {
+    expect(names(orderEntities(ENTITIES, key, true))).toEqual(EXPECTED[key]);
   });
 
   it("offers the shortest connections first", () => {
-    expect(SORT_CHOICES.map((choice) => choice.key)).toEqual(["shortest", "name", "observed", "health"]);
+    expect(SORT_CHOICES.map((choice) => choice.key)).toEqual(["shortest", "name", "observed", "health", "custom"]);
     expect(SORT_CHOICES[0]?.label).toBe("Shortest connections");
+    expect(SORT_CHOICES.at(-1)).toEqual({ key: "custom", label: "Custom" });
   });
 
   it("ranks health by severity, not alphabetically", () => {

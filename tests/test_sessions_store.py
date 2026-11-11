@@ -23,6 +23,8 @@ import sessions_store  # noqa: E402
 
 OWNER = "11111111-1111-1111-1111-111111111111"
 OTHER = "22222222-2222-2222-2222-222222222222"
+TENANT = "33333333-3333-3333-3333-333333333333"
+ABROAD = f"{TENANT}/{OWNER}"
 HOME = f"users/{OWNER}"
 OPERATIONS = [
     "create_session", "list_sessions", "get_session", "save_session", "create_task", "get_task",
@@ -186,7 +188,7 @@ class StoreContractTests(StoreCase):
                 )
                 listed = await store.list_sessions(OWNER)
                 self.assertEqual([s["id"] for s in listed], [second["id"], first["id"]])
-                self.assertEqual(set(listed[0]), {"id", "title", "createdAt", "taskCount", "lastTaskAt"})
+                self.assertEqual(set(listed[0]), {"id", "title", "createdAt", "taskCount", "lastTaskAt", "openTask"})
                 self.assertEqual((listed[0]["taskCount"], listed[0]["lastTaskAt"]), (0, None))
 
                 await asyncio.sleep(0.002)
@@ -315,14 +317,16 @@ class StoreContractTests(StoreCase):
                 await store.create_task(OWNER, session["id"], {"status": "running"})
                 (second,) = await store.list_sessions(OWNER)
 
-                self.assertEqual(empty, {"id": session["id"], "title": title, "createdAt": session["createdAt"], "taskCount": 0, "lastTaskAt": None})
+                self.assertEqual(empty, {"id": session["id"], "title": title, "createdAt": session["createdAt"], "taskCount": 0, "lastTaskAt": None, "openTask": None})
                 self.assertEqual((created["taskCount"], created["title"]), (1, title))
                 self.assertGreaterEqual(created["lastTaskAt"], session["createdAt"])
                 self.assertEqual(midway, created)
                 self.assertGreater(finished["lastTaskAt"], created["lastTaskAt"])
                 self.assertEqual((finished["taskCount"], second["taskCount"]), (1, 2))
                 self.assertGreater(second["lastTaskAt"], finished["lastTaskAt"])
-                self.assertEqual(set(second), {"id", "title", "createdAt", "taskCount", "lastTaskAt"})
+                self.assertEqual(set(second), {"id", "title", "createdAt", "taskCount", "lastTaskAt", "openTask"})
+                # The running Task of a Session is named in its summary: nothing before it starts, its seq while it runs, nothing once it is done.
+                self.assertEqual((empty["openTask"], created["openTask"], finished["openTask"], second["openTask"]), (None, 1, None, 2))
 
     async def test_unfinished_tasks_are_found_across_sessions_and_only_those(self):
         stores, container = self.make_stores()
@@ -568,13 +572,47 @@ class BlobStoreTests(StoreCase):
     async def test_the_owner_is_checked_before_it_becomes_part_of_a_blob_name(self):
         stores, container = self.make_stores()
         store = stores["blob"]
-        for owner in ("", "../x", "a/b", "a b", "x" * 65, "ü"):
+        for owner in ("", "../x", "/a", "a/", "a//b", "a/b/c", "a/../b", "a b", "x" * 65, "ü", f"{OWNER}/{OWNER}/{OWNER}"):
             with self.subTest(owner=owner):
                 with self.assertRaises(ValueError):
                     await store.list_sessions(owner)
                 with self.assertRaises(ValueError):
                     await store.create_session(owner, "x")
         self.assertEqual(container.blobs, {})
+
+    async def test_a_user_of_another_directory_is_a_different_owner_with_the_same_object_id(self):
+        for kind, store in (("memory", self.make_stores()[0]["memory"]), ("blob", self.make_stores()[0]["blob"])):
+            with self.subTest(store=kind):
+                home = await store.create_session(OWNER, "Home")
+                abroad = await store.create_session(ABROAD, "Abroad")
+                await store.create_task(ABROAD, abroad["id"], {"status": "running", "type": "review"})
+
+                self.assertEqual([s["title"] for s in await store.list_sessions(OWNER)], ["Home"])
+                self.assertEqual([s["title"] for s in await store.list_sessions(ABROAD)], ["Abroad"])
+                self.assertIsNone(await store.get_session(OWNER, abroad["id"]))
+                self.assertIsNone(await store.get_session(ABROAD, home["id"]))
+                self.assertEqual(await store.list_tasks(OWNER, abroad["id"]), [])
+                self.assertEqual([(owner, task["sessionId"]) for owner, task in await store.unfinished_tasks()], [(ABROAD, abroad["id"])])
+
+    async def test_the_blobs_of_another_directory_live_under_its_tenant_id_and_the_home_ones_stay_where_they_were(self):
+        stores, container = self.make_stores()
+        store = stores["blob"]
+        home = await store.create_session(OWNER, "Home")
+        abroad = await store.create_session(ABROAD, "Abroad")
+        await store.create_task(ABROAD, abroad["id"], {"status": "running"})
+        await store.append_event(ABROAD, abroad["id"], 1, {"seq": 1, "kind": "text", "summary": "e", "payload": {}})
+
+        self.assertEqual(
+            sorted(container.blobs),
+            sorted(
+                [
+                    f"users/{OWNER}/{home['id']}/session.json",
+                    f"users/{TENANT}/{OWNER}/{abroad['id']}/session.json",
+                    f"users/{TENANT}/{OWNER}/{abroad['id']}/tasks/1/task.json",
+                    f"users/{TENANT}/{OWNER}/{abroad['id']}/tasks/1/events.jsonl",
+                ]
+            ),
+        )
 
     async def test_listing_one_owner_never_reads_another_owners_blobs(self):
         stores, container = self.make_stores()

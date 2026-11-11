@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { JSX } from "react";
 import { makeStyles } from "@fluentui/react-components";
 import { presentActivity } from "../model/activity";
+import { finishedAnnouncement } from "../model/tasks";
 import { useStore } from "../store/store";
 
 const KEPT = 10;
@@ -21,13 +22,20 @@ const useStyles = makeStyles({
 });
 
 /**
- * What a screen reader hears of a running Task: its status changes, the result and the end of the Task.
+ * What a screen reader hears while the assistant works: its status changes, the answer and the end.
  * It stays mounted when the result replaces the timeline on screen, so the end is still announced.
  */
 export function TimelineAnnouncer(): JSX.Element {
   const styles = useStyles();
   const events = useStore((state) => state.events);
   const status = useStore((state) => (state.task.kind === "success" ? state.task.value.status : null));
+  const task = useStore((state) => (state.task.kind === "success" ? state.task.value : null));
+  const entityLabel = useStore((state) => {
+    const entity = state.task.kind === "success" ? state.task.value.target.entity : undefined;
+    return entity !== undefined && state.model.kind === "success"
+      ? (state.model.value.entities.find((item) => item.name === entity)?.displayName ?? null)
+      : null;
+  });
   const announced = useRef(0);
   const previous = useRef(status);
   const [lines, setLines] = useState<readonly string[]>([]);
@@ -49,8 +57,8 @@ export function TimelineAnnouncer(): JSX.Element {
   }, [events, status]);
 
   useEffect(() => {
-    if ((previous.current === "running" || previous.current === "queued") && status === "done") {
-      say("The Task finished. Its result is ready.");
+    if ((previous.current === "running" || previous.current === "queued") && status === "done" && task !== null) {
+      say(finishedAnnouncement(task, entityLabel));
     }
     previous.current = status;
   }, [status]);
@@ -59,7 +67,7 @@ export function TimelineAnnouncer(): JSX.Element {
     <div
       role="log"
       aria-live="polite"
-      aria-label="Activity timeline announcements"
+      aria-label="Progress updates"
       className={styles.visuallyHidden}
       data-testid="timeline-log"
     >

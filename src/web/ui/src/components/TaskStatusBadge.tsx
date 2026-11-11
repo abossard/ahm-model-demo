@@ -7,13 +7,7 @@ import {
   Clock16Regular,
 } from "@fluentui/react-icons";
 import type { TaskStatus } from "../model/types";
-
-const LABELS: Readonly<Record<TaskStatus, string>> = {
-  queued: "Queued",
-  running: "Running",
-  done: "Done",
-  failed: "Failed",
-};
+import { STATUS_LABEL } from "../model/wording";
 
 export const TaskStatusBadge = memo(function TaskStatusBadge({
   status,
@@ -25,7 +19,7 @@ export const TaskStatusBadge = memo(function TaskStatusBadge({
     status === "done" ? <CheckmarkCircle16Filled /> : status === "failed" ? <DismissCircle16Filled /> : status === "running" ? <Spinner size="extra-tiny" /> : <Clock16Regular />;
   return (
     <Badge appearance="tint" color={color} icon={icon} data-testid="task-status" data-status={status}>
-      {LABELS[status]}
+      {STATUS_LABEL[status]}
     </Badge>
   );
 });

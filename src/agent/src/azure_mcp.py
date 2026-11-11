@@ -1,12 +1,13 @@
-import re
 from collections.abc import Iterable
 
 from agent_framework import MCPStreamableHTTPTool
 from mcp import types
 
+from redaction import redact
 from tokens import AzureUnavailable, TokenSource, secure_url
 from tools import CURRENT_RUN
 
+ACTIVITY_LOG_TOOL = "monitor_activitylog_list"
 AZURE_MCP_TOOLS = (
     "monitor_healthmodels_list",
     "monitor_healthmodels_get",
@@ -15,25 +16,10 @@ AZURE_MCP_TOOLS = (
     "monitor_metrics_query",
     "monitor_workspace_log_query",
     "group_resource_list",
+    ACTIVITY_LOG_TOOL,
 )
 
 REQUEST_TIMEOUT_SECONDS = 120
-MIN_SECRET_LENGTH = 8
-REDACTED = "[redacted]"
-SECRET_SHAPES = re.compile(
-    r"eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]*"
-    r"|\bBearer\s+[\w.~+/=-]{16,}"
-    r"|\b(?:InstrumentationKey|AccountKey|SharedAccessKey|SharedAccessSignature|Password|sig)=[^;&\s\"']+",
-    re.IGNORECASE,
-)
-
-
-def redact(text: str, secrets: Iterable[str] = ()) -> str:
-    """Error text reaches the model and the public timeline: drop the Task's own secrets and token shapes."""
-    for secret in secrets:
-        if len(secret) >= MIN_SECRET_LENGTH:
-            text = text.replace(secret, REDACTED)
-    return SECRET_SHAPES.sub(REDACTED, text)
 
 
 def current_secrets(tokens: TokenSource) -> list[str]:

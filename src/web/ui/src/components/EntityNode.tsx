@@ -4,7 +4,9 @@ import { Handle, Position, useStore } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
 import type { Entity, HealthState } from "../model/types";
 import type { ChangeBadge } from "../model/changes";
-import { cardTokens, tokensFor } from "../model/palette";
+import { cardTokens, diffTokens, impactOf, impactStyle, tokensFor } from "../model/palette";
+import { StateGlyph } from "./StateGlyph";
+import { LEVEL_HEIGHT, type ZoomLevel } from "../model/zoomLevels";
 import { HEALTH_SORT_ORDER } from "../model/ordering";
 import { formatSignalValue } from "../model/signalValue";
 import { actions } from "../store/store";
@@ -15,10 +17,12 @@ export const DOT_SIZE = 12;
 const TOGGLE_BOX = 26;
 const TOGGLE_MIN_RENDERED = 25;
 const HEADER_MIN = 54;
+/** The row under the header that names a Limited or Suppressed impact. */
+const CHIP_ROW = 26;
 
 const STROKE = `fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"`;
 
-const ICONS: Readonly<Record<string, string>> = {
+export const ICONS: Readonly<Record<string, string>> = {
   root: `<circle cx="12" cy="12" r="8.4" ${STROKE}/><path d="M4.2 12h3l2-3.6 2.8 7.2 1.8-3.6h4" ${STROKE}/>`,
   flow: `<circle cx="5.5" cy="6" r="2" ${STROKE}/><circle cx="5.5" cy="18" r="2" ${STROKE}/><circle cx="18.5" cy="12" r="2" ${STROKE}/><path d="M7.5 6h3a4 4 0 0 1 4 4M7.5 18h3a4 4 0 0 0 4-4" ${STROKE}/>`,
   web: `<circle cx="12" cy="12" r="8.4" ${STROKE}/><path d="M3.6 12h16.8M12 3.6c3 3 3 13.8 0 16.8M12 3.6c-3 3-3 13.8 0 16.8" ${STROKE}/>`,
@@ -33,7 +37,7 @@ const ICONS: Readonly<Record<string, string>> = {
   cube: `<path d="M12 3.2l7.6 4.4v8.8L12 20.8l-7.6-4.4V7.6z" ${STROKE}/><path d="M4.6 7.8l7.4 4.3 7.4-4.3M12 12.1v8.6" ${STROKE}/>`,
 };
 
-function pickIcon(label: string): string {
+export function pickIcon(label: string): string {
   const t = label.toLowerCase();
   const has = (...words: readonly string[]): boolean => words.some((word) => t.includes(word));
   if (has("root")) return "root";
@@ -54,22 +58,7 @@ function pickIcon(label: string): string {
 }
 
 function StateDot({ state }: { readonly state: HealthState }): JSX.Element {
-  const token = tokensFor(state);
-  return (
-    <svg className="entity-node__dot" viewBox="0 0 12 12" aria-hidden="true">
-      <circle cx="6" cy="6" r="6" fill={token.dot} />
-      {state === "Healthy" ? (
-        <path
-          d="M3.3 6 l1.9 1.9 l3.4 -3.9"
-          fill="none"
-          stroke={cardTokens.pillFill}
-          strokeWidth="1.4"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      ) : null}
-    </svg>
-  );
+  return <StateGlyph state={state} size={12} className="entity-node__dot" />;
 }
 
 function MetricGlyph(): JSX.Element {
@@ -98,6 +87,14 @@ export interface EntityNodeData extends Record<string, unknown> {
   readonly marked: boolean;
   /** The entity is part of the open Explain result's cause chain. */
   readonly inChain: boolean;
+  /** What the zoom shows of a card: the card, a name pill, or a dot. */
+  readonly level: ZoomLevel;
+  /** The card can be moved to another place with the keyboard: M picks it up. */
+  readonly reorderable?: boolean;
+  /** The card is being dragged: it stays where its place would be, dimmed. */
+  readonly dragging?: boolean;
+  /** A see-through copy that follows the pointer while the card is dragged; `blocked` while no place would take it. */
+  readonly ghost?: "free" | "blocked";
 }
 
 const CHEVRON = `<path d="M4 6.5 8 10.5 12 6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`;
@@ -136,7 +133,7 @@ function CollapseToggle({
   return (
     <button
       type="button"
-      className="entity-node__toggle"
+      className="entity-node__toggle nodrag"
       data-testid="collapse-toggle"
       style={scale === 1 ? undefined : { transform: `scale(${scale})` }}
       aria-expanded={!collapsed}
@@ -202,9 +199,12 @@ function HiddenSummary({
 export type EntityRfNode = Node<EntityNodeData, "entity">;
 
 function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
-  const { entity, displayRole, selected, highlighted, hasChildren, collapsed, hiddenCount, hiddenStates, badge, marked, inChain } = data;
+  const { entity, displayRole, selected, highlighted, hasChildren, collapsed, hiddenCount, hiddenStates, badge, marked, inChain, level, reorderable, dragging, ghost } = data;
+  const moving = `${dragging ? " is-dragging" : ""}${ghost ? ` is-ghost${ghost === "blocked" ? " is-blocked" : ""}` : ""}`;
+  const reorder = ghost ? { "aria-hidden": true as const } : { tabIndex: 0, ...(reorderable ? { "aria-keyshortcuts": "M" } : {}) };
   const token = tokensFor(entity.healthState);
   const name = entity.displayName || entity.name;
+  const impact = impactOf(entity.impact);
 
   const activate = (): void => {
     actions.activateEntity(entity.name);
@@ -217,11 +217,61 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
     }
   };
 
+  if (displayRole === "card" && level !== "card") {
+    // Far out a card is a name pill or a dot of its state; it keeps the width of a card, so the
+    // lines meet it where the card's would, and only its height changes.
+    const height = LEVEL_HEIGHT[level];
+    return (
+      <div className="entity-node-shell entity-node-shell--lod" style={{ width: CARD_WIDTH }}>
+        <Handle type="target" position={Position.Top} className="entity-node__handle" />
+        <div
+          className={`entity-node entity-node--${level}${selected ? " is-selected" : ""}${highlighted ? " is-highlighted" : ""}${inChain ? " is-chain" : ""}${marked ? " is-marked" : ""}${moving}`}
+          data-entity={entity.name}
+          data-role="card"
+          data-lod={level}
+          data-highlighted={highlighted ? "true" : undefined}
+          data-badge={badge ?? undefined}
+          data-chain={inChain ? "true" : undefined}
+          data-marked={marked ? "true" : undefined}
+          role="button"
+          {...reorder}
+          aria-label={`${name} (${entity.healthState}${impact === "Standard" ? "" : `, ${impactStyle[impact].word}`})${badge ? `, ${badge} in the proposed changes` : ""}`}
+          title={`${name} · ${entity.healthState}`}
+          style={{
+            width: level === "pill" ? CARD_WIDTH : height,
+            height,
+            borderStyle: impact === "Suppressed" ? "dotted" : token.dashed ? "dashed" : "solid",
+            borderColor: token.border,
+            backgroundColor: token.fill,
+          }}
+          onClick={activate}
+          onKeyDown={onKeyDown}
+        >
+          {level === "pill" ? (
+            <>
+              <StateGlyph state={entity.healthState} size={26} />
+              <span className="entity-node__name">{name}</span>
+              {impact === "Standard" ? null : <span aria-hidden="true">{impactStyle[impact].glyph}</span>}
+              {badge ? (
+                <span className="entity-node__lodmark" data-badge={badge} aria-hidden="true">
+                  {diffTokens[badge].glyph}
+                </span>
+              ) : null}
+            </>
+          ) : (
+            <StateGlyph state={entity.healthState} size={level === "dot" ? 28 : 58} />
+          )}
+        </div>
+        <Handle type="source" position={Position.Bottom} className="entity-node__handle" />
+      </div>
+    );
+  }
+
   return (
     <div className="entity-node-shell" style={{ width: displayRole === "dot" ? DOT_SIZE : CARD_WIDTH }}>
       <Handle type="target" position={Position.Top} className="entity-node__handle" />
       <div
-        className={`entity-node${displayRole === "dot" ? " entity-node--dot" : ""}${selected ? " is-selected" : ""}${highlighted ? " is-highlighted" : ""}${inChain ? " is-chain" : ""}${marked ? " is-marked" : ""}`}
+        className={`entity-node${displayRole === "dot" ? " entity-node--dot" : ""}${selected ? " is-selected" : ""}${highlighted ? " is-highlighted" : ""}${inChain ? " is-chain" : ""}${marked ? " is-marked" : ""}${moving}`}
         data-entity={entity.name}
         data-role={displayRole}
         data-highlighted={highlighted ? "true" : undefined}
@@ -229,12 +279,12 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
         data-chain={inChain ? "true" : undefined}
         data-marked={marked ? "true" : undefined}
         role="button"
-        tabIndex={0}
-        aria-label={`${name} (${entity.healthState}${displayRole === "dot" ? ", filtered" : ""})${badge ? `, ${badge} in this Health model diff` : ""}`}
+        {...reorder}
+        aria-label={`${name} (${entity.healthState}${displayRole === "dot" ? ", filtered" : ""}${impact === "Standard" ? "" : `, ${impactStyle[impact].word}`})${badge ? `, ${badge} in the proposed changes` : ""}`}
         style={{
           width: displayRole === "dot" ? DOT_SIZE : CARD_WIDTH,
           height: displayRole === "dot" ? DOT_SIZE : undefined,
-          borderStyle: displayRole === "dot" ? "solid" : token.dashed ? "dashed" : "solid",
+          borderStyle: displayRole === "dot" ? "solid" : impact === "Suppressed" ? "dotted" : token.dashed ? "dashed" : "solid",
           borderColor: displayRole === "dot" ? "var(--unknown-border)" : token.border,
           backgroundColor: displayRole === "dot" ? "var(--unknown-dot)" : token.fill,
         }}
@@ -268,6 +318,13 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
               <CollapseToggle entity={entity} collapsed={collapsed} hiddenCount={hiddenCount} />
             ) : null}
           </div>
+          {impact !== "Standard" ? (
+            <div className="entity-node__chips">
+              <span className="entity-node__chip" data-testid="impact-chip" data-impact={impact}>
+                <span aria-hidden="true">{impactStyle[impact].glyph}</span> {impactStyle[impact].word}
+              </span>
+            </div>
+          ) : null}
           {entity.signals.length > 0 ? (
             <>
               <div className="entity-node__divider" />
@@ -327,8 +384,9 @@ export function estimateNodeSize(
   // wrapped name at its 17px line box.
   const headerHeight = Math.max(HEADER_MIN, 20 + nameLines * 17);
   const rowsHeight = entity.signals.length > 0 ? 16 + entity.signals.length * 22 : 0;
+  const chipHeight = impactOf(entity.impact) === "Standard" ? 0 : CHIP_ROW;
   return {
     width: CARD_WIDTH,
-    height: headerHeight + rowsHeight + (showsHiddenSummary ? 28 : 0),
+    height: headerHeight + chipHeight + rowsHeight + (showsHiddenSummary ? 28 : 0),
   };
 }

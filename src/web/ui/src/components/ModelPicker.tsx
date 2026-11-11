@@ -74,7 +74,7 @@ export function ModelPicker(): JSX.Element | null {
   const [query, setQuery] = useState("");
 
   const models = catalog.kind === "success" ? catalog.value.models : null;
-  const defaultSubscription = catalog.kind === "success" ? catalog.value.default.subscriptionId : "";
+  const defaultSubscription = catalog.kind === "success" ? (catalog.value.default?.subscriptionId ?? "") : "";
   const listing = useMemo(
     () => (models ? listModels(models, query, defaultSubscription) : null),
     [models, query, defaultSubscription],

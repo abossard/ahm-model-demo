@@ -113,35 +113,138 @@ body {
   box-shadow: 0 0 0 3px var(--colorPaletteMarigoldBorderActive);
 }
 
+/* A card on its way to another place: it stays where its place would be, dimmed, and a see-through copy follows the pointer. */
+.entity-node.is-dragging {
+  opacity: 0.35;
+}
+
+.entity-node.is-ghost {
+  opacity: 0.6;
+  pointer-events: none;
+  cursor: grabbing;
+  box-shadow: var(--shadow16);
+}
+
+.entity-node.is-ghost.is-blocked {
+  opacity: 0.4;
+  outline: 2px dashed var(--colorPaletteRedBorder2);
+  outline-offset: 3px;
+}
+
+.drop-indicator {
+  box-sizing: border-box;
+  border: 2px dashed var(--colorBrandStroke1);
+  border-radius: var(--borderRadiusXLarge);
+  background: color-mix(in srgb, var(--colorBrandBackground) 22%, transparent);
+  pointer-events: none;
+}
+
+.topology--reordering .entity-node {
+  cursor: grabbing;
+}
+
+/* The others make room as the card passes over the places; the copy follows the pointer without lag. */
+.topology--reordering .react-flow__node {
+  transition: transform 160ms ease;
+}
+
+.topology--reordering .react-flow__node[data-id="__ghost__"] {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topology--reordering .react-flow__node {
+    transition: none;
+  }
+}
+
 .entity-node__badge {
   position: absolute;
   top: -11px;
   left: 10px;
   z-index: 1;
   padding: 0 8px;
+  border: 1px solid;
   border-radius: var(--borderRadiusCircular);
   font-size: 10.5px;
-  line-height: 18px;
+  line-height: 16px;
   font-weight: var(--fontWeightSemibold);
   text-transform: capitalize;
-  color: var(--colorNeutralForegroundOnBrand);
-  background: var(--colorNeutralForeground2);
+}
+
+/* A diff mark has a glyph and a colour of its own, apart from the health states. */
+.entity-node__badge::before {
+  margin-right: 4px;
+  font-weight: 700;
 }
 
 .entity-node__badge[data-badge="added"] {
-  background: var(--colorStatusSuccessBackground3);
+  background: var(--added-tint);
+  border-color: var(--added-line);
+  color: var(--added-ink);
+}
+
+.entity-node__badge[data-badge="added"]::before {
+  content: "+";
 }
 
 .entity-node__badge[data-badge="changed"] {
-  background: var(--colorBrandBackground);
+  background: var(--changed-tint);
+  border-color: var(--changed-line);
+  color: var(--changed-ink);
+}
+
+.entity-node__badge[data-badge="changed"]::before {
+  content: "\2260";
 }
 
 .entity-node__badge[data-badge="removed"] {
-  background: var(--colorStatusDangerBackground3);
+  background: var(--removed-tint);
+  border-color: var(--removed-line);
+  color: var(--removed-ink);
+}
+
+.entity-node__badge[data-badge="removed"]::before {
+  content: "\2212";
+}
+
+.entity-node[data-badge="added"] {
+  border-color: var(--added-line) !important;
+}
+
+.entity-node[data-badge="changed"] {
+  border-color: var(--changed-line) !important;
+}
+
+.entity-node[data-badge="removed"] {
+  border-color: var(--removed-line) !important;
+  border-style: dashed !important;
+  background-color: var(--removed-tint) !important;
 }
 
 .entity-node[data-badge="removed"] .entity-node__name {
   text-decoration: line-through;
+}
+
+.entity-node__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 10px 8px 34px;
+}
+
+.entity-node__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 8px;
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: 9px;
+  background: var(--colorNeutralBackground1);
+  font-size: 10.5px;
+  color: var(--colorNeutralForeground2);
+  white-space: nowrap;
 }
 
 .entity-node__header {
@@ -330,4 +433,297 @@ body {
   .entity-node__chevron {
     transition: none;
   }
+}
+
+/* Cause path view: sizes follow severity and are fixed, so the layout never waits for a measurement. */
+.cause-node-shell,
+.cause-chip-shell {
+  pointer-events: none;
+}
+
+.cause-node {
+  position: relative;
+  box-sizing: border-box;
+  border-width: 2px;
+  border-style: solid;
+  border-radius: var(--borderRadiusXLarge);
+  box-shadow: var(--shadow4);
+  font-family: var(--fontFamilyBase);
+  cursor: pointer;
+  outline: none;
+  pointer-events: all;
+}
+
+.cause-node[data-state="Unhealthy"] {
+  border-width: 2.5px;
+}
+
+.cause-node--pill {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-width: 1.5px;
+  border-radius: 17px;
+  box-shadow: none;
+}
+
+.cause-node.is-selected {
+  box-shadow: 0 0 0 2px var(--colorBrandStroke1);
+}
+
+.cause-node:focus-visible {
+  box-shadow: 0 0 0 2px var(--colorStrokeFocus1), 0 0 0 4px var(--colorStrokeFocus2);
+}
+
+.cause-node.is-highlighted {
+  box-shadow: 0 0 0 3px var(--colorBrandStroke1);
+}
+
+.cause-node.is-marked {
+  box-shadow: 0 0 0 3px var(--colorPaletteMarigoldBorderActive);
+}
+
+.cause-node.is-chain {
+  outline: 2px dashed var(--colorBrandStroke1);
+  outline-offset: 3px;
+}
+
+.cause-node__step {
+  position: absolute;
+  top: -11px;
+  left: -11px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--colorBrandBackground);
+  color: var(--colorNeutralForegroundOnBrand);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cause-node__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 56px;
+  padding: 0 8px 0 6px;
+  box-sizing: border-box;
+}
+
+.cause-node__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 17px;
+  font-weight: var(--fontWeightSemibold);
+  color: var(--colorNeutralForeground1);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.cause-node--hero .cause-node__name {
+  font-size: 14px;
+  line-height: 19px;
+}
+
+.cause-node__name--pill {
+  display: block;
+  font-weight: var(--fontWeightRegular);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cause-node__pillrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.cause-node__mark {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--colorNeutralForeground2);
+}
+
+.cause-node__rows {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  border-top: 1px solid var(--colorNeutralStroke2);
+}
+
+.cause-node__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 12px 0 10px;
+  font-size: 11px;
+}
+
+.cause-node__row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--colorNeutralForeground1);
+  font-weight: var(--fontWeightSemibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cause-node__row-value {
+  flex: 0 0 auto;
+  font-weight: var(--fontWeightSemibold);
+}
+
+.cause-node__summary {
+  height: 20px;
+  padding: 0 12px 0 28px;
+  font-size: 10.5px;
+  line-height: 20px;
+  color: var(--colorNeutralForeground2);
+}
+
+.cause-chip {
+  pointer-events: all;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0 10px;
+  border: 1.2px dashed var(--colorNeutralForeground3);
+  border-radius: 14px;
+  background: var(--colorNeutralBackground1);
+  color: var(--colorNeutralForeground2);
+  font: inherit;
+  font-size: 11px;
+  font-weight: var(--fontWeightSemibold);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cause-chip:hover {
+  background: var(--colorNeutralBackground1Hover);
+}
+
+.cause-chip:focus-visible {
+  outline: 2px solid var(--colorStrokeFocus2);
+  outline-offset: 2px;
+}
+
+/* Coverage view: one SVG, the model as a partition. */
+.coverage {
+  display: block;
+  font-family: var(--fontFamilyBase);
+}
+
+.coverage-cell {
+  cursor: pointer;
+  outline: none;
+}
+
+.coverage-cell__label {
+  fill: var(--colorNeutralForeground1);
+  pointer-events: none;
+}
+
+.coverage-cell__ring {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.coverage-cell:focus-visible .coverage-cell__ring {
+  opacity: 1;
+}
+
+/* Semantic zoom: far out a card is a name pill or a dot; it keeps the width of a card and shrinks in height. */
+.entity-node-shell--lod {
+  display: flex;
+  justify-content: center;
+}
+
+.entity-node--pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  padding: 0 16px;
+  border-width: 3px;
+  border-radius: 22px;
+  box-shadow: none;
+}
+
+.entity-node--pill .entity-node__name {
+  min-width: 0;
+  font-size: 20px;
+  line-height: 26px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* What a diff does to a part, on its name pill: the glyph of the mark in the mark's own colours. */
+.entity-node__lodmark {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 4px;
+  border: 2px solid;
+  border-radius: 14px;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.entity-node__lodmark[data-badge="added"] {
+  background: var(--added-tint);
+  border-color: var(--added-line);
+  color: var(--added-ink);
+}
+
+.entity-node__lodmark[data-badge="changed"] {
+  background: var(--changed-tint);
+  border-color: var(--changed-line);
+  color: var(--changed-ink);
+}
+
+.entity-node__lodmark[data-badge="removed"] {
+  background: var(--removed-tint);
+  border-color: var(--removed-line);
+  color: var(--removed-ink);
+}
+
+.entity-node--dot,
+.entity-node--speck {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border-width: 3px;
+  border-radius: 50%;
+  box-shadow: none;
+}
+
+/* Lines keep their width on screen at any zoom, so a far-out graph still shows its connections. */
+.topology .react-flow__edge-path {
+  vector-effect: non-scaling-stroke;
+}
+
+/* Far out, the words on the lines are too small to read and only cover the connections. */
+.topology--far .react-flow__edge-textwrapper {
+  display: none;
 }

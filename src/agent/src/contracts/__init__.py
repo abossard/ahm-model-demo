@@ -63,15 +63,18 @@ def semantic_problems(result: dict[str, Any]) -> list[str]:
         for index, change in enumerate(result["changes"])
         if not re.fullmatch(_NAME_PATTERN, change["name"])
     ]
-    first: dict[tuple[str, str], str] = {}
+    first: dict[tuple[str, str], tuple[str, str]] = {}
     for index, change in enumerate(result["changes"]):
         slot = (change["kind"], change["name"].lower())
         if slot in first:
+            earlier, op = first[slot]
             problems.append(
-                f"changes[{index}]: {change['kind']} '{change['name']}' is already changed by '{first[slot]}'; "
-                "put both fixes into one change"
+                f"changes[{index}]: {change['kind']} '{change['name']}' is removed and added in one result, which would delete "
+                "the new one (removals run after additions): add the replacement under another name"
+                if {op, change["op"]} == {"remove", "add"}
+                else f"changes[{index}]: {change['kind']} '{change['name']}' is already changed by '{earlier}'; put both fixes into one change"
             )
-        first.setdefault(slot, change["id"])
+        first.setdefault(slot, (change["id"], change["op"]))
     for index, finding in enumerate(result["findings"]):
         problems += [
             f"findings[{index}].changeIds: no change has id '{id_}'" for id_ in finding["changeIds"] if id_ not in ids

@@ -1,8 +1,10 @@
 import type { StateCreator } from "zustand";
 import { DEFAULT_LAYOUT_ID, type LayoutId } from "../model/layout";
 import type { ConnectionPolicy, EdgeStyle } from "../model/edgeRouting";
-import type { SortKey } from "../model/ordering";
+import { persistOrders, persistSortKey, readStoredOrders, readStoredSortKey, orderKey, type CustomOrder, type CustomOrders, type OrderFamily } from "../model/customOrder";
+import { SORT_CHOICES, type SortKey } from "../model/ordering";
 import type { ThemeName } from "../model/theme";
+import { DEFAULT_VIEW, persistView, readStoredView, viewFromSearch, type ViewId } from "../model/views";
 import type { HealthState } from "../model/types";
 import type { Store } from "./store";
 
@@ -22,6 +24,8 @@ export interface UiState {
   readonly layoutId: LayoutId;
   readonly sortKey: SortKey;
   readonly sortReversed: boolean;
+  /** The orders the viewer gave by dragging, per model and family of layouts; kept in this browser. */
+  readonly customOrders: CustomOrders;
   readonly edgeStyle: EdgeStyle;
   readonly connectionPolicy: ConnectionPolicy;
   readonly collapsed: readonly string[];
@@ -37,6 +41,10 @@ export interface UiState {
   readonly announcement: string;
   readonly selectedHealth: readonly HealthFilterState[];
   readonly excludedEntityMode: ExcludedEntityMode;
+  /** How the health model is drawn: also in the address bar as `?view=`. */
+  readonly view: ViewId;
+  /** The Cause path chips that are open, by group id. */
+  readonly openChips: readonly string[];
 }
 
 export interface UiActions {
@@ -47,6 +55,10 @@ export interface UiActions {
   readonly setLayout: (layoutId: LayoutId) => void;
   readonly setSortKey: (sortKey: SortKey) => void;
   readonly toggleSortDirection: () => void;
+  /** Keeps an order the viewer gave and switches the Order to Custom. It belongs to the open model. */
+  readonly commitCustomOrder: (family: OrderFamily, order: CustomOrder) => void;
+  /** Forgets the order of the open model for one family of layouts; Custom, if chosen, gives way to the shortest connections. */
+  readonly resetCustomOrder: (family: OrderFamily) => void;
   readonly setEdgeStyle: (edgeStyle: EdgeStyle) => void;
   readonly setConnectionPolicy: (policy: ConnectionPolicy) => void;
   readonly toggleCollapse: (name: string) => void;
@@ -63,6 +75,17 @@ export interface UiActions {
   readonly setSelectedHealth: (states: readonly HealthFilterState[]) => void;
   readonly toggleSelectedHealth: (state: HealthFilterState) => void;
   readonly setExcludedEntityMode: (mode: ExcludedEntityMode) => void;
+  readonly setView: (view: ViewId) => void;
+  /** Takes the view a link names, once, when the app opens. */
+  readonly initializeView: (search: string) => void;
+  readonly toggleChip: (id: string) => void;
+  readonly openChipsFor: (ids: readonly string[]) => void;
+}
+
+/** The order the viewer chose last, if it is one that exists; the shortest connections otherwise. */
+function storedSortKey(): SortKey {
+  const stored = typeof window === "undefined" ? null : readStoredSortKey(() => window.localStorage);
+  return SORT_CHOICES.find((choice) => choice.key === stored)?.key ?? "shortest";
 }
 
 export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, get) => ({
@@ -71,8 +94,9 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
   autoRefreshMs: 0,
   refreshCountdown: 0,
   layoutId: DEFAULT_LAYOUT_ID,
-  sortKey: "shortest",
+  sortKey: storedSortKey(),
   sortReversed: false,
+  customOrders: typeof window === "undefined" ? {} : readStoredOrders(() => window.localStorage),
   edgeStyle: "smooth",
   connectionPolicy: "with-layout",
   collapsed: [],
@@ -87,6 +111,8 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
   announcement: "",
   selectedHealth: ["Healthy", "Degraded", "Unhealthy", "Unknown"],
   excludedEntityMode: "hide",
+  view: DEFAULT_VIEW,
+  openChips: [],
 
   initializeTheme: (theme) => set({ theme, themeExplicit: false }),
   setTheme: (theme) => set({ theme, themeExplicit: true }),
@@ -99,7 +125,31 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
     if (remaining === 1) void get().loadHealthModel();
   },
   setLayout: (layoutId) => set({ layoutId }),
-  setSortKey: (sortKey) => set({ sortKey }),
+  setSortKey: (sortKey) => {
+    set({ sortKey });
+    if (typeof window !== "undefined") persistSortKey(sortKey, () => window.localStorage);
+  },
+  commitCustomOrder: (family, order) => {
+    const key = orderKey(get().selected, family);
+    if (key === null) return;
+    const customOrders = { ...get().customOrders, [key]: order };
+    set({ customOrders, sortKey: "custom" });
+    if (typeof window !== "undefined") {
+      persistOrders(customOrders, () => window.localStorage);
+      persistSortKey("custom", () => window.localStorage);
+    }
+  },
+  resetCustomOrder: (family) => {
+    const key = orderKey(get().selected, family);
+    if (key === null || !(key in get().customOrders)) return;
+    const { [key]: _gone, ...customOrders } = get().customOrders;
+    const sortKey = get().sortKey === "custom" ? "shortest" : get().sortKey;
+    set({ customOrders, sortKey });
+    if (typeof window !== "undefined") {
+      persistOrders(customOrders, () => window.localStorage);
+      persistSortKey(sortKey, () => window.localStorage);
+    }
+  },
   toggleSortDirection: () => set((state) => ({ sortReversed: !state.sortReversed })),
   setEdgeStyle: (edgeStyle) => set({ edgeStyle }),
   setConnectionPolicy: (connectionPolicy) => set({ connectionPolicy }),
@@ -136,4 +186,16 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
         : [...current.selectedHealth, state],
     })),
   setExcludedEntityMode: (excludedEntityMode) => set({ excludedEntityMode }),
+  // The choice is kept per viewer; the address bar follows it (see App).
+  setView: (view) => {
+    set({ view });
+    if (typeof window !== "undefined") persistView(view, () => window.localStorage);
+  },
+  initializeView: (search) =>
+    set({ view: viewFromSearch(search, typeof window === "undefined" ? null : readStoredView(() => window.localStorage)) }),
+  toggleChip: (id) =>
+    set((state) => ({
+      openChips: state.openChips.includes(id) ? state.openChips.filter((item) => item !== id) : [...state.openChips, id],
+    })),
+  openChipsFor: (ids) => set((state) => ({ openChips: [...new Set([...state.openChips, ...ids])] })),
 });

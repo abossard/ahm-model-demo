@@ -13,7 +13,8 @@ export interface ModelState {
 }
 
 export interface ModelActions {
-  readonly loadHealthModel: () => Promise<void>;
+  /** `fresh`: the app reads the model from Azure now (the Refresh button), not from what it keeps warm. */
+  readonly loadHealthModel: (options?: { readonly fresh?: boolean }) => Promise<void>;
 }
 
 export const modelSlice: StateCreator<Store, [], [], ModelState & ModelActions> = (set, get) => ({
@@ -22,14 +23,14 @@ export const modelSlice: StateCreator<Store, [], [], ModelState & ModelActions> 
   refreshing: false,
   refreshError: null,
 
-  loadHealthModel: async () => {
+  loadHealthModel: async (options) => {
     const { selected } = get();
     set((state) => ({
       refreshing: true,
       model: state.model.kind === "success" ? state.model : LOADING,
     }));
     const model = await settle(
-      api.fetchHealthModel(selected),
+      options?.fresh ? api.fetchHealthModel(selected, true) : api.fetchHealthModel(selected),
       "The health model could not be loaded.",
     );
     // A response for a model that is no longer selected must not replace the one on screen.

@@ -4,7 +4,7 @@
 - Review, Explain and Design Tasks run in shared Sessions on one Foundry hosted agent. A Review or Design task ends in a Health model diff that you approve and the web app applies.
 - The agent only reads Azure, through the Azure MCP server. Only the web app writes health models.
 - One Container App in a small VNet, one hosted agent, Sessions in Blob Storage behind a private endpoint, one region.
-- The app has no sign-in. Everyone with the URL shares Sessions and can Apply ([ADR 0002](docs/adr/0002-shared-sessions-without-sign-in.md)).
+- Users sign in with Entra ID: a work or school account of any directory, or a personal Microsoft account through a directory it belongs to. Everything the app and the agent do in Azure runs as the signed-in user in that user's directory, and Sessions are private ([ADR 0006](docs/adr/0006-entra-sign-in-and-on-behalf-of.md), [ADR 0008](docs/adr/0008-sign-in-for-any-microsoft-account.md)).
 
 ## Get started from scratch
 
@@ -23,10 +23,10 @@ azd up
 
 ## What you can do
 
-- Browse any health model the web app's identity can read. By default that is this resource group; [catalog access](infra/README.md#model-catalog-access) widens it to the subscription.
+- Browse every health model you can read in every subscription of the directory you signed in to. The first sign-in of a directory needs [an administrator's consent](infra/README.md#another-directory).
 - Send a health report to an entity and watch the state roll up.
 - Start a Task in a Session: Review a model, Explain why an entity has its state, or Design a model for a workload. The Activity timeline shows each agent step.
-- Approve some or all changes of a Health model diff and Apply them to a live model in this resource group. Apply has no undo.
+- Approve some or all changes of a Health model diff and Apply them to a live model, as you, where your Azure role allows it. Apply has no undo.
 
 ## Models
 

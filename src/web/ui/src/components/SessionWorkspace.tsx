@@ -7,8 +7,11 @@ import {
   WORKSPACE_MAX_WIDTH,
   WORKSPACE_MIN_WIDTH,
 } from "../store/uiSlice";
+import { LaunchNotice } from "./LaunchNotice";
+import { NewTaskView } from "./NewTaskView";
 import { SessionList } from "./SessionList";
 import { SessionView } from "./SessionView";
+import { WorkspaceHeader } from "./WorkspaceHeader";
 
 const KEY_STEP = 16;
 const KEY_STEP_LARGE = 64;
@@ -89,7 +92,7 @@ function ResizeHandle({ asideRef }: { readonly asideRef: { readonly current: HTM
     <div
       role="separator"
       aria-orientation="vertical"
-      aria-label="Resize the Session workspace"
+      aria-label="Resize the assistant panel"
       aria-valuemin={WORKSPACE_MIN_WIDTH}
       aria-valuemax={WORKSPACE_MAX_WIDTH}
       aria-valuenow={width}
@@ -104,11 +107,29 @@ function ResizeHandle({ asideRef }: { readonly asideRef: { readonly current: HTM
   );
 }
 
+/** What the panel shows while a one-click start has no topic yet: it is being made, or could not be. */
+function StartingView(): JSX.Element {
+  const failed = useStore((state) => state.launch.kind === "failed");
+  const label = useStore((state) => (state.launch.kind === "idle" ? "" : state.launch.label));
+  return (
+    <div data-testid="launch-view">
+      <WorkspaceHeader
+        title={label}
+        titleTestId="launch-heading"
+        {...(failed ? { back: { label: "History", testId: "session-back", onClick: () => actions.dismissLaunch() } } : {})}
+      />
+      <LaunchNotice />
+    </div>
+  );
+}
+
 export function SessionWorkspace(): JSX.Element {
   const styles = useStyles();
   const open = useStore((state) => state.workspaceOpen);
   const width = useStore((state) => state.workspaceWidth);
   const inSession = useStore((state) => state.sessionId !== null);
+  const launching = useStore((state) => state.launch.kind !== "idle");
+  const form = useStore((state) => state.workspaceTab === "new");
   const asideRef = useRef<HTMLElement | null>(null);
 
   return (
@@ -117,13 +138,13 @@ export function SessionWorkspace(): JSX.Element {
       ref={asideRef}
       className={styles.root}
       style={{ "--workspace-width": `${width}px` } as CSSProperties}
-      aria-label="Session workspace"
+      aria-label="Assistant"
       hidden={!open}
       data-testid="session-workspace"
     >
       {open ? (
         <div className={styles.panel}>
-          {inSession ? <SessionView /> : <SessionList />}
+          {inSession ? <SessionView /> : form ? <NewTaskView /> : launching ? <StartingView /> : <SessionList />}
         </div>
       ) : null}
       {open ? <ResizeHandle asideRef={asideRef} /> : null}

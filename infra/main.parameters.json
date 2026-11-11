@@ -23,6 +23,9 @@
     "entraAllowAzureCli": {
       "value": "${ENTRA_ALLOW_AZURE_CLI:-false}"
     },
+    "entraAllowedTenants": {
+      "value": "${ENTRA_ALLOWED_TENANTS}"
+    },
     "foundryAgentPrincipalId": {
       "value": "${FOUNDRY_AGENT_PRINCIPAL_ID}"
     }

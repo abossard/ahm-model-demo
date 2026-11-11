@@ -3,6 +3,9 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "web" / "app"))
@@ -69,6 +72,23 @@ def diff_result(changes, verification=(), findings=(), summary="Summary."):
         "verification": list(verification),
         "findings": list(findings),
     }
+
+
+def validator_that_lets_the_optional_fields_through():
+    """The shipped schema with `confidence` and `window` open to any value: what the web side does with them is under test, not their shape."""
+    schema = json.loads(model_diff.SCHEMA_PATH.read_text(encoding="utf-8"))
+    for kind, names in (("diff", ("confidence",)), ("explain", ("confidence", "window"))):
+        schema["$defs"][kind]["properties"].update({name: {} for name in names})
+    return Draft202012Validator(schema)
+
+
+OPTIONAL_VALUES = [
+    ("a word", "high"),
+    ("a number", 0.5),
+    ("a list", ["low", "why"]),
+    ("an object", {"level": "medium", "asOf": "2026-11-11T10:00:00Z", "why": ["a", {"b": None}]}),
+    ("an explicit null", None),
+]
 
 
 def entity_of(model, name):
@@ -268,6 +288,33 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(model_diff.validate_result(self.valid(), None, TARGET), [])
         self.assertEqual(model_diff.validate_result(explain, base_model(), TARGET), [])
         self.assertEqual(model_diff.validate_result(explain), [])
+
+    def test_optional_fields_pass_validation_without_being_read_or_changed(self):
+        explain = {
+            "kind": "explain", "entity": "payments", "state": "Healthy", "summary": "Fine.",
+            "causes": [{"entity": "payments", "signal": None, "state": "Healthy", "threshold": None, "value": None, "rollup": None, "note": "ok"}],
+        }
+        with mock.patch.object(model_diff, "VALIDATOR", validator_that_lets_the_optional_fields_through()):
+            for label, value in OPTIONAL_VALUES:
+                cases = [
+                    ("a diff with confidence", {**self.valid(), "confidence": value}),
+                    ("an explain with confidence", {**explain, "confidence": value}),
+                    ("an explain with a window", {**explain, "window": value}),
+                    ("an explain with both", {**explain, "confidence": value, "window": value}),
+                ]
+                for kind, result in cases:
+                    with self.subTest(value=label, result=kind):
+                        before = copy.deepcopy(result)
+
+                        problems = model_diff.validate_result(result, base_model(), TARGET)
+
+                        self.assertEqual(problems, [])
+                        self.assertEqual(result, before)
+            unknown = model_diff.validate_result({**self.valid(), "bogus": 1}, base_model(), TARGET)
+            window_on_a_diff = model_diff.validate_result({**self.valid(), "window": "x"}, base_model(), TARGET)
+
+        self.assertTrue(any("bogus" in problem for problem in unknown), unknown)
+        self.assertTrue(any("window" in problem for problem in window_on_a_diff), window_on_a_diff)
 
     def test_each_rule_is_reported_with_the_text_the_agent_needs(self):
         def mutate(fn):
@@ -909,6 +956,26 @@ class DiffViewTests(unittest.TestCase):
         self.assertEqual(proposed["payments"]["healthState"], "Healthy")
         self.assertEqual(proposed["payments"]["displayName"], "Payments (renamed)")
         self.assertEqual({item["name"]: item["healthState"] for item in view["base"]["entities"]}["orders-db"], "Unhealthy")
+
+    def test_an_optional_confidence_is_passed_to_the_view_untouched_and_only_when_present(self):
+        changes = [change("c1", "change", "entity", "payments", watching("Payments (renamed)", "latency", "sd-queue"))]
+        target = {"subscriptionId": SUB, "resourceGroup": GROUP, "name": MODEL}
+        cases = [*OPTIONAL_VALUES, ("absent", "__absent__")]
+        for label, value in cases:
+            with self.subTest(value=label):
+                result = diff_result(changes)
+                if value != "__absent__":
+                    result["confidence"] = value
+                before = copy.deepcopy(result)
+
+                view = model_diff.diff_view(result, base_model(), MODEL, target, [], True)
+
+                self.assertEqual(result, before)
+                if value == "__absent__":
+                    self.assertNotIn("confidence", view)
+                else:
+                    self.assertEqual(view["confidence"], value)
+                    self.assertEqual(json.dumps(view["confidence"], sort_keys=True), json.dumps(value, sort_keys=True))
 
     def test_each_change_carries_before_after_details_dependencies_and_verification(self):
         changes = {item["id"]: item for item in self.view()["changes"]}

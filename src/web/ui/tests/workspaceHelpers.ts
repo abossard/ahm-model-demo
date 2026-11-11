@@ -1,6 +1,7 @@
 import { expect } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 import { SUBSCRIPTION_A, installStubs } from "./fixture";
+import { openView } from "./views";
 import {
   SESSION_ID,
   at,
@@ -23,7 +24,7 @@ export const HELD_REVIEW: StubScript = { ...defaultScript("review"), hold: 6 };
 export async function boot(page: Page, options: WorkspaceOptions = {}, path = "/"): Promise<WorkspaceStub> {
   await installStubs(page, { healthModelFails: false, catalog: catalogWithDesign });
   const stub = await installWorkspace(page, options);
-  await page.goto(path);
+  await openView(page, "zoom", path);
   await page.waitForSelector(".react-flow__node .entity-node");
   return stub;
 }

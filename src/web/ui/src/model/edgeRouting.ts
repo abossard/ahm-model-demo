@@ -98,3 +98,88 @@ export function attachmentPoint(rect: Rect, side: Side, lane = 0, laneCount = 0)
   if (side === "left") return { x: rect.x, y: centre.y + slide };
   return { x: rect.x + rect.width, y: centre.y + slide };
 }
+
+/** One end of an edge at a side of a node: the edge, and the node at its other end. */
+export interface PortEnd {
+  readonly id: string;
+  /** The rectangle of the node at the other end of the edge. */
+  readonly other: Rect;
+}
+
+/**
+ * Where along a side the ends of its edges attach, as lanes counted from the middle of the side
+ * (-1, 0, 1 for three). They are ordered like the nodes they connect to across the side, left to
+ * right on a top or bottom side and top to bottom on a left or right one, so no two edges of a
+ * node cross where they leave it. Nodes level with each other across the side are told apart by
+ * how far away along it they are, then by id: the same neighbours always give the same lanes.
+ */
+export function spreadPorts(side: Side, ends: readonly PortEnd[]): ReadonlyMap<string, number> {
+  const horizontal = side === "top" || side === "bottom";
+  const across = (rect: Rect): number => (horizontal ? rect.x + rect.width / 2 : rect.y + rect.height / 2);
+  const along = (rect: Rect): number => (horizontal ? rect.y + rect.height / 2 : rect.x + rect.width / 2);
+  const sorted = [...ends].sort(
+    (left, right) =>
+      across(left.other) - across(right.other) ||
+      along(left.other) - along(right.other) ||
+      (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+  );
+  return new Map(sorted.map((end, index) => [end.id, index - (sorted.length - 1) / 2] as const));
+}
+
+export interface EdgePorts {
+  readonly sourceSide: Side;
+  readonly targetSide: Side;
+  readonly sourceLane: number;
+  readonly targetLane: number;
+  readonly sourceLaneCount: number;
+  readonly targetLaneCount: number;
+}
+
+/**
+ * The sides and lanes of every edge between nodes at `rects`. A node's edges on one side are
+ * spread by `spreadPorts`, so what leaves a parent is ordered like its children and what arrives
+ * at a child like its parents, in every direction, policy and style.
+ */
+export function edgePorts(
+  edges: readonly { readonly id: string; readonly from: string; readonly to: string }[],
+  rects: ReadonlyMap<string, Rect>,
+  flow: LayoutFlow,
+  policy: ConnectionPolicy,
+): ReadonlyMap<string, EdgePorts> {
+  const sides = new Map<string, ReturnType<typeof sidesFor>>();
+  const groups = new Map<string, { side: Side; node: string; ends: PortEnd[] }>();
+  const join = (node: string, side: Side, id: string, other: Rect): void => {
+    const key = `${node}|${side}`;
+    const group = groups.get(key) ?? { side, node, ends: [] };
+    group.ends.push({ id, other });
+    groups.set(key, group);
+  };
+  for (const edge of edges) {
+    const source = rects.get(edge.from);
+    const target = rects.get(edge.to);
+    if (!source || !target) continue;
+    const chosen = sidesFor(policy, flow, source, target);
+    sides.set(edge.id, chosen);
+    join(edge.from, chosen.sourceSide, `${edge.id}|source`, target);
+    join(edge.to, chosen.targetSide, `${edge.id}|target`, source);
+  }
+  const lanes = new Map<string, { lane: number; count: number }>();
+  for (const group of groups.values()) {
+    for (const [id, lane] of spreadPorts(group.side, group.ends)) lanes.set(id, { lane, count: group.ends.length });
+  }
+  const ports = new Map<string, EdgePorts>();
+  for (const edge of edges) {
+    const chosen = sides.get(edge.id);
+    const source = lanes.get(`${edge.id}|source`);
+    const target = lanes.get(`${edge.id}|target`);
+    if (!chosen || !source || !target) continue;
+    ports.set(edge.id, {
+      ...chosen,
+      sourceLane: source.lane,
+      targetLane: target.lane,
+      sourceLaneCount: source.count,
+      targetLaneCount: target.count,
+    });
+  }
+  return ports;
+}

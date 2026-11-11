@@ -30,6 +30,7 @@ import {
 import { presentActivity, type ActivityIcon } from "../model/activity";
 import { streamFailure } from "../model/errors";
 import { formatOffset } from "../model/duration";
+import { WORDS } from "../model/wording";
 import type { ActivityEvent } from "../model/types";
 import { actions, useStore } from "../store/store";
 import { useWindowedRows } from "./useWindowedRows";
@@ -108,6 +109,7 @@ const useStyles = makeStyles({
     fontFamily: tokens.fontFamilyMonospace,
     fontSize: tokens.fontSizeBase200,
   },
+  detailHeading: { margin: `0 0 ${tokens.spacingVerticalXS}` },
   empty: { padding: tokens.spacingHorizontalM, color: tokens.colorNeutralForeground3 },
   jump: { position: "absolute", right: tokens.spacingHorizontalM, bottom: tokens.spacingVerticalS, zIndex: 2 },
   frame: { position: "relative", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 },
@@ -155,11 +157,14 @@ const EventRow = memo(function EventRow({
               size="small"
               appearance="subtle"
               icon={<MoreHorizontal16Regular />}
-              aria-label={`Show details of ${shown.title}`}
+              aria-label={`Show ${shown.icon === "text" ? "more" : "technical"} details of ${shown.title}`}
               data-testid={`timeline-details-${event.seq}`}
             />
           </PopoverTrigger>
-          <PopoverSurface>
+          <PopoverSurface data-testid={`timeline-popover-${event.seq}`}>
+            <Text as="p" weight="semibold" size={200} className={styles.detailHeading}>
+              {shown.icon === "text" ? "More detail" : "Technical details"}
+            </Text>
             <pre className={styles.detail}>{shown.detail}</pre>
           </PopoverSurface>
         </Popover>
@@ -180,6 +185,7 @@ export function ActivityTimeline({
   const streamError = useStore((state) => state.streamError);
   const taskSeq = useStore((state) => state.taskSeq);
   const closed = stream === "error" ? streamFailure(streamError) : null;
+  const heading = stream === "live" ? WORDS.stepsRunning : WORDS.stepsDone;
   const heights = useMemo(() => events.map(() => ROW_HEIGHT), [events.length]);
   const rows = useWindowedRows(heights);
   const pinned = useRef(true);
@@ -207,14 +213,14 @@ export function ActivityTimeline({
   };
 
   return (
-    <section className={styles.root} aria-label="Activity timeline" data-testid="timeline" data-stream={stream}>
+    <section className={styles.root} aria-label={heading} data-testid="timeline" data-stream={stream}>
       <div className={styles.head}>
         <Text weight="semibold" size={300}>
-          Activity timeline
+          {heading}
         </Text>
         {stream === "live" ? (
           <Badge appearance="tint" color="brand" icon={<Spinner size="extra-tiny" />} data-testid="timeline-live">
-            Live
+            Working
           </Badge>
         ) : null}
       </div>
@@ -239,17 +245,17 @@ export function ActivityTimeline({
           className={styles.scroller}
           onScroll={onScroll}
           role="list"
-          aria-label="Activity events"
+          aria-label="Steps"
           tabIndex={0}
           data-testid="timeline-scroller"
         >
           {events.length === 0 ? (
             <Text as="p" className={styles.empty} data-testid="timeline-empty">
               {stream === "error"
-                ? "No step arrived before the live connection closed."
-                : stream === "ended"
-                  ? "No steps were recorded for this Task."
-                  : "Waiting for the first step."}
+                ? "No update arrived before the live view stopped."
+                  : stream === "ended"
+                    ? "No steps were recorded."
+                    : "The assistant is getting started."}
             </Text>
           ) : (
             <div className={styles.spacer} style={{ height: rows.total }}>

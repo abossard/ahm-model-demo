@@ -25,6 +25,9 @@ param webImage string = ''
 @description('Let the Azure CLI request tokens for the web API without a browser sign-in of the app, for unattended checks as a signed-in developer. Any user in the tenant can then script the API as themselves, so it stays off by default. The MCP scope is never opened to it.')
 param entraAllowAzureCli bool = false
 
+@description('Directory (tenant) ids, separated by commas, whose users may sign in to the web app. Empty lets every Microsoft Entra directory in, and the directory this app belongs to is always allowed. A personal Microsoft account signs in through a directory it belongs to, so it is let in by that directory\'s id.')
+param entraAllowedTenants string = ''
+
 @description('Image published by "azd deploy mcp". Empty until the first deploy.')
 param mcpImage string = ''
 
@@ -209,6 +212,10 @@ module web 'modules/container-app.bicep' = {
         value: entra.outputs.tenantId
       }
       {
+        name: 'ENTRA_ALLOWED_TENANTS'
+        value: entraAllowedTenants
+      }
+      {
         name: 'ENTRA_CLIENT_ID'
         value: entra.outputs.webClientId
       }
@@ -253,9 +260,11 @@ module mcp 'modules/container-app.bicep' = {
         name: 'AzureAd__Instance'
         value: environment().authentication.loginEndpoint
       }
+      // Users of any directory call this server. Its token validation reads the directory from each token, and the
+      // exchange for ARM and Log Analytics runs in that directory.
       {
         name: 'AzureAd__TenantId'
-        value: entra.outputs.tenantId
+        value: 'organizations'
       }
       {
         name: 'AzureAd__ClientId'

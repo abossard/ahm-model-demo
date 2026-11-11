@@ -80,7 +80,7 @@ with a project and a model, a private blob store for Sessions, and two Azure Hea
 
 ## Image-based hosted agent
 
-The agent ships as a container image from the registry, because its `azmcp` binary is over the 250 MB ZIP limit.
+The agent ships as a container image from the registry. `azmcp` is not in it: the MCP server is the `mcp` service.
 
 - The project identity pulls the image. The registry is Basic and pinned to `LegacyRegistryPermissions` mode,
   where AcrPull is the pull role. Container Registry Repository Reader is the pull role for registries in ABAC mode
@@ -162,17 +162,26 @@ deployed every service. azd exports the environment values to it. Run it alone w
 
 ## Sign-in and on-behalf-of
 
-Users sign in with Entra ID, and the web app and the agent reach Azure as that user (ADR 0006, plan.md). There is no
-catalog scope and no health model role for the app: the model selector lists what the user can read.
+Users sign in with Entra ID, and the web app and the agent reach Azure as that user, in that user's directory (ADR 0006,
+ADR 0008, plan.md). There is no catalog scope and no health model role for the app: the model selector lists what the
+user can read in every subscription of the directory they signed in to.
 
 - `entra.bicep` uses the Microsoft Graph Bicep extension (`infra/bicepconfig.json`, Bicep 0.36.1 or later) and creates
-  two single-tenant app registrations with service principals, named `ahm-<env>-web` and `ahm-<env>-mcp`:
+  two multitenant app registrations with service principals, named `ahm-<env>-web` and `ahm-<env>-mcp`. Both have
+  `signInAudience: AzureADandPersonalMicrosoftAccount`: work or school accounts of any directory and personal Microsoft
+  accounts. That audience needs token version 2 and an application id URI that is globally unique and has no `urn:`
+  scheme, wildcard or query (`api://<application id>` is all of that), and caps scope names at 40 characters.
   - `web` is the SPA and its API. Redirect URIs `https://<web host>/` and `http://localhost:8080/`, scope
     `access_as_user`, token version 2. It needs ARM `user_impersonation`, the `mcp` scope and its own scope.
-  - `mcp` is the Azure MCP server. Scope `Mcp.Tools.ReadWrite`, token version 2, pre-authorizing `web`. It needs ARM
-    `user_impersonation` and Log Analytics `Data.Read`.
+  - `mcp` is the Azure MCP server. Scope `Mcp.Tools.ReadWrite`, token version 2, pre-authorizing `web` and listing it
+    in `knownClientApplications`. It needs ARM `user_impersonation` and Log Analytics `Data.Read`. The known client
+    makes consent to `web`, asked as `api://<web>/.default`, provision this server's service principal and its
+    permissions in the consenting directory too: a client cannot be consented into a directory where a resource it
+    needs is missing. Both registrations are in this tenant, as the attribute requires.
   - Each has a federated credential that trusts the workload identity `id-<env>-app` (subject: its object id, audience
-    `api://AzureADTokenExchange`), so no client secret exists. Both apps sign the on-behalf-of exchange with it.
+    `api://AzureADTokenExchange`), so no client secret exists. Both apps sign the on-behalf-of exchange with it, in
+    the directory of each user: Microsoft Learn says an app that trusts a managed identity reaches another tenant when
+    it is multitenant and provisioned there, and that the identity and the app registration belong to the same tenant.
 - Each app is declared twice in `entra.bicep` with the same `uniqueName`, because identifier URIs and the two apps'
   references to each other need an application id that exists only after creation. A uniqueName that survives an
   out-of-band delete conflicts on the next provision (restore the app or purge it from the deleted items), and a new
@@ -189,9 +198,15 @@ catalog scope and no health model role for the app: the model selector lists wha
   `Microsoft.CloudHealth/healthmodels/entities/ingestHealthReport/action`, and Apply needs write and delete on the
   model's entities, relationships and signal definitions (for example Contributor on the group). The agent reads with
   the same rights as the user, through Monitoring Reader or Reader and Log Analytics Reader for queries.
-- Outputs and web app environment: `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID` (web), `ENTRA_API_SCOPE`
-  (`api://<web id>/access_as_user`), `MCP_SCOPE` (`api://<mcp id>/Mcp.Tools.ReadWrite`), `MCP_URL` (the MCP app's URL;
-  the server answers at `/`) and `FOUNDRY_AGENT_PRINCIPAL_ID`. `ENTRA_MCP_CLIENT_ID` is an output only, for the hook.
+- Outputs and web app environment: `ENTRA_TENANT_ID` (the directory the app belongs to), `ENTRA_CLIENT_ID` (web),
+  `ENTRA_API_SCOPE` (`api://<web id>/access_as_user`), `MCP_SCOPE` (`api://<mcp id>/Mcp.Tools.ReadWrite`), `MCP_URL`
+  (the MCP app's URL; the server answers at `/`), `FOUNDRY_AGENT_PRINCIPAL_ID` and `ENTRA_ALLOWED_TENANTS`.
+  `ENTRA_MCP_CLIENT_ID` is an output only, for the hook.
+- `ENTRA_ALLOWED_TENANTS` (the `entraAllowedTenants` parameter, default empty, `azd env set ENTRA_ALLOWED_TENANTS
+  <id>,<id>`, then `azd provision`) lists the directory ids whose users may sign in. Empty lets every directory in. The
+  app's own directory is always allowed, a personal account is let in by the id of the directory it signs in to, and
+  an id of the personal-account tenant stops the app at start. A user of another directory gets 403
+  `tenant_not_allowed`.
 - `ENTRA_ALLOW_AZURE_CLI` (default `false`, `azd env set ENTRA_ALLOW_AZURE_CLI true`, then `azd provision`) pre-authorizes
   the Azure CLI for the `access_as_user` scope of the web app only, so an unattended check can run
   `az account get-access-token --scope <ENTRA_API_SCOPE>` as the signed-in developer and call the API with that token,
@@ -205,6 +220,63 @@ catalog scope and no health model role for the app: the model selector lists wha
   delete them with `az role assignment list --all --assignee <principal id>` and `az role definition list
   --custom-role-only true`, then `az role assignment delete` and `az role definition delete`.
 
+### Another directory
+
+What a user of another directory needs the first time, because every call runs as that user:
+
+- Consent, once per directory. The app has no verified publisher, and Microsoft Learn says that, when risk-based
+  step-up consent is enabled, users cannot consent to most multitenant apps registered after 8 November 2020 that are
+  not publisher verified when the app asks for more than basic sign-in and reading the user profile, in a tenant other
+  than the one that holds the registration. ARM `user_impersonation` is more than that. A directory may also limit user
+  consent to verified publishers and low-impact permissions, or switch it off. So an administrator of the directory
+  consents for the organization (Privileged Role Administrator, Cloud Application Administrator or Application
+  Administrator; Global Administrator includes them). Two ways, with the same result:
+  - sign in to the app as the administrator, tick "Consent on behalf of your organization" on the consent screen and
+    accept, or
+  - open `https://login.microsoftonline.com/<tenant id or domain>/adminconsent?client_id=<ENTRA_CLIENT_ID>`, the
+    tenant-wide admin consent URL of Microsoft Entra.
+  Until then a user's sign-in answers AADSTS65001, AADSTS90094 or AADSTS90095, and the sign-in page says an administrator
+  has to approve the app. A verified publisher is the way to let users consent themselves; it needs a Partner Center
+  account and an app registered with a work account, and nothing here sets it.
+- Azure RBAC in that directory, as in "What users need in Azure RBAC" above: Reader on the resource group or
+  subscription of a health model to list and read it, more for reports and Apply. Nothing in this deployment grants it.
+- A personal Microsoft account has no Azure in the personal-account tenant (`tid` `9188040d-6c67-4c5b-b112-36a304b66dad`).
+  It reaches Azure through a directory where it is a member or a guest, for example the default directory that Azure
+  creates when someone signs up with it. The sign-in page's "Personal account or a specific directory" takes a
+  subscription ID of that directory (or its domain or ID) and signs in there. In a directory the user created, the
+  user is Global Administrator by default and consents for it. A personal account that signs in at `organizations`
+  lands in the personal-account tenant and is asked for the directory; the web app refuses its token with 403
+  `personal_account` if one reaches it.
+- Design Tasks stay with the app's own directory: their target is the deployment's design model.
+
+Check this live after the first provision of this version; the tests cannot reach another directory. With a work
+account of a second directory and a personal account that owns an Azure subscription:
+
+1. `az ad app show --id <ENTRA_CLIENT_ID> --query signInAudience` and the same for `<ENTRA_MCP_CLIENT_ID>` answer
+   `AzureADandPersonalMicrosoftAccount`, and `az ad app show --id <ENTRA_MCP_CLIENT_ID> --query api.knownClientApplications`
+   lists the web client id. An existing environment keeps its registrations, so this also proves the in-place change
+   of the audience was accepted.
+2. Sign in to the app as a user of this directory: the catalog and a Task work as before.
+3. Sign in as a user of the second directory before anyone consented: the sign-in answers a consent prompt or
+   "approval required" (AADSTS65001, 90094 or 90095), not an error of the app.
+4. As an administrator of the second directory, sign in and consent for the organization. Then `az ad sp show --id
+   <ENTRA_MCP_CLIENT_ID>` in that directory finds the MCP server (the known client provisioned it), and the
+   permission grants of the web app list ARM, the MCP scope and its own scope, and those of the MCP app list ARM and
+   Log Analytics. If the MCP server or its grants are missing, consent to the MCP client id with the admin consent URL
+   too and note it here.
+5. As a user of the second directory with Reader on a subscription that holds a health model: the catalog lists it,
+   the model, its live stream and its timeline open, and an Explain Task reads Azure through the MCP server. The MCP
+   server's log shows no on-behalf-of failure and the token request does not answer AADSTS70025, AADSTS700211 or
+   AADSTS7000112, which would mean the federated credential is not accepted across tenants.
+6. Sign in with the personal account at `organizations`: the page says it landed in a directory-less account and asks
+   for a directory. Enter a subscription ID of its default directory: the lookup runs from the browser (Azure answers
+   an anonymous request with the CORS headers that let it), the sign-in goes to that directory, and the account signs
+   in as a guest or member. Consent as its Global Administrator, then the catalog lists the models it can read and a
+   Task runs. If the Task's on-behalf-of exchange fails for this account only, note the error code and the `idp` claim
+   of its token.
+7. Set `ENTRA_ALLOWED_TENANTS` to this directory's id and provision: the second directory's users get 403
+   `tenant_not_allowed`, this directory's users are unaffected.
+
 ## Azure MCP server
 
 - `src/mcp/Dockerfile` builds `azmcp` from `AZMCP_REPO` and `AZMCP_REF` (build arg defaults) on the .NET SDK image
@@ -216,7 +288,9 @@ catalog scope and no health model role for the app: the model selector lists wha
   --namespace monitor --namespace group --read-only`. Every request needs a user token for the `mcp` app with the
   `Mcp.Tools.ReadWrite` scope; the server exchanges it for ARM and Log Analytics tokens as that user.
 - Environment (`AzureAd__*`) comes from `entra.bicep` and the workload identity as a managed identity signed
-  assertion. TLS ends at the ingress, so HTTPS redirection is off and `X-Forwarded-Proto` is trusted. `/health` is
+  assertion. `AzureAd__TenantId` is `organizations`: Microsoft.Identity.Web then validates the issuer of each token
+  against the `tid` it carries and runs the on-behalf-of exchange at that directory (read in its 4.6.0 source: a web
+  API exchange takes the tenant of the caller's token, and a meta tenant is refused only for app-only tokens). TLS ends at the ingress, so HTTPS redirection is off and `X-Forwarded-Proto` is trusted. `/health` is
   anonymous and answers the availability probe. Port 8080, path `/`.
 - Telemetry is off (`AZURE_MCP_COLLECT_TELEMETRY=false`): the server's exporter has no credential, Application Insights
   here accepts only Entra tokens, and product telemetry stays inside the deployment.

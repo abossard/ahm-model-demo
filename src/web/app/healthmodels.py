@@ -91,26 +91,26 @@ class HealthModels:
 class UserModels:
     def __init__(self, shared, caller):
         self._shared = shared
-        self._oid = caller.oid
+        self._owner = caller.owner
         self._token = caller.fingerprint
         self._credential = shared.credentials.credential(caller)
 
     def client(self, subscription_id):
         return cached(
             self._shared.clients,
-            (self._oid, self._token, subscription_id),
+            (self._owner, self._token, subscription_id),
             lambda: CloudHealthMgmtClient(
                 self._credential, subscription_id, api_version=CLOUDHEALTH_API_VERSION
             ),
         )
 
     def query_models(self):
-        return cached(self._shared.catalogs, self._oid, self._query_models)
+        return cached(self._shared.catalogs, self._owner, self._query_models)
 
     def _query_models(self):
         graph = cached(
             self._shared.graphs,
-            (self._oid, self._token),
+            (self._owner, self._token),
             lambda: ResourceGraphClient(self._credential),
         )
         rows = []
@@ -128,7 +128,7 @@ class UserModels:
                 return rows
 
     def has_model(self, subscription_id, resource_group, model_name):
-        key = (self._oid, *(part.casefold() for part in (subscription_id, resource_group, model_name)))
+        key = (self._owner, *(part.casefold() for part in (subscription_id, resource_group, model_name)))
         return cached(
             self._shared.known, key, lambda: self._probe(subscription_id, resource_group, model_name)
         )

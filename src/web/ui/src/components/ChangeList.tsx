@@ -29,7 +29,9 @@ import type {
   VerificationRow,
   VerificationStatus,
 } from "../model/types";
+import { WORDS } from "../model/wording";
 import { actions, useStore } from "../store/store";
+import { AgentText } from "./AgentText";
 import { useWindowedRows } from "./useWindowedRows";
 
 const GROUP_HEIGHT = 36;
@@ -70,9 +72,10 @@ const OP_COLOR: Readonly<Record<ChangeOp, "success" | "warning" | "danger">> = {
   remove: "danger",
 };
 const KIND_LABEL = { entity: "Entity", signalDefinition: "Signal definition", relationship: "Relationship" } as const;
+// The Verification of a signal, as the user reads it: a test of the signal against real data.
 const STATUS_LABEL: Readonly<Record<VerificationStatus, string>> = {
-  verified: "verified",
-  failing: "failing",
+  verified: "passed",
+  failing: "failed",
   not_run: "not run",
 };
 
@@ -179,7 +182,7 @@ function VerificationChips({ change }: { readonly change: DiffChange }): JSX.Ele
                   size="small"
                   appearance="outline"
                   icon={status === "verified" ? <CheckmarkCircle16Filled /> : status === "failing" ? <ErrorCircle16Filled /> : <Info16Regular />}
-                  aria-label={`Verification: ${rows.length} ${STATUS_LABEL[status]}`}
+                  aria-label={`Signal test: ${rows.length} ${STATUS_LABEL[status]}`}
                   data-testid={`verification-${change.id}-${status}`}
                   data-status={status}
                 >
@@ -193,7 +196,7 @@ function VerificationChips({ change }: { readonly change: DiffChange }): JSX.Ele
                       <Text weight="semibold">
                         {row.entity} / {row.signal}
                       </Text>
-                      <span>Verification: {STATUS_LABEL[row.status]}</span>
+                      <span>Signal test: {STATUS_LABEL[row.status]}</span>
                       {row.query ? <span className={styles.mono}>Query: {row.query}</span> : null}
                       {row.value !== null ? <span>Value: {String(row.value)}</span> : null}
                       {row.error ? <span>Error: {row.error}</span> : null}
@@ -268,14 +271,14 @@ const ChangeRow = memo(function ChangeRow({
             ) : null}
           </div>
           <div className={styles.reason} title={change.reason}>
-            {change.reason}
+            <AgentText text={change.reason} />
           </div>
           {hasFooter(change) ? (
             <div className={styles.footer}>
               <VerificationChips change={change} />
               {needs.length > 0 ? (
                 <span className={styles.needs} data-testid={`change-needs-${change.id}`}>
-                  Applies with: {needs.join(", ")}
+                  Applied together with: {needs.join(", ")}
                 </span>
               ) : null}
             </div>
@@ -371,7 +374,7 @@ export function ChangeList({ view }: { readonly view: DiffView }): JSX.Element {
   if (view.changes.length === 0) {
     return (
       <Text as="p" className={styles.empty} data-testid="change-list-empty">
-        This Health model diff proposes no changes.
+        The assistant proposes no changes.
       </Text>
     );
   }
@@ -382,7 +385,7 @@ export function ChangeList({ view }: { readonly view: DiffView }): JSX.Element {
       className={styles.scroller}
       onScroll={window.onScroll}
       role="list"
-      aria-label="Changes of the Health model diff"
+      aria-label={WORDS.proposed}
       data-testid="change-list"
     >
       <div className={styles.spacer} style={{ height: window.total }}>

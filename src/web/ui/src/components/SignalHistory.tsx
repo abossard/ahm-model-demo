@@ -5,7 +5,6 @@ import type { EntityDetail, SignalValue } from "../model/types";
 import { HealthBadge } from "./HealthBadge";
 
 const useStyles = makeStyles({
-  root: { display: "flex", flexDirection: "column", rowGap: tokens.spacingVerticalL },
   heading: {
     margin: `0 0 ${tokens.spacingVerticalS}`,
     color: tokens.colorNeutralForeground2,
@@ -45,54 +44,31 @@ function formatTime(value: string | null): string {
   return value ?? "no time recorded";
 }
 
+/** The health reports sent for an entity: the history of the signal that carries them. */
 export function SignalHistory({ detail }: { readonly detail: EntityDetail }): JSX.Element {
   const styles = useStyles();
-  const { transitions, canonicalSignal } = detail;
+  const { canonicalSignal } = detail;
   return (
-    <div className={styles.root}>
-      <section aria-labelledby="transitions-heading">
-        <Text as="h4" block id="transitions-heading" weight="bold" size={200} className={styles.heading}>
-          Health-state transitions
+    <section aria-labelledby="signal-heading">
+      <Text as="h4" block id="signal-heading" weight="bold" size={200} className={styles.heading}>
+        History of the signal {canonicalSignal.name}
+      </Text>
+      {canonicalSignal.history.length === 0 ? (
+        <Text as="p" className={styles.reason}>
+          No history for this signal yet.
         </Text>
-        {transitions.length === 0 ? (
-          <Text as="p" className={styles.reason}>
-            No recorded transitions.
-          </Text>
-        ) : (
-          <ul className={styles.list}>
-            {transitions.map((transition, index) => (
-              <li key={index} data-testid="transition-row" className={styles.row}>
-                <HealthBadge state={transition.healthState ?? "Unknown"}>
-                  {transition.previousState ?? "none"} → {transition.healthState ?? "unknown"}
-                </HealthBadge>
-                <time className={styles.time}>{formatTime(transition.occurredAt)}</time>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section aria-labelledby="signal-heading">
-        <Text as="h4" block id="signal-heading" weight="bold" size={200} className={styles.heading}>
-          Signal history: {canonicalSignal.name}
-        </Text>
-        {canonicalSignal.history.length === 0 ? (
-          <Text as="p" className={styles.reason}>
-            No signal history yet.
-          </Text>
-        ) : (
-          <ul className={styles.list}>
-            {canonicalSignal.history.map((item, index) => (
-              <li key={index} data-testid="signal-history-row" className={styles.row}>
-                <HealthBadge state={item.healthState ?? "Unknown"}>{item.healthState ?? "unknown"}</HealthBadge>
-                <span className={styles.value}>{formatValue(item.value)}</span>
-                <time className={styles.time}>{formatTime(item.occurredAt)}</time>
-                {item.reason ? <span className={styles.reason}>{item.reason}</span> : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-    </div>
+      ) : (
+        <ul className={styles.list}>
+          {canonicalSignal.history.map((item, index) => (
+            <li key={index} data-testid="signal-history-row" className={styles.row}>
+              <HealthBadge state={item.healthState ?? "Unknown"}>{item.healthState ?? "unknown"}</HealthBadge>
+              <span className={styles.value}>{formatValue(item.value)}</span>
+              <time className={styles.time}>{formatTime(item.occurredAt)}</time>
+              {item.reason ? <span className={styles.reason}>{item.reason}</span> : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

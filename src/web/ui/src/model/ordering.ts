@@ -1,8 +1,11 @@
 import type { GraphLayout, NodeSize, Point } from "./layout";
 import type { Entity, HealthState } from "./types";
 
-/** "shortest" leaves the order inside ranks to the arrangement; the others force it. */
-export type SortKey = "shortest" | "name" | "observed" | "health";
+/**
+ * "shortest" leaves the order inside ranks to the arrangement, "custom" is the one the viewer gave
+ * by dragging; the others force it.
+ */
+export type SortKey = "shortest" | "name" | "observed" | "health" | "custom";
 
 export type RankAxis = "x" | "y" | null;
 
@@ -19,6 +22,7 @@ export const SORT_CHOICES: readonly { readonly key: SortKey; readonly label: str
   { key: "name", label: "Name" },
   { key: "observed", label: "Last observed" },
   { key: "health", label: "Health state" },
+  { key: "custom", label: "Custom" },
 ];
 
 function labelOf(item: Entity): string {
@@ -48,13 +52,13 @@ export function orderEntities(
   const sortable = key === "observed" ? entities.filter((item) => !isUndated(item)) : [...entities];
 
   sortable.sort((left, right) => {
-    if (key === "name" || key === "shortest") return byName(left, right);
+    if (key === "name" || key === "shortest" || key === "custom") return byName(left, right);
     if (key === "health") return severityOf(left) - severityOf(right) || byName(left, right);
     const compared = (right.latestEvaluationAt ?? "").localeCompare(left.latestEvaluationAt ?? "");
     return compared || byName(left, right);
   });
 
-  if (reversed && key !== "shortest") sortable.reverse();
+  if (reversed && key !== "shortest" && key !== "custom") sortable.reverse();
   return [...sortable, ...undated.sort(byName)];
 }
 

@@ -1,0 +1,584 @@
+import inspect
+import sys
+import threading
+import time
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from azure.core.exceptions import HttpResponseError
+from fastapi.testclient import TestClient
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "web" / "app"))
+
+import test_sessions_api as base  # noqa: E402
+import timeline  # noqa: E402
+
+NOW = datetime(2026, 11, 11, 12, 0, 7, tzinfo=timezone.utc)
+HOUR = timedelta(hours=1)
+CALLER = SimpleNamespace(oid="ada", owner="ada")
+OTHER = SimpleNamespace(oid="bob", owner="bob")
+SELECTION = ("sub", "rg", "hm")
+RULES = {"degradedRule": {"operator": "GreaterThan", "threshold": 1}, "unhealthyRule": {"operator": "GreaterThan", "threshold": 5}}
+
+
+def stamp(minutes_ago):
+    return NOW - timedelta(minutes=minutes_ago)
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def azure_error(status):
+    error = HttpResponseError(message="SECRET_AZURE_BODY")
+    error.status_code = status
+    return error
+
+
+def entity(name, signals=(), state="Healthy"):
+    return {
+        "name": name,
+        "properties": {
+            "displayName": name.title(),
+            "healthState": state,
+            "signalGroups": {
+                "azureResource": {"signals": [{"name": s, "displayName": s.upper(), "signalKind": "AzureResourceMetric", "evaluationRules": RULES} for s in signals]}
+            },
+        },
+    }
+
+
+def relationship(parent, child):
+    return {"name": f"{parent}-{child}", "properties": {"parentEntityName": parent, "childEntityName": child}}
+
+
+def point(minutes_ago, value, state="Healthy"):
+    return {"occurredAt": stamp(minutes_ago), "value": value, "healthState": state}
+
+
+class Recording:
+    """A CloudHealth client that records every history call and serves scripted pages: `pages[(kind, entity, signal)]`."""
+
+    def __init__(self, entities, relationships=(), pages=None, errors=None, delay=0.0):
+        self.items = entities
+        self.links = list(relationships)
+        self.pages = pages or {}
+        self.errors = errors or {}
+        self.delay = delay
+        self.calls = []
+        self.active = 0
+        self.peak = 0
+        self.lock = threading.Lock()
+        self.entities = SimpleNamespace(
+            list_by_health_model=lambda group, model: list(self.items),
+            get_history=lambda group, model, name, body: self.serve("states", name, None, body),
+            get_signal_history=lambda group, model, name, body: self.serve("signal", name, body["signalName"], body),
+            get_data_annotations=lambda group, model, name, body: self.serve("annotations", name, None, body),
+        )
+        self.relationships = SimpleNamespace(list_by_health_model=lambda group, model: list(self.links))
+
+    def serve(self, kind, name, signal, body):
+        with self.lock:
+            self.calls.append((kind, name, signal, dict(body)))
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            time.sleep(self.delay)
+            if (kind, name, signal) in self.errors:
+                raise self.errors[(kind, name, signal)]
+            pages = self.pages.get((kind, name, signal), [{}])
+            marker = body.get("nextMarker")
+            page = dict(pages[int(marker[1:]) if marker else 0])
+            if marker is None and len(pages) > 1 or marker and int(marker[1:]) + 1 < len(pages):
+                page["nextMarker"] = f"m{int(marker[1:]) + 1 if marker else 1}"
+            return {
+                "entityName": name,
+                "history": page.get("history", []),
+                "annotations": page.get("annotations", []),
+                "nextMarker": page.get("nextMarker"),
+            }
+        finally:
+            with self.lock:
+                self.active -= 1
+
+    def calls_of(self, kind):
+        return [call for call in self.calls if call[0] == kind]
+
+    def client(self, subscription):
+        return self
+
+
+def reader(now=NOW, clock=None):
+    return timeline.TimelineReader(clock=clock or time.monotonic, now=lambda: now)
+
+
+def read(subject, backend, params=None, names=(), caller=CALLER):
+    return subject.read(caller, backend, SELECTION, {"from": (NOW - HOUR).isoformat(), **(params or {})}, names)
+
+
+def model(**kwargs):
+    return Recording([entity("root"), entity("api", ["errors", "latency"]), entity("db", ["cpu"])], [relationship("root", "api"), relationship("api", "db")], **kwargs)
+
+
+class QueryTests(unittest.TestCase):
+    def test_a_query_becomes_a_window_inside_the_last_30_days(self):
+        floor = NOW - timedelta(days=30) + timeline.RETENTION_MARGIN
+        table = [
+            ("defaults to the last 24 hours", {}, NOW - 24 * HOUR, NOW),
+            ("keeps what is asked", {"from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z"}, datetime(2026, 11, 10, tzinfo=timezone.utc), datetime(2026, 11, 10, 6, tzinfo=timezone.utc)),
+            ("clamps the future to now", {"from": "2026-11-11T10:00:00Z", "to": "2027-01-01T00:00:00Z"}, datetime(2026, 11, 11, 10, tzinfo=timezone.utc), NOW),
+            ("clamps the past to the retention", {"from": "2025-01-01T00:00:00Z"}, floor, NOW),
+            ("reads a time without a zone as UTC", {"from": "2026-11-11T09:00:00"}, datetime(2026, 11, 11, 9, tzinfo=timezone.utc), NOW),
+            ("reads a zone offset", {"from": "2026-11-11T10:00:00+02:00"}, datetime(2026, 11, 11, 8, tzinfo=timezone.utc), NOW),
+        ]
+        for label, params, start, end in table:
+            with self.subTest(label):
+                query = timeline.parse_query(params, NOW)
+
+                self.assertEqual((query["start"], query["end"]), (start, end))
+                self.assertEqual(query["parts"], timeline.DEFAULT_PARTS)
+
+    def test_a_bad_query_is_refused_with_its_code(self):
+        table = [
+            ("an unknown key", {"top": "5"}, "unsupported_query"),
+            ("an unknown part", {"include": "states,bananas"}, "invalid_include"),
+            ("an empty include", {"include": ","}, "invalid_include"),
+            ("a word as resolution", {"resolution": "fine"}, "invalid_resolution"),
+            ("a negative resolution", {"resolution": "-1"}, "invalid_resolution"),
+            ("a huge resolution", {"resolution": "86401"}, "invalid_resolution"),
+            ("a time that is not a time", {"from": "yesterday"}, "invalid_range"),
+            ("less than a minute", {"from": "2026-11-11T11:59:30Z"}, "invalid_range"),
+            ("a reversed range", {"from": "2026-11-11T11:00:00Z", "to": "2026-11-11T10:00:00Z"}, "invalid_range"),
+            ("a range that ended before the retention", {"from": "2025-01-01T00:00:00Z", "to": "2025-01-02T00:00:00Z"}, "invalid_range"),
+        ]
+        for label, params, code in table:
+            with self.subTest(label):
+                with self.assertRaises(timeline.TimelineRequestError) as raised:
+                    timeline.parse_query(params, NOW)
+
+                self.assertEqual(raised.exception.code, code)
+
+    def test_the_selector_is_not_a_timeline_parameter_but_is_allowed(self):
+        query = timeline.parse_query({"model": "m", "resourceGroup": "g", "subscription": "s", "include": "signals", "resolution": "60"}, NOW)
+
+        self.assertEqual((query["parts"], query["resolution"]), (("signals",), 60))
+
+    def test_snapping_widens_the_window_to_a_grid_that_depends_on_its_span(self):
+        floor = NOW - timedelta(days=30)
+        table = [
+            ("a minute grid for a short span", NOW - HOUR, NOW - 20 * timedelta(minutes=1), 60),
+            ("five minutes for a day", NOW - 24 * HOUR, NOW - 12 * HOUR, 300),
+            ("a quarter hour for weeks", NOW - timedelta(days=20), NOW - timedelta(days=10), 900),
+        ]
+        for label, start, end, quantum in table:
+            with self.subTest(label):
+                window = timeline.snap_window(start, end, NOW, floor)
+
+                self.assertEqual(window["from"] % (quantum * 1000), 0)
+                self.assertEqual(window["to"] % (quantum * 1000), 0)
+                self.assertLessEqual(window["from"], timeline.to_ms(start))
+                self.assertGreaterEqual(window["to"], timeline.to_ms(end))
+                self.assertLess(window["to"] - timeline.to_ms(end), quantum * 1000)
+                self.assertFalse(window["live"])
+
+    def test_a_window_that_reaches_now_is_live_and_leaves_its_end_open(self):
+        window = timeline.snap_window(NOW - HOUR, NOW, NOW, NOW - timedelta(days=30))
+
+        self.assertEqual((window["live"], window["to"]), (True, None))
+
+    def test_snapping_never_goes_before_the_retention_floor(self):
+        floor = NOW - timedelta(days=30) + timeline.RETENTION_MARGIN
+        window = timeline.snap_window(floor, NOW, NOW, floor)
+
+        self.assertEqual(window["from"], timeline.to_ms(floor))
+
+
+class RowTests(unittest.TestCase):
+    def test_downsampling_keeps_the_worst_state_and_both_extremes_of_a_bucket(self):
+        step = 60_000
+        table = [
+            ("no step keeps everything", 0, [[0, 1, 1], [1000, 2, 1]], [[0, 1, 1], [1000, 2, 1]]),
+            ("a small bucket is kept whole", step, [[0, 1, 1], [1000, 2, 1], [2000, 3, 1]], [[0, 1, 1], [1000, 2, 1], [2000, 3, 1]]),
+            (
+                "a big bucket keeps min, max and worst",
+                step,
+                [[0, 5, 1], [1, 9, 1], [2, 1, 1], [3, 4, 3], [4, 5, 1]],
+                [[1, 9, 1], [2, 1, 1], [3, 4, 3]],
+            ),
+            ("a bucket of gaps keeps the worst point", step, [[0, None, 0], [1, None, 0], [2, None, 0], [3, None, 3]], [[3, None, 3]]),
+            ("buckets stay separate", step, [[0, 1, 1], [step, 2, 1]], [[0, 1, 1], [step, 2, 1]]),
+        ]
+        for label, size, points, expected in table:
+            with self.subTest(label):
+                self.assertEqual(timeline.downsample(points, size), expected)
+
+    def test_a_service_item_becomes_a_compact_row(self):
+        report = {"occurredAt": stamp(5), "value": 0.5, "healthState": "Degraded", "additionalContext": '{"source": "health-pulse-web", "reportId": "r1", "reason": "Maintenance"}'}
+        table = [
+            ("transition", timeline.transition_row({"occurredAt": stamp(1), "previousState": "Healthy", "newState": "Unhealthy", "reason": "SignalTransition"}), {"t": timeline.to_ms(stamp(1)), "from": 1, "to": 3, "reason": "SignalTransition"}),
+            ("point", timeline.point_row(point(2, 3.5, "Degraded")), [timeline.to_ms(stamp(2)), 3.5, 2]),
+            ("point without a value", timeline.point_row({"occurredAt": stamp(2), "healthState": "Unknown"}), [timeline.to_ms(stamp(2)), None, 0]),
+            ("report", timeline.report_row(report), {"t": timeline.to_ms(stamp(5)), "state": 2, "value": 0.5, "reason": "Maintenance", "reportId": "r1"}),
+            ("a point from another submitter is no report", timeline.report_row(point(5, 1)), None),
+            ("annotation", timeline.annotation_row({"annotationId": "a1", "createdAt": stamp(9), "description": "Deploy", "annotationDetails": {"k": "v"}}), {"id": "a1", "t": timeline.to_ms(stamp(9)), "description": "Deploy", "details": {"k": "v"}}),
+            ("annotation without a time", timeline.annotation_row({"annotationId": "a2", "annotationDetails": {}}), None),
+        ]
+        for label, actual, expected in table:
+            with self.subTest(label):
+                self.assertEqual(actual, expected)
+
+    def test_a_signal_catalog_carries_the_thresholds_and_the_kind(self):
+        catalog = timeline.signal_catalog(entity("api", ["errors"]))
+
+        self.assertEqual(
+            catalog,
+            [
+                {
+                    "name": "errors",
+                    "displayName": "ERRORS",
+                    "kind": "AzureResourceMetric",
+                    "unit": None,
+                    "refreshInterval": None,
+                    "rules": {
+                        "degraded": {"operator": "GreaterThan", "threshold": 1},
+                        "unhealthy": {"operator": "GreaterThan", "threshold": 5},
+                        "dynamic": False,
+                    },
+                }
+            ],
+        )
+
+    def test_a_dynamic_threshold_is_flagged_without_numbers(self):
+        raw = entity("api", ["errors"])
+        raw["properties"]["signalGroups"]["azureResource"]["signals"][0]["evaluationRules"] = {"dynamicDetectionRule": {"modelType": "AnomalyDetection"}}
+
+        rules = timeline.signal_catalog(raw)[0]["rules"]
+
+        self.assertEqual(rules, {"degraded": None, "unhealthy": None, "dynamic": True})
+
+    def test_an_error_maps_to_a_code_without_the_azure_text(self):
+        table = [(401, "forbidden", False), (403, "forbidden", False), (404, "not_found", False), (429, "busy", True), (500, "unavailable", True), (None, "unavailable", True)]
+        for status, code, retryable in table:
+            with self.subTest(status=status):
+                shown = timeline.series_error(azure_error(status))
+
+                self.assertEqual((shown["code"], shown["retryable"]), (code, retryable))
+                self.assertNotIn("SECRET", str(shown))
+
+
+class ReaderTests(unittest.TestCase):
+    def test_every_part_is_read_once_per_entity_and_signal(self):
+        backend = model()
+
+        body = read(reader(), backend, {"include": "states,annotations,signals"})
+
+        self.assertEqual([item["entity"] for item in body["states"]], ["root", "api", "db"])
+        self.assertEqual([(item["entity"], item["signal"]) for item in body["series"]], [("api", "errors"), ("api", "latency"), ("db", "cpu")])
+        self.assertEqual((len(backend.calls_of("states")), len(backend.calls_of("annotations")), len(backend.calls_of("signal"))), (3, 3, 3))
+        self.assertEqual([item["name"] for item in body["entities"]], ["root", "api", "db"])
+        self.assertEqual(body["entities"][2]["parents"], ["api"])
+
+    def test_the_default_parts_do_not_read_signals(self):
+        backend = model()
+
+        body = read(reader(), backend)
+
+        self.assertEqual(backend.calls_of("signal"), [])
+        self.assertEqual(body["series"], [])
+
+    def test_a_service_page_is_followed_by_its_marker_without_the_window(self):
+        first = {"history": [point(1, 9.0, "Unhealthy"), point(2, 8.0, "Unhealthy")]}
+        second = {"history": [point(3, 1.0), point(4, 0.5)]}
+        backend = model(pages={("signal", "db", "cpu"): [first, second]})
+
+        body = read(reader(), backend, {"include": "signals"}, ["db"])
+
+        calls = backend.calls_of("signal")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(set(calls[0][3]), {"signalName", "startAt"})
+        self.assertEqual(calls[1][3], {"nextMarker": "m1", "signalName": "cpu"})
+        series = body["series"][0]
+        self.assertEqual([row[1] for row in series["points"]], [0.5, 1.0, 8.0, 9.0])
+        self.assertEqual((series["complete"], series["earliest"]), (True, timeline.to_ms(stamp(4))))
+
+    def test_a_series_longer_than_the_page_budget_is_cut_at_the_old_end_and_says_so(self):
+        pages = [{"history": [point(index, 1.0)]} for index in range(timeline.TIMELINE_SIGNAL_PAGES + 3)]
+        backend = model(pages={("signal", "db", "cpu"): pages})
+
+        body = read(reader(), backend, {"include": "signals"}, ["db"])
+
+        series = body["series"][0]
+        self.assertEqual(len(backend.calls_of("signal")), timeline.TIMELINE_SIGNAL_PAGES)
+        self.assertEqual((len(series["points"]), series["complete"]), (timeline.TIMELINE_SIGNAL_PAGES, False))
+        self.assertTrue(body["partial"])
+
+    def test_one_failing_history_is_reported_in_its_series_and_the_rest_comes_back(self):
+        backend = model(errors={("signal", "api", "latency"): azure_error(500), ("annotations", "db", None): azure_error(403)})
+
+        body = read(reader(), backend, {"include": "states,annotations,signals"})
+
+        failed = [item for item in body["series"] if "error" in item]
+        self.assertEqual([(item["entity"], item["signal"], item["error"]["code"], item["points"]) for item in failed], [("api", "latency", "unavailable", [])])
+        self.assertEqual([item["entity"] for item in body["series"] if "error" not in item], ["api", "db"])
+        self.assertEqual(body["failures"], [{"entity": "db", "part": "annotations", "error": {"code": "forbidden", "message": "Your account cannot read this history.", "retryable": False}}])
+        self.assertTrue(body["partial"])
+        self.assertEqual(len(body["states"]), 3)
+
+    def test_when_every_history_fails_the_azure_error_is_raised_for_the_route_to_map(self):
+        backend = model(errors={("states", name, None): azure_error(403) for name in ("root", "api", "db")})
+
+        with self.assertRaises(HttpResponseError) as raised:
+            read(reader(), backend, {"include": "states"})
+
+        self.assertEqual(raised.exception.status_code, 403)
+
+    def test_health_reports_come_from_the_report_signal_only_where_it_exists(self):
+        context = '{"source": "health-pulse-web", "reportId": "r9", "reason": "Planned"}'
+        backend = Recording(
+            [entity("root"), entity("api", ["web-ui-health-report", "errors"])],
+            [relationship("root", "api")],
+            pages={("signal", "api", "web-ui-health-report"): [{"history": [{**point(10, 0.5, "Degraded"), "additionalContext": context}]}]},
+        )
+
+        body = read(reader(), backend)
+
+        self.assertEqual([call[:3] for call in backend.calls_of("signal")], [("signal", "api", "web-ui-health-report")])
+        self.assertEqual(body["reports"], [{"entity": "api", "t": timeline.to_ms(stamp(10)), "state": 2, "value": 0.5, "reason": "Planned", "reportId": "r9"}])
+        self.assertEqual(body["series"], [])
+
+    def test_annotations_follow_their_pages(self):
+        notes = [{"annotationId": f"a{i}", "createdAt": stamp(i + 1), "description": f"n{i}", "annotationDetails": {}} for i in range(3)]
+        backend = model(pages={("annotations", "api", None): [{"annotations": notes[:2]}, {"annotations": notes[2:]}]})
+
+        body = read(reader(), backend, {"include": "annotations"}, ["api"])
+
+        self.assertEqual([item["id"] for item in body["annotations"]], ["a2", "a1", "a0"])
+        self.assertEqual(backend.calls_of("annotations")[0][3]["top"], timeline.TIMELINE_ANNOTATION_PAGE_SIZE)
+        self.assertNotIn("top", backend.calls_of("annotations")[1][3])
+
+    def test_transitions_are_sorted_oldest_first(self):
+        history = [{"occurredAt": stamp(1), "previousState": "Healthy", "newState": "Degraded"}, {"occurredAt": stamp(30), "previousState": "Unknown", "newState": "Healthy"}]
+        backend = model(pages={("states", "api", None): [{"history": history}]})
+
+        body = read(reader(), backend, {"include": "states"}, ["api"])
+
+        self.assertEqual([(row["from"], row["to"]) for row in body["states"][0]["transitions"]], [(0, 1), (1, 2)])
+
+    def test_the_window_in_the_response_is_the_snapped_one_and_a_live_window_has_no_end(self):
+        backend = model()
+
+        live = read(reader(), backend, {"include": "states"}, ["api"])
+        past = read(reader(), backend, {"include": "states", "to": "2026-11-11T10:30:00Z", "from": "2026-11-11T10:03:00Z"}, ["api"])
+
+        self.assertEqual(live["range"]["to"], "2026-11-11T12:00:07.000Z")
+        self.assertNotIn("endAt", backend.calls_of("states")[0][3])
+        self.assertEqual(past["range"], {"from": "2026-11-11T10:03:00.000Z", "to": "2026-11-11T10:30:00.000Z"})
+        self.assertIn("endAt", backend.calls_of("states")[1][3])
+
+    def test_a_resolution_thins_the_series_but_not_the_states(self):
+        dense = [point(index / 10, float(index % 7)) for index in range(300)]
+        backend = model(pages={("signal", "db", "cpu"): [{"history": dense}]})
+
+        raw = read(reader(), backend, {"include": "signals"}, ["db"])["series"][0]["points"]
+        thin = read(reader(), backend, {"include": "signals", "resolution": "600"}, ["db"])["series"][0]["points"]
+
+        self.assertEqual(len(raw), 300)
+        self.assertLess(len(thin), 40)
+        self.assertEqual((max(row[1] for row in thin), min(row[1] for row in thin)), (6.0, 0.0))
+
+    def test_a_second_identical_request_costs_no_azure_call(self):
+        backend = model()
+        subject = reader()
+
+        read(subject, backend, {"include": "states,signals"})
+        calls = len(backend.calls)
+        read(subject, backend, {"include": "states,signals"})
+
+        self.assertEqual(len(backend.calls), calls)
+
+    def test_a_cached_history_belongs_to_the_user_who_read_it(self):
+        backend = model()
+        subject = reader()
+
+        read(subject, backend, {"include": "states"})
+        read(subject, backend, {"include": "states"}, caller=OTHER)
+
+        self.assertEqual(len(backend.calls_of("states")), 6)
+
+    def test_a_live_history_is_cached_for_less_time_than_a_closed_one(self):
+        table = [("live", {}, timeline.TIMELINE_LIVE_CACHE_SECONDS), ("closed", {"to": "2026-11-11T10:00:00Z", "from": "2026-11-11T08:00:00Z"}, timeline.TIMELINE_PAST_CACHE_SECONDS)]
+        for label, params, seconds in table:
+            with self.subTest(label):
+                backend = model()
+                clock = Clock()
+                subject = reader(clock=clock)
+                read(subject, backend, {"include": "states", **params}, ["api"])
+
+                clock.now += seconds - 1
+                read(subject, backend, {"include": "states", **params}, ["api"])
+                self.assertEqual(len(backend.calls_of("states")), 1)
+
+                clock.now += 2
+                read(subject, backend, {"include": "states", **params}, ["api"])
+                self.assertEqual(len(backend.calls_of("states")), 2)
+
+    def test_a_failed_history_is_not_cached(self):
+        backend = model(errors={("states", "api", None): azure_error(500)})
+        subject = reader()
+
+        read(subject, backend, {"include": "states"}, ["api", "db"])
+        backend.errors.clear()
+        body = read(subject, backend, {"include": "states"}, ["api", "db"])
+
+        self.assertEqual([("error" in item) for item in body["states"]], [False, False])
+        self.assertEqual(len(backend.calls_of("states")), 3)
+
+    def test_azure_is_never_called_by_more_than_the_concurrency_cap_at_once(self):
+        names = [f"e{i}" for i in range(30)]
+        backend = Recording([entity("root")] + [entity(name, ["cpu"]) for name in names], delay=0.01)
+
+        read(reader(), backend, {"include": "states,signals"})
+
+        self.assertGreater(backend.peak, 1)
+        self.assertLessEqual(backend.peak, timeline.TIMELINE_CALL_CONCURRENCY)
+
+    def test_too_many_signals_in_one_request_are_refused_before_any_history_call(self):
+        backend = Recording([entity("root")] + [entity(f"e{i}", ["a", "b"]) for i in range(timeline.TIMELINE_MAX_SERIES)])
+
+        with self.assertRaises(timeline.TimelineRequestError) as raised:
+            read(reader(), backend, {"include": "signals"})
+
+        self.assertEqual(raised.exception.code, "too_many_series")
+        self.assertEqual(backend.calls, [])
+
+    def test_an_unknown_entity_is_refused(self):
+        with self.assertRaises(timeline.TimelineRequestError) as raised:
+            read(reader(), model(), {}, ["nope"])
+
+        self.assertEqual(raised.exception.code, "unknown_entity")
+
+    def test_a_request_that_needs_more_calls_than_the_budget_reports_the_rest_per_series(self):
+        backend = model()
+
+        with mock.patch.object(timeline, "TIMELINE_MAX_CALLS", 2):
+            body = read(reader(), backend, {"include": "states"})
+
+        codes = [item.get("error", {}).get("code") for item in body["states"]]
+        self.assertEqual(sorted(codes, key=str), [None, None, "call_budget"])
+        self.assertEqual(len(backend.calls), 2)
+        self.assertTrue(body["partial"])
+
+    def test_a_request_past_its_deadline_reports_the_unread_series_and_caches_nothing(self):
+        backend = model()
+        subject = reader()
+
+        with mock.patch.object(timeline, "TIMELINE_DEADLINE_SECONDS", -1):
+            late = read(subject, backend, {"include": "states"})
+        again = read(subject, backend, {"include": "states"})
+
+        self.assertEqual([item["error"]["code"] for item in late["states"]], ["deadline"] * 3)
+        self.assertEqual([("error" in item) for item in again["states"]], [False] * 3)
+
+    def test_the_structure_is_read_once_per_user_and_model(self):
+        listing = []
+        backend = model()
+        backend.entities.list_by_health_model = lambda group, name: listing.append(1) or list(backend.items)
+        subject = reader()
+
+        read(subject, backend, {"include": "states"})
+        read(subject, backend, {"include": "states", "from": (NOW - 2 * HOUR).isoformat()})
+
+        self.assertEqual(len(listing), 1)
+
+
+class TimelineApiTests(base.ApiCase):
+    def setUp(self):
+        super().setUp()
+        self.module.timeline = timeline.TimelineReader()
+
+    def get(self, query=""):
+        with TestClient(self.module.app) as client:
+            return client.get(f"/api/timeline{query}")
+
+    def test_the_overview_has_every_entity_with_its_states_and_markers(self):
+        response = self.get("?from=" + (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+        body = response.json()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(body["entities"][0]["name"], MODEL)
+        self.assertEqual(sorted(item["name"] for item in body["entities"]), sorted([MODEL, "web-frontend", "orders-api", "orders-db", "payments"]))
+        self.assertEqual(len(body["states"]), 5)
+        self.assertTrue(all(item["complete"] for item in body["states"]))
+        self.assertGreater(len(next(item for item in body["states"] if item["entity"] == "orders-db")["transitions"]), 2)
+        self.assertTrue(body["annotations"])
+        self.assertEqual([item["entity"] for item in body["reports"]], ["payments"] * len(body["reports"]))
+        self.assertEqual(body["series"], [])
+
+    def test_signals_come_with_their_thresholds_and_a_value_per_point(self):
+        body = self.get("?include=signals&entity=orders-db&from=" + (datetime.now(timezone.utc) - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")).json()
+
+        signal = body["entities"][0]["signals"][0]
+        series = body["series"][0]
+        self.assertEqual((signal["name"], signal["rules"]["unhealthy"]), ("cpu", {"operator": "GreaterThan", "threshold": 95}))
+        self.assertEqual((series["entity"], series["signal"], series["complete"]), ("orders-db", "cpu", True))
+        self.assertGreater(len(series["points"]), 50)
+        self.assertEqual(series["points"][-1][2], 3)
+
+    def test_the_fixture_incident_is_visible_in_the_root_history(self):
+        body = self.get("?include=states&entity=" + MODEL).json()
+
+        states = [row["to"] for row in body["states"][0]["transitions"]]
+        self.assertIn(2, states)
+        self.assertEqual(body["entities"][0]["state"], 2)
+
+    def test_a_bad_query_is_a_400_with_the_error_envelope(self):
+        table = [("?top=5", "unsupported_query"), ("?include=x", "invalid_include"), ("?entity=nope", "unknown_entity"), ("?from=soon", "invalid_range"), ("?model=nope&resourceGroup=rg&subscription=" + base.SUB, "unknown_model")]
+        for query, code in table:
+            with self.subTest(query):
+                response = self.get(query)
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error"]["code"], code)
+
+    def test_one_failing_signal_does_not_fail_the_response(self):
+        original = self.health.history.get_signal_history
+
+        def flaky(entity, body):
+            if entity == "orders-api":
+                raise base.azure_error(500)
+            return original(entity, body)
+
+        with mock.patch.object(self.health.history, "get_signal_history", flaky):
+            response = self.get("?include=signals&from=" + (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+        body = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({item["entity"]: item.get("error", {}).get("code") for item in body["series"]}, {"web-frontend": None, "orders-api": "unavailable", "orders-db": None, "payments": None})
+        self.assertTrue(body["partial"])
+        self.assertNotIn("SECRET_AZURE_BODY", response.text)
+
+    def test_when_azure_refuses_everything_the_route_answers_like_the_other_routes(self):
+        def refuse(entity, body):
+            raise base.azure_error(403)
+
+        with mock.patch.object(self.health.history, "get_history", refuse):
+            response = self.get("?include=states")
+
+        self.assertEqual((response.status_code, response.json()["error"]["code"]), (403, "forbidden"))
+
+    def test_the_route_does_not_run_on_the_event_loop(self):
+        self.assertFalse(inspect.iscoroutinefunction(self.module.timeline_history))
+
+
+MODEL = base.MODEL
+
+
+if __name__ == "__main__":
+    unittest.main()

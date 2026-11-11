@@ -1,6 +1,7 @@
 import { expect, test as base } from "@playwright/test";
 import type { APIRequestContext, Page } from "@playwright/test";
 import type { AuthConfig, HealthModel, ModelCatalog, ModelRef, SessionSummary, TaskSummary } from "../src/model/types";
+import { openView } from "./views";
 
 // Runs against the deployed app (LIVE_BASE_URL, see playwright.live.config.ts), which reads the real Azure
 // health models. `@live-readonly` tests change nothing and cost no model tokens. `@live-mutation` tests send a
@@ -113,6 +114,9 @@ async function watch(page: Page): Promise<() => Promise<Findings>> {
   };
 }
 
+// An Explain is titled by the question it asks: "Why is X Unhealthy?", or "Why is the state of X unknown?".
+const WHY_QUESTION = /^(Why is |What happened to ).+\?$/;
+
 const CLEAN: Findings = { console: [], csp: [], failed: [], pageErrors: [], rejections: [] };
 
 async function json<T>(request: APIRequestContext, path: string): Promise<T> {
@@ -132,7 +136,7 @@ function modelOf(request: APIRequestContext, model: ModelRef): Promise<HealthMod
 }
 
 async function open(page: Page, query: string): Promise<void> {
-  await page.goto(`/?${query}`);
+  await openView(page, "zoom", `/?${query}`);
   await expect(page.getByTestId("model-name")).not.toHaveText("Health Pulse", { timeout: 30_000 });
 }
 
@@ -160,7 +164,7 @@ test.describe("@live-readonly the shell and the catalog", () => {
     expect(policy).toContain("default-src 'self'");
     expect(policy).not.toContain("frame-src");
 
-    await page.goto("/");
+    await openView(page, "zoom");
     await expect(page.getByTestId("status-bar")).toBeVisible();
     await expect(page.getByTestId("model-name")).not.toHaveText("Health Pulse", { timeout: 30_000 });
     await expect(page.locator(".react-flow__node").first()).toBeVisible();
@@ -172,7 +176,7 @@ test.describe("@live-readonly the shell and the catalog", () => {
     expect(catalog.models.length).toBeGreaterThan(0);
     expect(catalog.models.map((model) => model.name)).toContain(catalog.default.name);
 
-    await page.goto("/");
+    await openView(page, "zoom");
     await expect(page.getByTestId("model-name")).toHaveText(catalog.default.name, { timeout: 30_000 });
     await expect(page.getByTestId("model-picker-selected")).toContainText(catalog.default.name);
     await page.getByTestId("model-picker-search").click();
@@ -205,19 +209,19 @@ test.describe("@live-readonly the models", () => {
   test("@live-readonly switches models with the picker and keeps the address in step", async ({ page, request }) => {
     const catalog = await catalogOf(request);
     test.skip(catalog.models.length < 2, "needs two models");
-    await page.goto("/");
+    await openView(page, "zoom");
     await expect(page.getByTestId("model-name")).toHaveText(catalog.default.name, { timeout: 30_000 });
     const other = catalog.models.find((model) => model.name !== catalog.default.name)!;
     await page.getByTestId("model-picker-search").click();
     await page.getByTestId(`model-picker-option-${other.subscriptionId}/${other.resourceGroup}/${other.name}`).click();
     await expect(page.getByTestId("model-name")).toHaveText(other.name, { timeout: 30_000 });
     await expect(page).toHaveURL(new RegExp(`model=${other.name}`));
-    await expect(page.getByTestId("entity-panel")).toHaveCount(0);
+    await expect(page.getByTestId("entity-details")).toHaveCount(0);
   });
 
   test("@live-readonly falls back to the default model for an address that names an unknown one", async ({ page, request }) => {
     const catalog = await catalogOf(request);
-    await page.goto(`/?model=no-such-model&resourceGroup=rg-nowhere&subscription=${catalog.default.subscriptionId}`);
+    await openView(page, "zoom", `/?model=no-such-model&resourceGroup=rg-nowhere&subscription=${catalog.default.subscriptionId}`);
     await expect(page.getByTestId("model-name")).toHaveText(catalog.default.name, { timeout: 30_000 });
     await expect(page.getByTestId("model-picker-unavailable-selection")).toContainText("no-such-model");
   });
@@ -248,14 +252,15 @@ test.describe("@live-readonly the models", () => {
     await page.keyboard.press("Escape");
 
     await page.locator(`.entity-node[data-entity="${target.name}"]`).first().click();
-    await expect(page.getByTestId("entity-panel")).toBeVisible();
+    await expect(page.getByTestId("entity-details")).toBeVisible();
     await expect(page.getByTestId("entity-name")).toHaveText(target.displayName);
-    await expect(page.getByText("Health-state transitions")).toBeVisible();
-    await expect(page.getByText("Report health")).toBeVisible();
-    await expect(page.getByTestId("quick-send")).toBeVisible();
+    await expect(page.getByTestId("entity-changes")).toBeVisible();
     await expect(page.getByTestId("explain-entity")).toBeVisible();
-    await page.getByRole("button", { name: "Close panel" }).click();
-    await expect(page.getByTestId("entity-panel")).toHaveCount(0);
+    await page.getByTestId("report-open").click();
+    await expect(page.getByTestId("quick-send")).toBeVisible();
+    await page.getByTestId("report-close").click();
+    await page.getByRole("button", { name: "Close details" }).click();
+    await expect(page.getByTestId("entity-details")).toHaveCount(0);
   });
 
   test("@live-readonly refreshes the model on demand and reads the new observation", async ({ page, request }) => {
@@ -362,10 +367,10 @@ test.describe("@live-readonly the Sessions workspace", () => {
     const { session, task } = found!;
     const query = `${selector(task.target)}&session=${session.id}&task=${task.seq}`;
     await open(page, query);
-    await expect(page.getByTestId("task-title")).toHaveText(`Explain #${task.seq}`);
+    await expect(page.getByTestId("task-title")).toHaveText(WHY_QUESTION);
     await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
     await page.reload();
-    await expect(page.getByTestId("task-title")).toHaveText(`Explain #${task.seq}`);
+    await expect(page.getByTestId("task-title")).toHaveText(WHY_QUESTION);
     await expect(page).toHaveURL(new RegExp(`session=${session.id}&task=${task.seq}`));
   });
 
@@ -429,6 +434,7 @@ test.describe("@live-mutation health reports and Tasks", () => {
     const catalog = await catalogOf(request);
     await open(page, selector(catalog.default));
     await page.locator(`.entity-node[data-entity="${entity}"]`).first().click();
+    await page.getByTestId("report-open").click();
     await expect(page.getByTestId("quick-send")).toBeVisible();
     await expect(page.locator("#report-expiry")).toHaveValue("1");
     await page.getByTestId("quick-send-Unhealthy").click();
@@ -438,20 +444,16 @@ test.describe("@live-mutation health reports and Tasks", () => {
     expect(await findings()).toEqual(CLEAN);
   });
 
-  test("@live-mutation creates a Session and watches an Explain Task run to its result over the event stream", async ({ page, request }) => {
+  test("@live-mutation starts an Explain with one click and watches it run to its result over the event stream", async ({ page, request }) => {
     test.setTimeout(240_000);
     const findings = await watch(page);
     const catalog = await catalogOf(request);
     await open(page, selector(catalog.default));
     await page.locator(`.entity-node[data-entity="${entity}"]`).first().click();
+    // One click: the Session is made, the Explain starts in it and its timeline is followed.
     await page.getByTestId("explain-entity").click();
-    await page.getByTestId("session-title").fill("Playwright live check");
-    await page.getByTestId("new-session").click();
-    await expect(page.getByTestId("task-type-explain")).toHaveAttribute("aria-selected", "true");
-    await expect(page.getByTestId("task-submit")).toBeEnabled();
-    await page.getByTestId("task-submit").click();
 
-    await expect(page.getByTestId("task-title")).toHaveText("Explain #1");
+    await expect(page.getByTestId("task-title")).toHaveText(WHY_QUESTION);
     await expect(page.getByTestId("timeline-live")).toBeVisible();
     await expect(page.getByTestId("timeline-event-1")).toBeVisible();
     await expect(page.getByTestId("explain-result")).toBeVisible({ timeout: 180_000 });

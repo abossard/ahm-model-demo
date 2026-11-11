@@ -186,6 +186,30 @@ class UnseenPropertyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent, [("signalDefinition", definition["name"], {"displayName": "Edited"})])
 
 
+class EvaluationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_an_applied_change_leaves_the_entity_with_the_state_and_signal_statuses_the_model_evaluated(self):
+        for name in ("orders-api", "orders-db", "web-frontend", "payments"):
+            with self.subTest(entity=name):
+                env = Env()
+                before = {e["name"]: e["properties"] for e in env.health.read_model(SUB, GROUP, MODEL)["entities"]}[name]
+                after = {**model_diff.strip_system(before), "displayName": "Edited"}
+                change = {"id": "c1", "op": "change", "kind": "entity", "name": name, "after": after, "reason": "r"}
+                sid, task = await env.seeded_changes([change])
+
+                outcome = await env.apply(sid, task, ["c1"])
+
+                found = {e["name"]: e["properties"] for e in env.health.read_model(SUB, GROUP, MODEL)["entities"]}[name]
+                statuses = lambda properties: {
+                    (group_name, signal["name"]): signal["status"]
+                    for group_name, group in properties.get("signalGroups", {}).items()
+                    for signal in group.get("signals", [])
+                }
+                self.assertEqual(outcome["outcome"], "applied")
+                self.assertEqual(found["displayName"], "Edited")
+                self.assertEqual(found["healthState"], before["healthState"])
+                self.assertEqual(statuses(found), statuses(before))
+
+
 class FailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_any_azure_failure_after_a_write_is_recorded_as_a_partial_outcome(self):
         cases = [

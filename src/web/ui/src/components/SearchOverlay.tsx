@@ -25,6 +25,9 @@ const LISTBOX_ID = "graph-search-listbox";
 const BACKDROP = { "data-testid": "search-backdrop" } as NonNullable<DialogSurfaceProps["backdrop"]>;
 const GROUP_ORDER: readonly SearchGroup[] = ["entities", "relationships", "signals"];
 
+/** The time the graph needs to fit the room a timeline that opens leaves it. */
+const TIMELINE_FIT_MS = 150;
+
 const useStyles = makeStyles({
   surface: {
     width: "min(560px, calc(100% - 32px))",
@@ -148,7 +151,11 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
       }
     }
     if (blocked.size > 0) actions.expandMany([...blocked]);
-    actions.focusEntities({ highlight: hit.focusEntity, names: hit.focusEntities });
+    const focus = (): void => actions.focusEntities({ highlight: hit.focusEntity, names: hit.focusEntities });
+    // A timeline that opens takes room from the graph, which then fits its new size: bring the result into view after that.
+    if (useStore.getState().timelineOpen) focus();
+    else window.setTimeout(focus, TIMELINE_FIT_MS);
+    actions.showInTimeline(hit.focusEntity);
     actions.announce(`Showing ${hit.label}: ${hit.detail}.`);
     dismiss();
   };
@@ -181,7 +188,7 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
     <Dialog open={open} onOpenChange={(_, data) => (data.open ? undefined : dismiss())}>
       <DialogSurface
         className={styles.surface}
-        aria-label="Search the topology"
+        aria-label="Search this model"
         data-testid="search-overlay"
         backdrop={BACKDROP}
       >
@@ -195,7 +202,7 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
           role="combobox"
           autoComplete="off"
           placeholder="Search entities, relationships and signals"
-          aria-label="Search the topology"
+          aria-label="Search this model"
           aria-expanded={hits.length > 0}
           aria-controls={LISTBOX_ID}
           aria-autocomplete="list"

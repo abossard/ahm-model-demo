@@ -184,7 +184,7 @@ function errorEnvelope(code: string, message: string) {
 }
 
 /** What the app says when it runs as the developer's own identity: nobody signs in and no call carries a token. */
-export const LOCAL_CONFIG: AuthConfig = { authMode: "local", tenantId: null, clientId: null, apiScope: null };
+export const LOCAL_CONFIG: AuthConfig = { authMode: "local", clientId: null, apiScope: null };
 
 export interface StubState {
   healthModelFails: boolean;
@@ -403,6 +403,7 @@ export async function installStubs(page: Page, state: StubState): Promise<void> 
   const model = state.model ?? healthModel;
   const catalog = state.catalog ?? modelCatalog;
   const byModel = state.modelsByName ?? {};
+  let streamRequests = 0;
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const { pathname, searchParams } = new URL(request.url());
@@ -415,6 +416,20 @@ export async function installStubs(page: Page, state: StubState): Promise<void> 
 
     if (pathname === "/api/health-models") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(catalog) });
+      return;
+    }
+
+    // The live stream of the model: a snapshot of the stubbed model, then an open connection that stays quiet. A spec that
+    // wants events registers its own route for it after this one (tests/liveStub.ts).
+    if (pathname === "/api/health-model/stream") {
+      streamRequests += 1;
+      if (streamRequests > 1) return new Promise<void>(() => undefined);
+      const shown = byModel[searchParams.get("model") ?? ""] ?? model;
+      await route.fulfill({
+        status: 200,
+        headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+        body: `retry: 3600000\n\nid: stub-0\nevent: snapshot\ndata: ${JSON.stringify(shown)}\n\n`,
+      });
       return;
     }
 

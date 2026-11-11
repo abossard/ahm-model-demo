@@ -17,6 +17,8 @@ export interface SessionsActions {
   readonly createSession: (title?: string) => Promise<void>;
   /** Opens a Session, or the Session list when the id is null. */
   readonly openSession: (id: string | null) => Promise<void>;
+  /** Opens a Session the app just made: it holds no Tasks, so there is nothing to fetch. */
+  readonly enterSession: (detail: SessionDetail) => void;
   /** Reloads the open Session so its Task list shows current statuses. */
   readonly refreshSession: () => Promise<void>;
   /** Opens the Session and Task an address names. */
@@ -34,19 +36,24 @@ export const sessionsSlice: StateCreator<Store, [], [], SessionsState & Sessions
 
   loadSessions: async () => {
     if (get().sessions.kind !== "success") set({ sessions: LOADING });
-    const sessions = await settle(api.fetchSessions(), "The Sessions could not be listed.");
+    const sessions = await settle(api.fetchSessions(), "The history could not be loaded.");
     set({ sessions });
   },
 
   createSession: async (title) => {
     set({ creatingSession: LOADING });
-    const created = await settle(api.createSession(title), "The Session could not be created.");
+    const created = await settle(api.createSession(title), "The topic could not be created.");
     set({ creatingSession: created.kind === "success" ? IDLE : created });
     if (created.kind !== "success") return;
     void get().loadSessions();
     // A Session without Tasks has nothing to list, so it opens on the form.
     set({ workspaceTab: "new" });
     await get().openSession(created.value.id);
+  },
+
+  enterSession: (detail) => {
+    void get().openTask(null);
+    set({ sessionId: detail.session.id, sessionDetail: { kind: "success", value: detail }, workspaceTab: "tasks" });
   },
 
   openSession: async (id) => {
@@ -56,14 +63,14 @@ export const sessionsSlice: StateCreator<Store, [], [], SessionsState & Sessions
       set({ workspaceTab: "tasks" });
       return;
     }
-    const detail = await settle(api.fetchSession(id), "The Session could not be opened.");
+    const detail = await settle(api.fetchSession(id), "The topic could not be opened.");
     if (get().sessionId === id) set({ sessionDetail: detail });
   },
 
   refreshSession: async () => {
     const id = get().sessionId;
     if (id === null) return;
-    const detail = await settle(api.fetchSession(id), "The Session could not be opened.");
+    const detail = await settle(api.fetchSession(id), "The topic could not be opened.");
     if (get().sessionId === id && detail.kind === "success") set({ sessionDetail: detail });
   },
 

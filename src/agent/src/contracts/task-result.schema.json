@@ -22,6 +22,16 @@
     "nullableText": { "type": ["string", "null"], "minLength": 1 },
     "reading": { "type": ["string", "number", "null"] },
     "healthState": { "enum": ["Healthy", "Degraded", "Unhealthy", "Unknown"] },
+    "confidence": { "enum": ["high", "medium", "low"] },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "type": "string", "format": "date-time" },
+        "to": { "type": "string", "format": "date-time" }
+      }
+    },
     "armName": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{1,258}[a-zA-Z0-9]$" },
     "explain": {
       "type": "object",
@@ -31,6 +41,8 @@
         "kind": { "const": "explain" },
         "entity": { "$ref": "#/$defs/text" },
         "state": { "$ref": "#/$defs/healthState" },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "window": { "$ref": "#/$defs/window" },
         "summary": { "$ref": "#/$defs/text" },
         "causes": { "type": "array", "items": { "$ref": "#/$defs/cause" } }
       }
@@ -55,6 +67,7 @@
       "required": ["kind", "summary", "changes", "verification", "findings"],
       "properties": {
         "kind": { "const": "diff" },
+        "confidence": { "$ref": "#/$defs/confidence" },
         "summary": { "$ref": "#/$defs/text" },
         "changes": { "type": "array", "items": { "$ref": "#/$defs/change" } },
         "verification": { "type": "array", "items": { "$ref": "#/$defs/verification" } },

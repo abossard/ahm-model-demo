@@ -23,7 +23,7 @@ export const reportSlice: StateCreator<Store, [], [], ReportState & ReportAction
     set({ report: LOADING });
     const report = await settle(
       api.postHealthReport(name, body, get().selected),
-      "The report could not be submitted.",
+      "The health report could not be sent.",
     );
     // An accepted report starts the countdown to the refresh that shows its effect.
     set({

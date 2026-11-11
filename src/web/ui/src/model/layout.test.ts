@@ -123,7 +123,7 @@ describe("layout engine registry", () => {
     ["dagre-lr", (parent: readonly [number, number], child: readonly [number, number]) => parent[0] < child[0]],
     ["dagre-rl", (parent: readonly [number, number], child: readonly [number, number]) => parent[0] > child[0]],
   ] as const)("arranges for the shortest connections under %s, every edge oriented", async (id, holds) => {
-    const layout = await LAYOUT_ENGINES[id].run(ENTITIES, RELATIONSHIPS, sizeOf, true);
+    const layout = await LAYOUT_ENGINES[id].run(ENTITIES, RELATIONSHIPS, sizeOf, { shortest: true });
 
     expect(layout.positions.size).toBe(ENTITIES.length);
     for (const item of linked) {
@@ -138,7 +138,7 @@ describe("layout engine registry", () => {
     "leaves the order of %s to the engine when the shortest connections are asked for",
     async (id) => {
       const plain = await LAYOUT_ENGINES[id].run(ENTITIES, RELATIONSHIPS, sizeOf);
-      const asked = await LAYOUT_ENGINES[id].run(ENTITIES, RELATIONSHIPS, sizeOf, true);
+      const asked = await LAYOUT_ENGINES[id].run(ENTITIES, RELATIONSHIPS, sizeOf, { shortest: true });
 
       expect([...asked.positions]).toEqual([...plain.positions]);
     },
@@ -337,3 +337,54 @@ function assertPacking(layout: GraphLayout, sizes: ReadonlyMap<string, NodeSize>
     }
   }
 }
+
+describe("custom orders", () => {
+  const TREE: readonly Entity[] = ["r", "x", "y", "z", "x1", "x2"].map(entity);
+  const TREE_LINKS: readonly Relationship[] = [rel("r", "x"), rel("r", "y"), rel("r", "z"), rel("x", "x1"), rel("x", "x2")];
+  const across = (positions: ReadonlyMap<string, Point>, names: readonly string[], axis: "x" | "y"): string[] =>
+    [...names].sort((left, right) => (positions.get(left) as Point)[axis] - (positions.get(right) as Point)[axis]);
+
+  it.each(["dagre-tb", "dagre-bt", "dagre-lr", "dagre-rl"] as const)("%s keeps the ranks a viewer gave, and says which ranks it drew", async (id) => {
+    const custom = { kind: "ranks", ranks: [["r"], ["z", "x", "y"], ["x2", "x1"]] } as const;
+    const layout = await LAYOUT_ENGINES[id].run(TREE, TREE_LINKS, sizeOf, { custom });
+
+    expect(layout.ranks).toEqual(custom.ranks);
+    const axis = id === "dagre-tb" || id === "dagre-bt" ? "x" : "y";
+    expect(across(layout.positions, ["x", "y", "z"], axis)).toEqual(["z", "x", "y"]);
+  });
+
+  it("keeps the layers of ELK layered in the order a viewer gave", async () => {
+    const plain = await LAYOUT_ENGINES["elk-layered"].run(TREE, TREE_LINKS, sizeOf);
+    const first = across(plain.positions, ["x", "y", "z"], "x");
+    const wanted = [...first].reverse();
+    const layout = await LAYOUT_ENGINES["elk-layered"].run(TREE, TREE_LINKS, sizeOf, { custom: { kind: "ranks", ranks: [["r"], wanted, ["x2", "x1"]] } });
+
+    expect(across(layout.positions, ["x", "y", "z"], "x")).toEqual(wanted);
+    expect(layout.ranks?.[1]).toEqual(wanted);
+  });
+
+  it.each(["elk-radial", "d3-force"] as const)("keeps the places a viewer gave under %s, and leaves what it has no place for where it put it", async (id) => {
+    const plain = await LAYOUT_ENGINES[id].run(TREE, TREE_LINKS, sizeOf);
+    const given = { x: (plain.positions.get("y") as Point).x, y: (plain.positions.get("y") as Point).y };
+    const swapped = { x: (plain.positions.get("x") as Point).x, y: (plain.positions.get("x") as Point).y };
+    const layout = await LAYOUT_ENGINES[id].run(TREE, TREE_LINKS, sizeOf, { custom: { kind: "slots", slots: { x: given, y: swapped, gone: { x: 9, y: 9 } } } });
+
+    expect(layout.positions.get("x")).toEqual(given);
+    expect(layout.positions.get("y")).toEqual(swapped);
+    expect(layout.positions.has("gone")).toBe(false);
+    // z has no place of its own: it is put clear of the others
+    expect([...layout.positions.keys()].sort()).toEqual(TREE.map((item) => item.name).sort());
+    for (const name of ["r", "z", "x1", "x2"]) expect(layout.positions.get(name)).not.toEqual(given);
+  });
+
+  it.each([
+    ["dagre-tb", { kind: "slots", slots: { x: { x: 1, y: 1 } } }],
+    ["elk-radial", { kind: "ranks", ranks: [["r"], ["z", "y", "x"]] }],
+    ["d3-force", { kind: "ranks", ranks: [["r"], ["z", "y", "x"]] }],
+  ] as const)("%s ignores an order of the kind it cannot keep", async (id, custom) => {
+    const plain = await LAYOUT_ENGINES[id].run(TREE, TREE_LINKS, sizeOf, { shortest: true });
+    const given = await LAYOUT_ENGINES[id].run(TREE, TREE_LINKS, sizeOf, { shortest: true, custom });
+
+    expect([...given.positions]).toEqual([...plain.positions]);
+  });
+});

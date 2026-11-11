@@ -2,13 +2,25 @@ import type { StateCreator } from "zustand";
 import { parseActivityEvent } from "../model/activity";
 import { changeIdsForEntity, writtenIds } from "../model/changes";
 import { sameModel } from "../model/selection";
-import { isUnfinished, type TaskDraft } from "../model/tasks";
+import {
+  TASK_LIFETIME_MS,
+  mayHoldRunningTask,
+  planStart,
+  runningIn,
+  sessionTitle,
+  type OpenSession,
+  type RunningRef,
+} from "../model/sessions";
+import { buildTaskInput, inputOfTask, isUnfinished, taskTitle, type TaskDraft } from "../model/tasks";
+import { TASK_KIND, proposedCount } from "../model/wording";
+import type { LaunchStep } from "../model/errors";
 import type {
   ActivityEvent,
   ApiError,
   ApplyOutcome,
   AsyncState,
   DiffView,
+  HealthState,
   Task,
   TaskInput,
   TaskType,
@@ -18,6 +30,58 @@ import { IDLE, LOADING, settle } from "./asyncState";
 import type { Store } from "./store";
 
 export type StreamStatus = "idle" | "live" | "ended" | "error";
+
+/** A Session that one start created, so that a refusal can say what is left behind. */
+export interface MadeSession {
+  readonly id: string;
+  readonly title: string;
+}
+
+/**
+ * The one start the user is waiting for: while the Session is made and the Task posted, and what is kept when it
+ * could not be done, so that Try again asks for the same thing whatever is selected by then.
+ */
+export type Launch =
+  | { readonly kind: "idle" }
+  | { readonly kind: "starting"; readonly input: TaskInput; readonly label: string; readonly step: LaunchStep }
+  | {
+      readonly kind: "failed";
+      readonly input: TaskInput;
+      readonly label: string;
+      readonly step: LaunchStep;
+      readonly error: ApiError;
+      /** The Session this start made, open and empty. */
+      readonly made: MadeSession | null;
+      /** The Task of the user that runs, when that is what refused the start. */
+      readonly running: RunningRef | null;
+    };
+
+/** A Task that ended while the user was not looking at it. */
+export interface FinishedNotice {
+  readonly sessionId: string;
+  readonly seq: number;
+  readonly status: "done" | "failed";
+  readonly title: string;
+  readonly text: string;
+  /** The words of the link that opens it: what the user will see. */
+  readonly link: string;
+}
+
+const IDLE_LAUNCH: Launch = { kind: "idle" };
+
+type Settled<T> = { readonly kind: "success"; readonly value: T } | { readonly kind: "failure"; readonly error: ApiError };
+
+/** A request settled into its value or its error: `settle` never answers anything else. */
+async function outcome<T>(request: Promise<T>, fallbackMessage: string): Promise<Settled<T>> {
+  return (await settle(request, fallbackMessage)) as Settled<T>;
+}
+const WATCH_MS = 4000;
+const TASK_RUNNING: ApiError = {
+  code: "task_running",
+  message: "The assistant is already working on something.",
+  retryable: true,
+  operationId: null,
+};
 
 export interface TasksState {
   readonly taskSeq: number | null;
@@ -33,16 +97,37 @@ export interface TasksState {
   readonly apply: AsyncState<ApplyOutcome>;
   readonly compare: boolean;
   readonly draft: TaskDraft;
-  readonly starting: AsyncState<Task>;
+  readonly launch: Launch;
+  /** Set when the form was opened on purpose (a Task instruction, a Design): it takes focus once, when it appears. */
+  readonly focusForm: boolean;
+  readonly notice: FinishedNotice | null;
+  /** A Task that runs while its Session is not open: it is polled so that its end is told. */
+  readonly watching: RunningRef | null;
 }
 
 export interface TasksActions {
   readonly updateDraft: (patch: Partial<TaskDraft>) => void;
-  /** Opens the workspace with the form set to a Task type. */
+  /** Opens the workspace on the form set to a Task type, for a Task instruction or the Design a form needs. */
   readonly prefillTask: (type: TaskType) => void;
-  readonly startTask: (input: TaskInput) => Promise<void>;
-  /** Opens a Task of the open Session, or closes the open one when the sequence is null. */
-  readonly openTask: (seq: number | null) => Promise<void>;
+  /**
+   * One click, one Task: builds the request from the model and entity on screen, puts it in the open Session (or in a
+   * new one, titled by what it is about, when none is open or a Task of the user does not run there) and opens it.
+   */
+  readonly startTask: (draft: Pick<TaskDraft, "type"> & Partial<TaskDraft>) => Promise<void>;
+  /** Starts the Task again with what it asked for, not with what is on screen now. */
+  readonly rerunTask: (task: Pick<Task, "type" | "target" | "workload" | "instruction">) => Promise<void>;
+  /** Asks again for the start that was refused. */
+  readonly retryStart: () => Promise<void>;
+  readonly dismissLaunch: () => void;
+  /** The form has taken the focus it was opened for. */
+  readonly formFocused: () => void;
+  /** Opens the Task of the user that refused the start. */
+  readonly openRunningTask: () => Promise<void>;
+  /** Opens the Task a notice is about. */
+  readonly showFinished: () => Promise<void>;
+  readonly dismissNotice: () => void;
+  /** Opens a Task of the open Session, or closes the open one when the sequence is null. A Task just posted needs no fetch. */
+  readonly openTask: (seq: number | null, known?: Task) => Promise<void>;
   readonly toggleChange: (id: string) => void;
   readonly selectChanges: (ids: readonly string[]) => void;
   readonly deselectChanges: (ids: readonly string[]) => void;
@@ -51,7 +136,7 @@ export interface TasksActions {
   readonly toggleEntityChanges: (entity: string) => void;
   readonly applySelected: () => Promise<void>;
   readonly setCompare: (on: boolean) => void;
-  /** What picking an entity on the graph means: its changes while comparing, its detail otherwise. */
+  /** What picking an entity on the graph means: its changes while comparing, its detail and its place in the timeline otherwise. */
   readonly activateEntity: (name: string) => void;
 }
 
@@ -122,7 +207,7 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
 
   const loadDiff = async (sid: string, seq: number, keepCurrent: boolean): Promise<void> => {
     if (!keepCurrent) set({ diff: LOADING });
-    const diff = await settle(api.fetchDiff(sid, seq), "The Health model diff could not be loaded.");
+    const diff = await settle(api.fetchDiff(sid, seq), "The proposed changes could not be loaded.");
     if (!isOpen(sid, seq)) return;
     if (!keepCurrent || diff.kind === "success") set({ diff });
   };
@@ -137,11 +222,86 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
     const known = get().task;
     // A Task still loading is read after the stream ended anyway; one that finished needs no reload.
     if (known.kind !== "success" || !isUnfinished(known.value.status)) return;
-    const task = await settle(api.fetchTask(sid, seq), "The Task could not be loaded.");
+    const task = await settle(api.fetchTask(sid, seq), "The question could not be loaded.");
     if (!isOpen(sid, seq)) return;
     set({ task });
     void get().refreshSession();
-    if (task.kind === "success") await loadDiffOf(task.value);
+    if (task.kind !== "success") return;
+    // With the workspace closed nobody sees the result open by itself, so the user is told.
+    if (!get().workspaceOpen) notify(task.value);
+    await loadDiffOf(task.value);
+  };
+
+  const entityLabelOf = (name: string | undefined): string | null => {
+    const { model } = get();
+    return name === undefined || model.kind !== "success"
+      ? (name ?? null)
+      : (model.value.entities.find((entity) => entity.name === name)?.displayName ?? name);
+  };
+
+  // The state the entity has now, which is the one the user asks about.
+  const stateOf = (name: string | undefined): HealthState | null => {
+    const { model } = get();
+    if (name === undefined || model.kind !== "success") return null;
+    return model.value.entities.find((entity) => entity.name === name)?.healthState ?? null;
+  };
+
+  const notify = (task: Task): void => {
+    const title = task.status === "failed" ? "The assistant could not finish" : `${TASK_KIND[task.type]} ready`;
+    const { result } = task;
+    const text =
+      task.status === "failed"
+        ? (task.error?.message ?? "It stopped without an answer.")
+        : result?.kind === "explain"
+          ? `${entityLabelOf(task.target.entity) ?? result.entity} is ${result.state}.`
+          : result?.kind === "diff"
+            ? `${proposedCount(result.changes.length)}.`
+            : "The result is ready.";
+    const link = task.status === "failed" ? "Show details" : result?.kind === "diff" ? "Show proposed changes" : "Show answer";
+    set({ notice: { sessionId: task.sessionId, seq: task.seq, status: task.status === "failed" ? "failed" : "done", title, text, link } });
+  };
+
+  // A Task the user left while it ran has no stream, so it is asked for until it ends.
+  const watch = (sid: string, seq: number): void => {
+    const ref = { sessionId: sid, seq };
+    const until = Date.now() + TASK_LIFETIME_MS;
+    const stillWatched = (): boolean => get().watching?.sessionId === sid && get().watching?.seq === seq;
+    const poll = async (): Promise<void> => {
+      if (!stillWatched()) return;
+      const task = await settle(api.fetchTask(sid, seq), "The question could not be loaded.");
+      if (!stillWatched()) return;
+      if (task.kind === "success" && !isUnfinished(task.value.status)) {
+        set({ watching: null });
+        if (get().sessionId === sid) void get().refreshSession();
+        notify(task.value);
+        return;
+      }
+      if (Date.now() < until) setTimeout(() => void poll(), WATCH_MS);
+      else set({ watching: null });
+    };
+    set({ watching: ref });
+    setTimeout(() => void poll(), WATCH_MS);
+  };
+
+  const openSessionOf = (): OpenSession | null => {
+    const { sessionId, sessionDetail } = get();
+    if (sessionId === null || sessionDetail.kind === "failure") return null;
+    return { id: sessionId, tasks: sessionDetail.kind === "success" ? sessionDetail.value.tasks : null };
+  };
+
+  // The Session list says which Sessions saw a Task lately; only those are asked what runs in them.
+  const findRunning = async (): Promise<RunningRef | null> => {
+    const listed = await settle(api.fetchSessions(), "The history could not be loaded.");
+    if (listed.kind !== "success") return null;
+    set({ sessions: listed });
+    const details = await Promise.all(
+      mayHoldRunningTask(listed.value, Date.now()).map((session) => settle(api.fetchSession(session.id), "The topic could not be opened.")),
+    );
+    for (const detail of details) {
+      const running = detail.kind === "success" ? runningIn(detail.value.tasks) : undefined;
+      if (detail.kind === "success" && running) return { sessionId: detail.value.session.id, seq: running.seq };
+    }
+    return null;
   };
 
   const openStream = (sid: string, seq: number): void => {
@@ -174,44 +334,171 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
     });
   };
 
+  // Every part of one start that the user can see goes through here, so a refusal always leaves the same things behind.
+  const run = async (input: TaskInput): Promise<void> => {
+    if (get().launch.kind === "starting") return;
+    const entityLabel = entityLabelOf(input.target.entity);
+    const entityState = stateOf(input.target.entity);
+    const label = taskTitle(input, entityLabel, entityState);
+    const refuse = (
+      step: LaunchStep,
+      error: ApiError,
+      made: MadeSession | null = null,
+      running: RunningRef | null = null,
+    ): void => {
+      set({ launch: { kind: "failed", input, label, step, error, made, running } });
+    };
+    // The workspace opens at once on what is being done, so the click is never dead.
+    set({ launch: { kind: "starting", input, label, step: get().sessionId === null ? "session" : "task" }, workspaceOpen: true });
+
+    let open = openSessionOf();
+    // The open Session may still show a Task that has ended since: ask again before saying one runs.
+    if (open?.tasks && runningIn(open.tasks)) {
+      await get().refreshSession();
+      open = openSessionOf();
+    }
+    let plan = planStart(open, null);
+    if (plan.kind === "create") plan = planStart(null, await findRunning());
+    if (plan.kind === "blocked") return refuse("task", TASK_RUNNING, null, plan.running);
+
+    const where: { sid: string; made: MadeSession | null } = { sid: plan.kind === "use" ? plan.sessionId : "", made: null };
+    const makeSession = async (): Promise<boolean> => {
+      set({ launch: { kind: "starting", input, label, step: "session" } });
+      const created = await outcome(api.createSession(sessionTitle(input, entityLabel, entityState, new Date())), "The topic could not be created.");
+      if (created.kind === "failure") {
+        refuse("session", created.error);
+        return false;
+      }
+      // A Session that was just made has no Tasks, so there is nothing to fetch.
+      get().enterSession({ session: created.value, tasks: [] });
+      void get().loadSessions();
+      where.sid = created.value.id;
+      where.made = { id: created.value.id, title: created.value.title };
+      return true;
+    };
+    if (plan.kind === "create" && !(await makeSession())) return;
+
+    set({ launch: { kind: "starting", input, label, step: "task" } });
+    let posted = await outcome(api.postTask(where.sid, input), "The question could not be asked.");
+    // A full Session is no reason to stop: the Task goes into a new one, which is what the user would do next.
+    if (posted.kind === "failure" && posted.error.code === "task_limit" && where.made === null) {
+      if (!(await makeSession())) return;
+      set({ launch: { kind: "starting", input, label, step: "task" } });
+      posted = await outcome(api.postTask(where.sid, input), "The question could not be asked.");
+    }
+    if (posted.kind === "failure") {
+      const running = posted.error.code === "task_running" ? await findRunning() : null;
+      return refuse("task", posted.error, where.made, running);
+    }
+
+    const task = posted.value;
+    set((state) => ({ launch: IDLE_LAUNCH, workspaceTab: "tasks", draft: { ...state.draft, instruction: "" } }));
+    // The user may have moved to another Session while it was posted: the Task is what they asked to see.
+    if (get().sessionId !== where.sid) await get().openSession(where.sid);
+    const { sessionDetail } = get();
+    if (sessionDetail.kind === "success" && !sessionDetail.value.tasks.some((item) => item.seq === task.seq)) {
+      const { result: _result, ...summary } = task;
+      const session = { ...sessionDetail.value.session, taskCount: sessionDetail.value.tasks.length + 1, lastTaskAt: task.createdAt };
+      set({ sessionDetail: { kind: "success", value: { session, tasks: [...sessionDetail.value.tasks, summary] } } });
+    }
+    await get().openTask(task.seq, task);
+  };
+
   return {
     ...NO_TASK,
     draft: { type: "review", instruction: "", repositoryUrl: "" },
-    starting: IDLE,
+    launch: IDLE_LAUNCH,
+    focusForm: false,
+    notice: null,
+    watching: null,
 
     updateDraft: (patch) =>
       set((state) => ({
         draft: { ...state.draft, ...patch },
-        starting: state.starting.kind === "failure" ? IDLE : state.starting,
+        launch: state.launch.kind === "failed" ? IDLE_LAUNCH : state.launch,
       })),
 
-    prefillTask: (type) =>
-      set((state) => ({ draft: { ...state.draft, type }, workspaceOpen: true, workspaceTab: "new" })),
-
-    startTask: async (input) => {
-      const sid = get().sessionId;
-      if (sid === null) return;
-      set({ starting: LOADING });
-      const created = await settle(api.postTask(sid, input), "The Task could not be started.");
-      if (get().sessionId !== sid) return;
-      if (created.kind !== "success") {
-        set({ starting: created });
-        if (created.kind === "failure" && created.error.code === "task_running") void get().refreshSession();
-        return;
-      }
-      // The form did its work, so the way back from the new Task leads to the Task list it joined.
-      set((state) => ({ starting: IDLE, workspaceTab: "tasks", draft: { ...state.draft, instruction: "" } }));
-      void get().refreshSession();
-      await get().openTask(created.value.seq);
+    prefillTask: (type) => {
+      set((state) => ({
+        draft: { ...state.draft, type },
+        workspaceOpen: true,
+        workspaceTab: "new",
+        focusForm: true,
+        launch: state.launch.kind === "failed" ? IDLE_LAUNCH : state.launch,
+      }));
+      // An open Task would hide the form, and the form is what was asked for.
+      void get().openTask(null);
     },
 
-    openTask: async (seq) => {
+    startTask: async (draft) => {
+      const { selected, selectedName, catalog } = get();
+      const ready = buildTaskInput(
+        { instruction: "", repositoryUrl: "", ...draft },
+        { selected, entity: selectedName, catalog: catalog.kind === "success" ? catalog.value : null },
+      );
+      if (ready.input === null) {
+        get().announce(ready.problem);
+        return;
+      }
+      await run(ready.input);
+    },
+
+    rerunTask: (task) => run(inputOfTask(task)),
+
+    retryStart: async () => {
+      const { launch } = get();
+      if (launch.kind === "failed") await run(launch.input);
+    },
+
+    dismissLaunch: () => set({ launch: IDLE_LAUNCH }),
+
+    formFocused: () => set({ focusForm: false }),
+
+    openRunningTask: async () => {
+      const { launch } = get();
+      if (launch.kind !== "failed" || launch.running === null) return;
+      const { sessionId, seq } = launch.running;
+      set({ launch: IDLE_LAUNCH, workspaceOpen: true, workspaceTab: "tasks" });
+      if (get().sessionId !== sessionId) await get().openSession(sessionId);
+      if (get().taskSeq !== seq) await get().openTask(seq);
+    },
+
+    showFinished: async () => {
+      const { notice } = get();
+      if (notice === null) return;
+      set({ notice: null, workspaceOpen: true, workspaceTab: "tasks" });
+      if (get().sessionId !== notice.sessionId) await get().openSession(notice.sessionId);
+      if (get().taskSeq !== notice.seq) await get().openTask(notice.seq);
+    },
+
+    dismissNotice: () => set({ notice: null }),
+
+    openTask: async (seq, known) => {
+      const leaving = get();
+      // The Task the user turns away from keeps running; its end is told when they are not looking.
+      if (
+        leaving.taskSeq !== null &&
+        leaving.taskSeq !== seq &&
+        leaving.sessionId !== null &&
+        leaving.task.kind === "success" &&
+        isUnfinished(leaving.task.value.status)
+      ) {
+        watch(leaving.sessionId, leaving.taskSeq);
+      }
       closeStream();
-      set({ ...NO_TASK, taskSeq: seq, task: seq === null ? IDLE : LOADING });
       const sid = get().sessionId;
+      set((state) => ({
+        ...NO_TASK,
+        taskSeq: seq,
+        task: seq === null ? IDLE : known ? { kind: "success", value: known } : LOADING,
+        watching: state.watching?.sessionId === sid && state.watching?.seq === seq ? null : state.watching,
+        notice: state.notice?.sessionId === sid && state.notice?.seq === seq ? null : state.notice,
+      }));
       if (seq === null || sid === null) return;
       openStream(sid, seq);
-      const task = await settle(api.fetchTask(sid, seq), "The Task could not be opened.");
+      const task: AsyncState<Task> = known
+        ? { kind: "success", value: known }
+        : await settle(api.fetchTask(sid, seq), "The question could not be opened.");
       if (!isOpen(sid, seq)) return;
       set({ task });
       if (task.kind !== "success") return;
@@ -256,8 +543,8 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
       if (ids.length === 0) {
         get().announce(
           owned.length === 0
-            ? `${entity} has no changes in this Health model diff.`
-            : `The changes of ${entity} are applied already.`,
+            ? `${entity} has no proposed changes.`
+            : `The proposed changes of ${entity} are applied already.`,
         );
         return;
       }
@@ -295,7 +582,10 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
 
     activateEntity: (name) => {
       if (get().compare && get().diff.kind === "success") get().toggleEntityChanges(name);
-      else void get().selectEntity(name);
+      else {
+        get().showInTimeline(name);
+        void get().selectEntity(name);
+      }
     },
   };
 };

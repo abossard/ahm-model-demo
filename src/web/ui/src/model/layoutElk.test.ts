@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { elkLayout } from "./layoutElk";
+import { elkLayout, spanningTree } from "./layoutElk";
 import type { GraphLayout, NodeSize } from "./layout";
 import type { Entity, Relationship } from "./types";
-import { realAnbomovModel } from "../../tests/denseModel";
+import { denseModel, realAnbomovModel } from "../../tests/denseModel";
 
 function entity(name: string): Entity {
   return {
@@ -116,5 +116,26 @@ describe("elkLayout", () => {
 
     expect(layout.positions.size).toBe(model.entities.length);
     expect(overlapsBySize(layout, sizes)).toEqual([]);
+  });
+
+  it("returns under radial for a model where cards have several parents", async () => {
+    const model = denseModel(6, 14, 20);
+    const layout = await elkLayout(model.entities, model.relationships, measuredSize, "radial");
+
+    expect(layout.positions.size).toBe(model.entities.length);
+  });
+});
+
+describe("spanningTree", () => {
+  const edges = (relationships: readonly Relationship[]): string[] => relationships.map((item) => `${item.parentEntityName}>${item.childEntityName}`);
+
+  it.each([
+    { name: "a tree is kept as it is", given: [rel("a", "b"), rel("a", "c"), rel("b", "d")], tree: ["a>b", "a>c", "b>d"] },
+    { name: "a second parent is dropped", given: [rel("a", "b"), rel("a", "c"), rel("b", "d"), rel("c", "d")], tree: ["a>b", "a>c", "b>d"] },
+    { name: "a second root hangs below the first", given: [rel("a", "c"), rel("b", "c")], tree: ["a>c", "c>b"] },
+    { name: "a cycle starts at the first entity", given: [rel("a", "b"), rel("b", "c"), rel("c", "a")], tree: ["a>b", "a>c"] },
+  ])("$name", ({ given, tree }) => {
+    const names = [...new Set(given.flatMap((item) => [item.parentEntityName, item.childEntityName]))].sort();
+    expect(edges(spanningTree(names.map(entity), given)).sort()).toEqual([...tree].sort());
   });
 });

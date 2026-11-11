@@ -1,13 +1,9 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { JSX } from "react";
 import {
   Button,
   Field,
   Input,
-  MessageBar,
-  MessageBarActions,
-  MessageBarBody,
-  MessageBarTitle,
   Spinner,
   Tab,
   TabList,
@@ -17,7 +13,6 @@ import {
   tokens,
   useId,
 } from "@fluentui/react-components";
-import { startFailure } from "../model/errors";
 import {
   INSTRUCTION_MAX,
   NO_DESIGN_MODEL,
@@ -52,12 +47,18 @@ const useStyles = makeStyles({
 export function TaskForm(): JSX.Element {
   const styles = useStyles();
   const descriptionId = useId("task-type-description");
+  const repositoryRef = useRef<HTMLInputElement>(null);
+  const instructionRef = useRef<HTMLTextAreaElement>(null);
+  const focusForm = useStore((state) => state.focusForm);
   const draft = useStore((state) => state.draft);
   const selected = useStore((state) => state.selected);
   const entity = useStore((state) => state.selectedName);
   const catalog = useStore((state) => state.catalog);
   const model = useStore((state) => state.model);
-  const starting = useStore((state) => state.starting);
+  const starts = useStore((state) => state.launch.kind === "starting");
+  const sessionTitle = useStore((state) =>
+    state.sessionId !== null && state.sessionDetail.kind === "success" ? state.sessionDetail.value.session.title : null,
+  );
   const runningSeq = useStore((state) =>
     state.sessionDetail.kind === "success"
       ? (state.sessionDetail.value.tasks.find((task) => isUnfinished(task.status))?.seq ?? null)
@@ -81,15 +82,19 @@ export function TaskForm(): JSX.Element {
   const typeInfo = TASK_TYPES.find((item) => item.type === draft.type) ?? TASK_TYPES[0]!;
   const repositoryError = draft.type === "design" ? repositoryProblem(draft.repositoryUrl) : null;
   const instructionError = instructionProblem(draft.instruction);
-  const starts = starting.kind === "loading";
   // Every other reason a Task cannot start is shown at the field it is about.
-  const blocked = running ? "A Task is running in this Session. Start the next one when it finishes." : null;
-
-  const failure = starting.kind === "failure" ? { ...startFailure(starting.error), code: starting.error.code } : null;
+  const blocked = running ? "The assistant is still working on something. Ask the next question when it is done." : null;
 
   const submit = (): void => {
-    if (ready.input !== null && !running && !starts) void actions.startTask(ready.input);
+    if (ready.input !== null && !running && !starts) void actions.startTask(draft);
   };
+
+  // A form opened on purpose puts the reader at the field they came for: what to design, or what to tell the agent.
+  useEffect(() => {
+    if (!focusForm) return;
+    (draft.type === "design" ? repositoryRef.current : instructionRef.current)?.focus();
+    actions.formFocused();
+  }, [focusForm, draft.type]);
 
   const explainNeedsEntity = draft.type === "explain" && entity === null;
   return (
@@ -100,15 +105,15 @@ export function TaskForm(): JSX.Element {
         submit();
       }}
       noValidate
-      aria-label="New Task"
+      aria-label="Ask the assistant"
       data-testid="task-form"
     >
-      <Field label="Task type">
+      <Field label="What do you want to know?">
         <TabList
           selectedValue={draft.type}
           onTabSelect={(_, data) => actions.updateDraft({ type: data.value as TaskType })}
           appearance="subtle"
-          aria-label="Task type"
+          aria-label="What do you want to know?"
           aria-describedby={descriptionId}
           data-testid="task-type"
         >
@@ -126,27 +131,28 @@ export function TaskForm(): JSX.Element {
       {draft.type === "design" ? (
         <>
           <Field
-            label="Target model"
-            hint={design === null ? null : "The design model of this deployment. The live model is not touched."}
+            label="Model for the design"
+            hint={design === null ? null : "Designs are saved in this separate model, so your live model is not touched."}
             validationState={catalogValue && design === null ? "error" : "none"}
             validationMessage={catalogValue && design === null ? NO_DESIGN_MODEL : null}
           >
             <Input
               readOnly
-              value={catalogValue ? (design === null ? "No design model" : targetLabel(design)) : "Loading the health models"}
+              value={catalogValue ? (design === null ? "No separate design model" : targetLabel(design)) : "Loading the health models"}
               data-testid="task-target"
             />
           </Field>
-          <Field label="Workload resource group" hint="The resource group of this deployment.">
-            <Input readOnly value={catalogValue?.default.resourceGroup ?? ""} data-testid="task-workload" />
+          <Field label="Resource group of your workload" hint="The resource group of this deployment.">
+            <Input readOnly value={catalogValue?.default?.resourceGroup ?? ""} data-testid="task-workload" />
           </Field>
           <Field
-            label="Repository (optional)"
+            label="GitHub repository (optional)"
             validationState={repositoryError ? "error" : "none"}
             validationMessage={repositoryError}
-            hint="A public GitHub repository the design can read."
+            hint="A public repository the assistant can read to learn about your workload."
           >
             <Input
+              input={{ ref: repositoryRef }}
               type="url"
               inputMode="url"
               placeholder="https://github.com/owner/repository"
@@ -159,8 +165,8 @@ export function TaskForm(): JSX.Element {
       ) : (
         <>
           <Field
-            label="Target model"
-            hint={selected ? "The model on screen." : null}
+            label="Model"
+            hint={selected ? "The health model you are looking at." : null}
             validationState={selected ? "none" : "warning"}
             validationMessage={selected ? null : "Choose a health model first."}
           >
@@ -170,7 +176,7 @@ export function TaskForm(): JSX.Element {
             <Field
               label="Entity"
               validationState={explainNeedsEntity ? "warning" : "none"}
-              validationMessage={explainNeedsEntity ? "Select an entity in the graph to explain it." : null}
+              validationMessage={explainNeedsEntity ? "Select an entity in the graph first." : null}
               hint={explainNeedsEntity ? null : "The entity selected in the graph."}
             >
               <Input readOnly value={entityLabel ?? ""} data-testid="task-entity" />
@@ -180,12 +186,13 @@ export function TaskForm(): JSX.Element {
       )}
 
       <Field
-        label="Task instruction (optional)"
+        label="Note for the assistant (optional)"
         hint={`${draft.instruction.length} of ${INSTRUCTION_MAX} characters`}
         validationState={instructionError ? "error" : "none"}
         validationMessage={instructionError}
       >
         <Textarea
+          textarea={{ ref: instructionRef }}
           rows={5}
           resize="vertical"
           maxLength={INSTRUCTION_MAX}
@@ -195,37 +202,6 @@ export function TaskForm(): JSX.Element {
         />
       </Field>
 
-      {failure !== null ? (
-        <MessageBar
-          intent={failure.action === "retry" || failure.code === "task_running" ? "warning" : "error"}
-          role="alert"
-          data-testid="task-start-error"
-          data-code={failure.code}
-        >
-          <MessageBarBody>
-            <MessageBarTitle>{failure.title}</MessageBarTitle>
-            {failure.message}
-          </MessageBarBody>
-          <MessageBarActions>
-            {failure.action === "retry" ? (
-              <Button size="small" onClick={submit} disabled={starts || ready.input === null} data-testid="task-start-retry">
-                Try again
-              </Button>
-            ) : null}
-            {failure.action === "new-session" ? (
-              <Button size="small" onClick={() => void actions.openSession(null)} data-testid="task-start-new-session">
-                Start a new Session
-              </Button>
-            ) : null}
-            {failure.code === "task_running" && runningSeq !== null ? (
-              <Button size="small" onClick={() => void actions.openTask(runningSeq)} data-testid="open-running-task">
-                Open the running Task
-              </Button>
-            ) : null}
-          </MessageBarActions>
-        </MessageBar>
-      ) : null}
-
       <div className={styles.actions}>
         <Button
           appearance="primary"
@@ -234,16 +210,20 @@ export function TaskForm(): JSX.Element {
           {...(starts ? { icon: <Spinner size="tiny" /> } : {})}
           data-testid="task-submit"
         >
-          {starts ? "Starting" : `Start ${typeInfo.label}`}
+          {starts ? "Asking" : typeInfo.submit}
         </Button>
         {blocked !== null ? (
           <Text className={styles.hint} data-testid="task-hint">
             {blocked}
           </Text>
-        ) : null}
+        ) : (
+          <Text className={styles.hint} data-testid="task-session-hint">
+            {sessionTitle === null ? "Your question is kept in History." : `Kept with "${sessionTitle}" in History.`}
+          </Text>
+        )}
         {running && runningSeq !== null ? (
           <Button size="small" appearance="subtle" onClick={() => void actions.openTask(runningSeq)} data-testid="show-running-task">
-            Show running Task
+            Show it
           </Button>
         ) : null}
       </div>

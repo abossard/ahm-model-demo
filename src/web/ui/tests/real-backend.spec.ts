@@ -1,11 +1,17 @@
 import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
+import { openView } from "./views";
 
 // Runs against the real web app in its offline mode (see playwright.real.config.ts): real Sessions, a real
 // event stream, the scripted agent and the two fixture models. Nothing here is stubbed.
 // The tests share one process in order, because Apply writes the fixture model the next test reads.
 
 const LIVE_MODEL = "hm-local";
+// The question an Explain asks names the entity in the state it has (Degraded, Healthy, Unhealthy, or "the state ... unknown"), and
+// no state while the answer is not there yet; the entity is "Orders API (reviewed)" once an Apply renamed it.
+const ASKED = "(Orders API( \\(reviewed\\))? (Healthy|Degraded|Unhealthy|in this state)|the state of Orders API( \\(reviewed\\))? unknown)";
+const EXPLAIN_TITLE = new RegExp(`^Why is ${ASKED}\\?$`);
+const EXPLAIN_SESSION_TITLE = new RegExp(`^Why is ${ASKED}\\? \\(\\d{1,2} \\w{3} \\d{2}:\\d{2}\\)$`);
 test.describe.configure({ mode: "serial" });
 
 // The offline backend answers `GET /api/config` with `authMode: "local"`: nobody signs in. A backend that does not
@@ -19,7 +25,7 @@ test.beforeEach(async ({ page, request }) => {
   }
   test.info().annotations.push({ type: "note", description: "the backend has no GET /api/config yet: this run answers it as local" });
   await page.route("**/api/config", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ authMode: "local", tenantId: null, clientId: null, apiScope: null }) }),
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ authMode: "local", clientId: null, apiScope: null }) }),
   );
 });
 
@@ -30,7 +36,7 @@ function node(page: Page, graph: string, name: string): Locator {
 }
 
 async function boot(page: Page): Promise<void> {
-  await page.goto("/");
+  await openView(page, "zoom");
   await expect(page.getByTestId("model-name")).not.toHaveText("Health Pulse");
   await expect(node(page, "topology", "orders-api")).toBeVisible();
 }
@@ -68,7 +74,7 @@ test("a Review streams to done, compares, applies one change and then finds the 
   await newSession(page, "Real backend review");
   await expect(page.getByTestId("task-target")).toHaveValue(`${LIVE_MODEL} (rg-local)`);
   await page.getByTestId("task-submit").click();
-  await expect(page.getByTestId("task-title")).toHaveText("Review #1");
+  await expect(page.getByTestId("task-title")).toHaveText("Check hm-local");
   await expect(page.getByTestId("timeline-event-1")).toBeVisible();
   await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
   await expect(page.getByTestId("diff-result")).toBeVisible();
@@ -113,41 +119,52 @@ test("a Review streams to done, compares, applies one change and then finds the 
   expect(again.status()).toBe(409);
   expect((await again.json()).error.code).toBe("base_changed");
 
-  // The way out is a new Review of the changed model.
+  // The way out is a new Review of the changed model, started by the one click.
   await page.getByTestId("apply-new-review").click();
-  await expect(page.getByTestId("task-type-review")).toHaveAttribute("aria-selected", "true");
-  await page.getByTestId("task-submit").click();
-  await expect(page.getByTestId("task-title")).toHaveText("Review #2");
+  await expect(page.getByTestId("task-title")).toHaveText("Check hm-local");
   await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
 });
 
-test("an Explain runs on the selected entity and marks its chain on the graph", async ({ page }) => {
+test("one click on Explain this entity makes the Session, runs the Task and marks its chain on the graph", async ({ page }) => {
   await boot(page);
   await node(page, "topology", "orders-api").click();
-  await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await expect(page.getByTestId("entity-details")).toBeVisible();
   await page.getByTestId("explain-entity").click();
-  await expect(workspace(page)).toBeVisible();
 
-  await page.getByTestId("session-title").fill("Real backend explain");
-  await page.getByTestId("new-session").click();
+  // No other click: the Session, the Task and its result.
+  await expect(workspace(page)).toBeVisible();
+  await expect(page.getByTestId("task-title")).toHaveText(EXPLAIN_TITLE);
+  await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
+  await expect(page.getByTestId("explain-result")).toBeVisible();
+  await expect(page.getByTestId("result-heading")).toContainText("orders-api is degraded");
+  await expect(page.getByTestId("explain-state")).toContainText("Degraded");
+  await expect(node(page, "topology", "orders-api")).toHaveAttribute("data-chain", "true");
+  await expect(node(page, "topology", "payments")).not.toHaveAttribute("data-chain", "true");
+  await expect(page.getByTestId("session-title-heading")).toHaveText(EXPLAIN_SESSION_TITLE);
+  await expect(page).toHaveURL(/session=[^&]+&task=1/);
+  const { session } = openTaskIds(page);
+
+  // The Session and the Task are real: they are in the Session list with their whole Activity timeline, and a reload opens the same Task.
+  const listed = await (await page.request.get("/api/sessions")).json();
+  expect(listed.sessions.find((item: { id: string; taskCount: number }) => item.id === session)?.taskCount).toBe(1);
+  await page.getByTestId("task-tab-timeline").click();
+  await expect(page.locator("[data-testid^=timeline-event-][data-kind=tool_call]").first()).toBeVisible();
+  await expect(page.locator("[data-testid^=timeline-event-][data-kind=result]")).toHaveCount(1);
+  await page.reload();
+  await expect(page.getByTestId("task-title")).toHaveText(EXPLAIN_TITLE);
+  await expect(page.getByTestId("explain-result")).toBeVisible();
+
+  // The Task instruction is the secondary way in: the form opens on the entity, and sending it adds a Task to the same Session.
+  await page.getByTestId("task-back").click();
+  await node(page, "topology", "orders-api").click();
+  await page.getByTestId("explain-add-instruction").click();
   await expect(page.getByTestId("task-type-explain")).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("task-entity")).toHaveValue(/Orders API/);
   await page.getByTestId("task-instruction-input").fill("Why is it degraded?");
   await page.getByTestId("task-submit").click();
-
-  await expect(page.getByTestId("task-title")).toHaveText("Explain #1");
-  await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
-  await expect(page.getByTestId("explain-result")).toBeVisible();
-  await expect(page.getByTestId("explain-summary")).toContainText("orders-api is degraded");
-  await expect(page.getByTestId("explain-state")).toContainText("Degraded");
-  await expect(node(page, "topology", "orders-api")).toHaveAttribute("data-chain", "true");
-  await expect(node(page, "topology", "payments")).not.toHaveAttribute("data-chain", "true");
+  await expect(page.getByTestId("task-title")).toHaveText(EXPLAIN_TITLE);
   await expect(page.getByTestId("task-instruction")).toContainText("Why is it degraded?");
-
-  // The Task is part of the Session: it is still there after a reload, opened from the address.
-  await page.reload();
-  await expect(page.getByTestId("task-title")).toHaveText("Explain #1");
-  await expect(page.getByTestId("explain-result")).toBeVisible();
+  await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
 });
 
 test("a Design targets the design model and proposes its entities as a diff", async ({ page }) => {
@@ -159,7 +176,7 @@ test("a Design targets the design model and proposes its entities as a diff", as
   await page.getByTestId("task-repository").fill("https://github.com/contoso/orders");
   await page.getByTestId("task-submit").click();
 
-  await expect(page.getByTestId("task-title")).toHaveText("Design #1");
+  await expect(page.getByTestId("task-title")).toHaveText("Design for contoso/orders");
   await expect(page.getByTestId("task-target")).toContainText("hm-local-design");
   await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
   await expect(page.getByTestId("diff-result")).toBeVisible();

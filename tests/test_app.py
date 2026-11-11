@@ -518,7 +518,7 @@ class HealthReportUiTests(unittest.TestCase):
             response.headers["Content-Security-Policy"],
             "default-src 'self'; script-src 'self'; "
             "style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; "
-            "img-src 'self' data:; connect-src 'self' https://login.microsoftonline.com; base-uri 'none'; "
+            "img-src 'self' data:; connect-src 'self' https://login.microsoftonline.com https://management.azure.com; base-uri 'none'; "
             "frame-ancestors 'none'",
         )
 
@@ -1095,7 +1095,7 @@ class HealthReportUiTests(unittest.TestCase):
         self.assertNotIn("unsafe-eval", self.config.SECURITY_POLICY)
         self.assertEqual(directives["script-src"], "'self'")
         self.assertEqual(directives["style-src"].split(), ["'self'", "'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='"])
-        self.assertEqual(directives["connect-src"].split(), ["'self'", "https://login.microsoftonline.com"])
+        self.assertEqual(directives["connect-src"].split(), ["'self'", "https://login.microsoftonline.com", "https://management.azure.com"])
 
     def test_runtime_needs_only_the_eight_required_variables(self):
         required = {
@@ -1122,6 +1122,7 @@ class HealthReportUiTests(unittest.TestCase):
                 "foundry_agent_name": "health-model-agent",
                 "auth_mode": "local",
                 "tenant_id": None,
+                "allowed_tenants": frozenset(),
                 "client_id": None,
                 "api_scope": None,
                 "mcp_scope": None,
@@ -1199,6 +1200,34 @@ class HealthReportUiTests(unittest.TestCase):
                         tuple(entra.values()),
                     )
                     self.assertEqual(configured["agent_principal_id"], environment.get("FOUNDRY_AGENT_PRINCIPAL_ID", ""))
+
+    def test_the_directories_that_may_sign_in_are_a_list_of_tenant_ids_and_empty_means_any(self):
+        base = {key: value for key, value in self.environment.items() if key != "UI_DIST_DIR"}
+        one, two = "66666666-6666-6666-6666-666666666666", "77777777-7777-7777-7777-777777777777"
+        cases = [
+            ("absent", None, frozenset()),
+            ("empty", "", frozenset()),
+            ("blank", "  ", frozenset()),
+            ("one", one, frozenset({one})),
+            ("two with a comma and spaces", f" {one} , {two.upper()} ", frozenset({one, two})),
+            ("two with spaces only", f"{one} {two}", frozenset({one, two})),
+            ("a trailing comma", f"{one},", frozenset({one})),
+            ("a name instead of an id", "contoso.com", RuntimeError),
+            ("one bad entry among good ones", f"{one},contoso", RuntimeError),
+            ("the personal account tenant", self.config.CONSUMERS_TENANT_ID, RuntimeError),
+        ]
+        for label, value, expected in cases:
+            with self.subTest(label=label):
+                environment = dict(base)
+                if value is not None:
+                    environment["ENTRA_ALLOWED_TENANTS"] = value
+                if expected is RuntimeError:
+                    with self.assertRaises(RuntimeError) as caught:
+                        self.module.require_runtime_config(environment)
+                    self.assertIn("ENTRA_ALLOWED_TENANTS", str(caught.exception))
+                    continue
+
+                self.assertEqual(self.module.require_runtime_config(environment)["allowed_tenants"], expected)
 
     def test_the_agent_principal_is_read_trimmed_and_may_be_empty(self):
         base = {key: value for key, value in self.environment.items() if key != "UI_DIST_DIR"}

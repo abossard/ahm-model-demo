@@ -17,10 +17,13 @@ import {
 } from "@fluentui/react-components";
 import { Add20Regular } from "@fluentui/react-icons";
 import { formatWhen } from "../model/duration";
-import { sessionFailure } from "../model/errors";
+import { plural } from "../model/wording";
+import { historyFailure, sessionFailure } from "../model/errors";
 import { orderSessions } from "../model/sessions";
 import type { SessionSummary } from "../model/types";
 import { actions, useStore } from "../store/store";
+import { StartButtons } from "./TaskLauncher";
+import { TechnicalLine } from "./TechnicalLine";
 import { useWindowedRows } from "./useWindowedRows";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
@@ -77,6 +80,8 @@ const useStyles = makeStyles({
   },
   meta: { fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground2 },
   empty: { padding: tokens.spacingHorizontalM, color: tokens.colorNeutralForeground2 },
+  start: { display: "flex", flexDirection: "column", rowGap: tokens.spacingVerticalS, flexShrink: 0 },
+  hint: { fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground2 },
 });
 
 const SessionRow = memo(function SessionRow({
@@ -110,7 +115,7 @@ const SessionRow = memo(function SessionRow({
           {session.title}
         </span>
         <span className={styles.meta}>
-          {session.taskCount} {session.taskCount === 1 ? "Task" : "Tasks"}, last activity {formatWhen(session.lastTaskAt ?? session.createdAt)}
+          {plural(session.taskCount, "question")}, last asked {formatWhen(session.lastTaskAt ?? session.createdAt)}
         </span>
       </button>
     </div>
@@ -126,7 +131,7 @@ function Rows({ listed }: { readonly listed: readonly SessionSummary[] }): JSX.E
   if (sessions.length === 0) {
     return (
       <Text as="p" className={styles.empty} data-testid="session-list-empty">
-        No Sessions yet. Create one to start a Task.
+        Nothing asked yet. Ask the assistant above and your question is kept here.
       </Text>
     );
   }
@@ -136,7 +141,7 @@ function Rows({ listed }: { readonly listed: readonly SessionSummary[] }): JSX.E
       className={styles.scroller}
       onScroll={rows.onScroll}
       role="list"
-      aria-label="Sessions"
+      aria-label="History"
       data-testid="session-list"
     >
       <div className={styles.spacer} style={{ height: rows.total }}>
@@ -170,10 +175,17 @@ export function SessionList(): JSX.Element {
     void actions.createSession(title.trim() === "" ? undefined : title.trim());
   };
   const failure = creating.kind === "failure" ? sessionFailure(creating.error) : null;
+  const listFailure = sessions.kind === "failure" ? historyFailure(sessions.error) : null;
 
   return (
     <div className={styles.root} data-testid="session-list-view">
-      <WorkspaceHeader title="Sessions" titleTestId="session-list-heading" />
+      <WorkspaceHeader title="History" titleTestId="session-list-heading" />
+      <section className={styles.start} aria-label="Ask the assistant">
+        <StartButtons />
+        <Text className={styles.hint}>
+          A question asked here starts a new topic in History. To ask about an entity, select it in the graph first.
+        </Text>
+      </section>
       <form
         className={styles.create}
         onSubmit={(event) => {
@@ -181,7 +193,7 @@ export function SessionList(): JSX.Element {
           create();
         }}
       >
-        <Field label="Session title (optional)" className={styles.field}>
+        <Field label="Name of a new topic (optional)" className={styles.field}>
           <Input
             value={title}
             maxLength={TITLE_MAX}
@@ -196,7 +208,7 @@ export function SessionList(): JSX.Element {
           disabled={creating.kind === "loading"}
           data-testid="new-session"
         >
-          New session
+          New topic
         </Button>
       </form>
       {failure !== null ? (
@@ -204,6 +216,7 @@ export function SessionList(): JSX.Element {
           <MessageBarBody>
             <MessageBarTitle>{failure.title}</MessageBarTitle>
             {failure.message}
+            <TechnicalLine text={failure.technical} />
           </MessageBarBody>
           {failure.action === "retry" ? (
             <MessageBarActions>
@@ -215,16 +228,20 @@ export function SessionList(): JSX.Element {
         </MessageBar>
       ) : null}
       {sessions.kind === "loading" || sessions.kind === "idle" ? (
-        <div className={styles.fixed} aria-busy="true" aria-label="Loading the Sessions" data-testid="session-list-loading">
+        <div className={styles.fixed} aria-busy="true" aria-label="Loading History" data-testid="session-list-loading">
           <SkeletonItem size={40} />
         </div>
       ) : null}
       {sessions.kind === "failure" ? (
         <MessageBar intent="error" role="alert" className={styles.fixed} data-testid="session-list-error">
-          <MessageBarBody>{sessions.error.message}</MessageBarBody>
+          <MessageBarBody>
+            <MessageBarTitle>{listFailure?.title}</MessageBarTitle>
+            {listFailure?.message}
+            <TechnicalLine text={listFailure?.technical ?? null} />
+          </MessageBarBody>
           <MessageBarActions>
             <Button size="small" onClick={() => void actions.loadSessions()} data-testid="session-list-retry">
-              Retry
+              Try again
             </Button>
           </MessageBarActions>
         </MessageBar>

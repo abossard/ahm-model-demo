@@ -76,7 +76,7 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
     if (reasonPreset === CUSTOM_PRESET) {
       const trimmed = customReason.trim();
       if (trimmed.length < REASON_MIN || trimmed.length > REASON_MAX) {
-        setReasonError("Enter a custom reason of 1 to 280 characters.");
+        setReasonError("Enter a reason of 1 to 280 characters.");
         return;
       }
     }
@@ -98,8 +98,8 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
   };
 
   return (
-    <form className={styles.form} onSubmit={submit} aria-label="Submit a health report">
-      <div className={styles.quickSend} data-testid="quick-send" role="group" aria-label="Quick send">
+    <form className={styles.form} onSubmit={submit} aria-label="Send a health report">
+      <div className={styles.quickSend} data-testid="quick-send" role="group" aria-label="Send with the values below">
         {options.healthStates.map((state) => (
           <Button
             key={state}
@@ -114,7 +114,7 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
         ))}
       </div>
 
-      <Field label="Health state">
+      <Field label="State to report">
         <Select
           id="report-state"
           value={healthState}
@@ -142,7 +142,7 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
         </Select>
       </Field>
 
-      <Field label="Expires in (minutes)">
+      <Field label="Report expires after (minutes)">
         <Select
           id="report-expiry"
           value={expiresInMinutes}
@@ -175,7 +175,7 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
 
       {reasonPreset === CUSTOM_PRESET ? (
         <Field
-          label="Custom reason"
+          label="Your reason"
           validationState={reasonError ? "error" : "none"}
           validationMessage={
             reasonError ? { id: "report-custom-reason-error", children: reasonError } : null
@@ -191,14 +191,14 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
       ) : null}
 
       <Button type="submit" appearance="primary" className={styles.submit} data-testid="report-submit">
-        Submit report
+        Send report
       </Button>
 
       {result.kind === "success" ? (
         <MessageBar intent="success" role="status" data-testid="report-confirmation">
           <MessageBarBody>
-            Report <strong data-testid="report-id">{result.value.reportId}</strong> accepted,
-            expires at <time data-testid="report-expires">{result.value.expiresAt}</time>.
+            Report <strong data-testid="report-id">{result.value.reportId}</strong> accepted. It expires at{" "}
+            <time data-testid="report-expires">{result.value.expiresAt}</time>.
           </MessageBarBody>
         </MessageBar>
       ) : null}

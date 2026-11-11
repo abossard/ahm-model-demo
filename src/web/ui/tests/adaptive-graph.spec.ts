@@ -3,10 +3,11 @@ import type { Page } from "@playwright/test";
 import type { HealthModel } from "../src/model/types";
 import { healthModel, installStubs } from "./fixture";
 import { DENSE_SEED, denseModel, realAnbomovModel } from "./denseModel";
+import { openView } from "./views";
 
 async function boot(page: Page): Promise<void> {
   await installStubs(page, { healthModelFails: false });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
 }
 
@@ -19,7 +20,7 @@ async function bootMutable(page: Page, modelRef: { current: HealthModel }): Prom
       },
     },
   });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
 }
 
@@ -401,7 +402,7 @@ test("adaptive layout and health controls are available", async ({ page }) => {
   for (const state of ["Healthy", "Degraded", "Unhealthy", "Unknown"] as const) {
     await expect(page.getByRole("checkbox", { name: state, exact: true })).toBeVisible();
   }
-  await expect(page.getByRole("radio", { name: "Hide with edges" })).toBeChecked();
+  await expect(page.getByRole("radio", { name: "Hide with their lines" })).toBeChecked();
   await expect(page.getByRole("radio", { name: "Gray dot" })).toBeVisible();
   await closeHealthFilter(page);
 });
@@ -656,7 +657,8 @@ test("established native dot drag keeps cursor-following delta at zoom 0.5 in no
   expect(Math.abs(dotFollow.offsetDyDelta)).toBeLessThanOrEqual(3);
 });
 
-test("static layouts stay non-draggable after adaptive is available", async ({ page }) => {
+// A card can be dragged to another place its layout has, but it is not put wherever the pointer lets go.
+test("static layouts do not let a card go anywhere it likes after adaptive is available", async ({ page }) => {
   await boot(page);
   await page.getByTestId("layout-picker").selectOption("dagre-tb");
   const before = await positions(page);

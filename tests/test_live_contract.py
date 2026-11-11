@@ -5,6 +5,7 @@ import unittest
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import httpx
 
@@ -411,6 +412,37 @@ class ServerErrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error["payload"], {"code": "server_error", "message": activity.SERVER_ERROR_MESSAGE})
         self.assertIn(UPSTREAM_ERROR, "\n".join(logged.output))
         self.assertEqual(live.wire.paths(), [("POST", "conversations"), ("POST", "responses")])
+
+
+class BusyDeploymentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_failure_before_any_event_is_retried_on_the_same_conversation_with_the_same_input(self):
+        def busy():
+            return stream(LIVE[:2] + [("response.failed", FAILED)])
+
+        cases = [
+            ("busy once", [busy, lambda: stream(LIVE)], "done", 2),
+            ("busy three times", [busy, busy, busy, lambda: stream(LIVE)], "done", 4),
+            ("busy four times", [busy, busy, busy, busy], "failed", 4),
+        ]
+        for label, answers, status, requests in cases:
+            with self.subTest(label=label):
+                live = Live(new_conversation(), *[answer() for answer in answers])
+
+                with mock.patch.object(task_runner, "BUSY_RETRY_SECONDS", (0, 0, 0)), self.assertLogs("ahm-demo", level="WARNING"):
+                    task, events, _ = await live.run()
+
+                self.assertEqual(task["status"], status, task.get("error"))
+                self.assertEqual(live.wire.paths(), [("POST", "conversations")] + [("POST", "responses")] * requests)
+                bodies = [json.loads(request.content) for request in live.wire.requests[1:]]
+                self.assertEqual(len({(body["conversation"], body["input"]) for body in bodies}), 1)
+                waits = [e for e in events if e["summary"] == "The assistant is busy, trying again"]
+                self.assertEqual(len(waits), requests - 1 if status == "done" else 3)
+                errors = [e for e in events if e["kind"] == "error"]
+                if status == "done":
+                    self.assertEqual((errors, task["result"]), ([], EXPLAIN_RESULT))
+                else:
+                    self.assertEqual(task["error"], {"code": "agent_failed", "message": activity.SERVER_ERROR_MESSAGE})
+                    self.assertEqual(len(errors), 1)
 
 
 class ConversationTests(unittest.IsolatedAsyncioTestCase):

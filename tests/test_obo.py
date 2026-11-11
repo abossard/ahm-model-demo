@@ -15,6 +15,8 @@ import obo  # noqa: E402
 from auth import Caller  # noqa: E402
 
 OID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+TENANT = "3a3a3a3a-3a3a-3a3a-3a3a-3a3a3a3a3a3a"
+OTHER_TENANT = "55555555-5555-5555-5555-555555555555"
 SCOPE = "api://mcp-client/Mcp.Tools.ReadWrite"
 OTHER_SCOPE = "https://graph.microsoft.com/.default"
 CLAIMS = '{"access_token":{"acrs":{"essential":true,"value":"c1"}}}'
@@ -48,7 +50,7 @@ def granted(token="issued-token", expires_in=3600):
 
 def exchanger(*results, clock=None):
     application = Application(*results)
-    return obo.OnBehalfOf(lambda: application, clock or Clock()), application
+    return obo.OnBehalfOf(lambda tenant_id: application, clock or Clock()), application
 
 
 class FailureTests(unittest.TestCase):
@@ -107,7 +109,7 @@ class ExchangeTests(unittest.TestCase):
         clock = Clock(5000)
         on_behalf_of, application = exchanger(granted("issued-token", 1800), clock=clock)
 
-        token = on_behalf_of.exchange("assertion-one", [SCOPE])
+        token = on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
         self.assertEqual(token, AccessToken("issued-token", 5000 + 1800))
         self.assertEqual(application.calls, [("assertion-one", [SCOPE], None)])
@@ -126,10 +128,10 @@ class ExchangeTests(unittest.TestCase):
             with self.subTest(label=label):
                 clock = Clock()
                 on_behalf_of, application = exchanger(clock=clock)
-                on_behalf_of.exchange("assertion-one", [SCOPE])
+                on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
                 clock.now += elapsed
 
-                again = on_behalf_of.exchange("assertion-one", [SCOPE])
+                again = on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
                 self.assertEqual(len(application.calls), exchanges)
                 self.assertEqual(again.token, f"token-{exchanges}")
@@ -144,27 +146,27 @@ class ExchangeTests(unittest.TestCase):
         for label, (assertion, scopes), exchanges in cases:
             with self.subTest(label=label):
                 on_behalf_of, application = exchanger()
-                on_behalf_of.exchange("assertion-one", [SCOPE])
+                on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
-                on_behalf_of.exchange(assertion, scopes)
+                on_behalf_of.exchange(assertion, TENANT, scopes)
 
                 self.assertEqual(len(application.calls), exchanges)
 
     def test_scopes_may_come_as_any_sequence(self):
         on_behalf_of, application = exchanger()
 
-        on_behalf_of.exchange("assertion-one", (SCOPE,))
-        on_behalf_of.exchange("assertion-one", [SCOPE])
+        on_behalf_of.exchange("assertion-one", TENANT, (SCOPE,))
+        on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
         self.assertEqual(len(application.calls), 1)
         self.assertEqual(application.calls[0][1], [SCOPE])
 
     def test_a_claims_challenge_bypasses_the_cache_and_is_not_stored(self):
         on_behalf_of, application = exchanger(granted("first"), granted("challenged"), granted("unused"))
-        first = on_behalf_of.exchange("assertion-one", [SCOPE])
+        first = on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
-        challenged = on_behalf_of.exchange("assertion-one", [SCOPE], CLAIMS)
-        after = on_behalf_of.exchange("assertion-one", [SCOPE])
+        challenged = on_behalf_of.exchange("assertion-one", TENANT, [SCOPE], CLAIMS)
+        after = on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
         self.assertEqual((first.token, challenged.token, after.token), ("first", "challenged", "first"))
         self.assertEqual([call[2] for call in application.calls], [None, CLAIMS])
@@ -172,14 +174,14 @@ class ExchangeTests(unittest.TestCase):
     def test_the_cache_keeps_the_most_recently_used_tokens_within_its_bound(self):
         with mock.patch.object(obo, "OBO_TOKEN_CACHE_SIZE", 2):
             on_behalf_of, application = exchanger()
-            on_behalf_of.exchange("a", [SCOPE])
-            on_behalf_of.exchange("b", [SCOPE])
-            on_behalf_of.exchange("a", [SCOPE])
-            on_behalf_of.exchange("c", [SCOPE])
+            on_behalf_of.exchange("a", TENANT, [SCOPE])
+            on_behalf_of.exchange("b", TENANT, [SCOPE])
+            on_behalf_of.exchange("a", TENANT, [SCOPE])
+            on_behalf_of.exchange("c", TENANT, [SCOPE])
 
-            on_behalf_of.exchange("a", [SCOPE])
+            on_behalf_of.exchange("a", TENANT, [SCOPE])
             kept = len(application.calls)
-            on_behalf_of.exchange("b", [SCOPE])
+            on_behalf_of.exchange("b", TENANT, [SCOPE])
 
         self.assertEqual(kept, 3)
         self.assertEqual(len(application.calls), 4)
@@ -188,19 +190,19 @@ class ExchangeTests(unittest.TestCase):
     def test_an_expired_entry_is_dropped_when_it_is_found(self):
         clock = Clock()
         on_behalf_of, _ = exchanger(clock=clock)
-        on_behalf_of.exchange("assertion-one", [SCOPE])
+        on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
         clock.now += 3600
 
-        on_behalf_of.exchange("assertion-two", [SCOPE])
-        on_behalf_of.exchange("assertion-one", [SCOPE])
+        on_behalf_of.exchange("assertion-two", TENANT, [SCOPE])
+        on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
         self.assertEqual(len(on_behalf_of._tokens), 2)
 
     def test_a_token_without_a_lifetime_is_not_reused(self):
         on_behalf_of, application = exchanger({"access_token": "short"}, granted("fresh"))
 
-        first = on_behalf_of.exchange("assertion-one", [SCOPE])
-        second = on_behalf_of.exchange("assertion-one", [SCOPE])
+        first = on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
+        second = on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
         self.assertEqual((first.token, second.token, len(application.calls)), ("short", "fresh", 2))
 
@@ -216,8 +218,8 @@ class ExchangeTests(unittest.TestCase):
 
                 with self.assertLogs("ahm-demo", level="WARNING"):
                     with self.assertRaises(kind):
-                        on_behalf_of.exchange("assertion-one", [SCOPE])
-                token = on_behalf_of.exchange("assertion-one", [SCOPE])
+                        on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
+                token = on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
                 self.assertEqual(token.token, "issued-token")
                 self.assertEqual(len(application.calls), 2)
@@ -233,7 +235,7 @@ class ExchangeTests(unittest.TestCase):
 
                 with self.assertLogs("ahm-demo", level="WARNING"):
                     with self.assertRaises(ServiceRequestError) as caught:
-                        on_behalf_of.exchange("assertion-one", [SCOPE])
+                        on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
                 self.assertIs(type(caught.exception.__cause__), type(error))
                 self.assertNotIn("leaked", str(caught.exception))
@@ -250,7 +252,7 @@ class ExchangeTests(unittest.TestCase):
 
                 with self.assertLogs("ahm-demo", level="WARNING") as logged:
                     with self.assertRaises(Exception):
-                        on_behalf_of.exchange("assertion-one", [SCOPE])
+                        on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
                 text = "\n".join(logged.output)
                 for secret in SECRETS + ("tampered-token",):
@@ -260,29 +262,29 @@ class ExchangeTests(unittest.TestCase):
         on_behalf_of, _ = exchanger()
 
         with self.assertNoLogs("ahm-demo", level="DEBUG"):
-            on_behalf_of.exchange("assertion-one", [SCOPE])
+            on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
 
 class ApplicationTests(unittest.TestCase):
     def test_the_application_is_built_on_first_use_and_only_once(self):
         built = []
 
-        def factory():
-            built.append(1)
+        def factory(tenant_id):
+            built.append(tenant_id)
             return Application()
 
         on_behalf_of = obo.OnBehalfOf(factory, Clock())
         self.assertEqual(built, [])
 
         for assertion in ("assertion-one", "assertion-two", "assertion-one"):
-            on_behalf_of.exchange(assertion, [SCOPE])
+            on_behalf_of.exchange(assertion, TENANT, [SCOPE])
 
-        self.assertEqual(len(built), 1)
+        self.assertEqual(built, [TENANT])
 
     def test_a_failed_start_is_a_service_error_that_a_later_call_retries(self):
         attempts = []
 
-        def factory():
+        def factory(tenant_id):
             attempts.append(1)
             if len(attempts) == 1:
                 raise OSError("authority unreachable assertion-one")
@@ -292,8 +294,8 @@ class ApplicationTests(unittest.TestCase):
 
         with self.assertLogs("ahm-demo", level="WARNING") as logged:
             with self.assertRaises(ServiceRequestError) as caught:
-                on_behalf_of.exchange("assertion-one", [SCOPE])
-        token = on_behalf_of.exchange("assertion-one", [SCOPE])
+                on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
+        token = on_behalf_of.exchange("assertion-one", TENANT, [SCOPE])
 
         self.assertNotIn("assertion-one", str(caught.exception))
         self.assertNotIn("assertion-one", "\n".join(logged.output))
@@ -303,13 +305,13 @@ class ApplicationTests(unittest.TestCase):
         built = []
         gate = threading.Event()
 
-        def factory():
+        def factory(tenant_id):
             built.append(1)
             gate.wait(1)
             return Application()
 
         on_behalf_of = obo.OnBehalfOf(factory, Clock())
-        workers = [threading.Thread(target=on_behalf_of.exchange, args=(f"assertion-{n}", [SCOPE])) for n in range(4)]
+        workers = [threading.Thread(target=on_behalf_of.exchange, args=(f"assertion-{n}", TENANT, [SCOPE])) for n in range(4)]
         for worker in workers:
             worker.start()
         gate.set()
@@ -317,6 +319,31 @@ class ApplicationTests(unittest.TestCase):
             worker.join(5)
 
         self.assertEqual(len(built), 1)
+
+    def test_every_directory_gets_its_own_application_with_the_least_recently_used_ones_dropped(self):
+        built = []
+
+        def factory(tenant_id):
+            built.append(tenant_id)
+            return Application()
+
+        with mock.patch.object(obo, "OBO_APPLICATION_CACHE_SIZE", 2):
+            on_behalf_of = obo.OnBehalfOf(factory, Clock())
+            for step, tenant in enumerate(("one", "two", "one", "three", "one", "two")):
+                on_behalf_of.exchange(f"assertion-{step}", tenant, [SCOPE])
+
+        # one, two, then three evicts two (one was used more recently), one stays, and two is built again.
+        self.assertEqual(built, ["one", "two", "three", "two"])
+        self.assertLessEqual(len(on_behalf_of._applications), 2)
+
+    def test_the_factory_runs_once_per_directory_with_the_directory_it_was_asked_for(self):
+        built = []
+        on_behalf_of = obo.OnBehalfOf(lambda tenant_id: built.append(tenant_id) or Application(), Clock())
+
+        for tenant in (TENANT, OTHER_TENANT, TENANT, OTHER_TENANT):
+            on_behalf_of.exchange(f"assertion-{tenant}", tenant, [SCOPE])
+
+        self.assertEqual(built, [TENANT, OTHER_TENANT])
 
 
 class CredentialTests(unittest.TestCase):
@@ -350,6 +377,18 @@ class CredentialTests(unittest.TestCase):
                 on_behalf_of.credential(Caller(OID, "Ada", "assertion-one")).get_token(*asked)
 
                 self.assertEqual(application.calls, [("assertion-one", exchanged, None)])
+
+    def test_a_caller_credential_exchanges_in_the_directory_of_the_caller(self):
+        built = []
+        on_behalf_of = obo.OnBehalfOf(lambda tenant_id: built.append(tenant_id) or Application(), Clock())
+
+        for caller in (
+            Caller(OID, "Ada", "assertion-one", tenant_id=TENANT),
+            Caller(OID, "Ada", "assertion-two", tenant_id=OTHER_TENANT, in_home_tenant=False),
+        ):
+            on_behalf_of.credential(caller).get_token(SCOPE)
+
+        self.assertEqual(built, [TENANT, OTHER_TENANT])
 
     def test_the_default_and_the_exact_arm_scope_share_one_exchange(self):
         on_behalf_of, application = exchanger()
@@ -385,7 +424,7 @@ class FactoryTests(unittest.TestCase):
         with mock.patch("msal.ConfidentialClientApplication") as application, mock.patch(
             "azure.identity.ManagedIdentityCredential", return_value=identity
         ) as managed:
-            built = obo.application_factory("tenant-id", "client-id", "identity-client-id")()
+            built = obo.application_factory("client-id", "identity-client-id")("tenant-id")
 
         self.assertIs(built, application.return_value)
         managed.assert_called_once_with(client_id="identity-client-id")
@@ -400,7 +439,7 @@ class FactoryTests(unittest.TestCase):
         with mock.patch("msal.ConfidentialClientApplication") as application, mock.patch(
             "azure.identity.ManagedIdentityCredential"
         ) as managed:
-            obo.application_factory("tenant-id", "client-id", "identity-client-id")
+            obo.application_factory("client-id", "identity-client-id")
 
         application.assert_not_called()
         managed.assert_not_called()

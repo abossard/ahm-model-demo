@@ -18,11 +18,14 @@ vi.mock("@azure/msal-browser", () => {
 });
 
 import { InteractionRequiredAuthError } from "@azure/msal-browser";
-import { createAuth, getAuth, localAuth, setAuth } from "./index";
-import { AUTHORITY_HOST, createEntraAuth, msalConfiguration } from "./entraAuth";
+import { PersonalAccountError, createAuth, getAuth, localAuth, setAuth } from "./index";
+import { createEntraAuth, defaultScope, msalConfiguration } from "./entraAuth";
+import { AUTHORITY_HOST, CONSUMERS_TENANT_ID } from "./directory";
 
-const SETTINGS = { tenantId: "tenant-1", clientId: "client-1", apiScope: "api://client-1/access_as_user" } as const;
+const SETTINGS = { clientId: "client-1", apiScope: "api://client-1/access_as_user" } as const;
+const SCOPE = "api://client-1/.default";
 const ACCOUNT = { homeAccountId: "h", environment: "e", tenantId: "tenant-1", localAccountId: "l", username: "ada@contoso.com", name: "Ada Lovelace" } as AccountInfo;
+const PERSONAL = { ...ACCOUNT, tenantId: CONSUMERS_TENANT_ID, username: "ada@example.test" } as AccountInfo;
 const DEEP_LINK = "?model=hm-demo&resourceGroup=rg-demo&subscription=sub-1&session=c4c19c774d06&task=2";
 
 function fakeClient() {
@@ -56,11 +59,11 @@ beforeEach(() => {
 });
 
 describe("msalConfiguration", () => {
-  it.each(["https://app.example.azurecontainerapps.io", "http://127.0.0.1:4173"])("asks one tenant for an auth code through the root of %s, with the cache in session storage", (origin) => {
+  it.each(["https://app.example.azurecontainerapps.io", "http://127.0.0.1:4173"])("asks any work or school directory for an auth code through the root of %s, with the cache in session storage", (origin) => {
     expect(msalConfiguration(SETTINGS, origin)).toEqual({
       auth: {
         clientId: "client-1",
-        authority: `${AUTHORITY_HOST}/tenant-1`,
+        authority: `${AUTHORITY_HOST}/organizations`,
         redirectUri: `${origin}/`,
         postLogoutRedirectUri: `${origin}/`,
       },
@@ -71,6 +74,19 @@ describe("msalConfiguration", () => {
   it("builds its client from that configuration", () => {
     createEntraAuth(SETTINGS);
     expect(created).toEqual([msalConfiguration(SETTINGS, window.location.origin)]);
+  });
+});
+
+describe("defaultScope", () => {
+  it.each([
+    { scope: "api://client-1/access_as_user", expected: "api://client-1/.default" },
+    { scope: "api://client-1/Some.Scope", expected: "api://client-1/.default" },
+  ])("asks for the whole API behind $scope", ({ scope, expected }) => {
+    expect(defaultScope(scope)).toBe(expected);
+  });
+
+  it.each(["access_as_user", "https://management.azure.com/user_impersonation", ""])("refuses %j, which is no scope of the app's own API", (scope) => {
+    expect(() => defaultScope(scope)).toThrow("sign-in settings are incomplete");
   });
 });
 
@@ -110,16 +126,41 @@ describe("ready", () => {
     await expect(auth.ready()).resolves.toMatchObject({ name: "ada@contoso.com" });
   });
 
-  it("keeps the deep link and redirects to sign in when nobody is signed in, and never settles", async () => {
-    window.history.replaceState(null, "", `/${DEEP_LINK}`);
+  it("starts nothing when nobody is signed in: the app offers the ways to sign in", async () => {
     const { client, auth } = build();
 
-    expect(await outcome(auth.ready())).toBe("pending");
+    await expect(auth.ready()).resolves.toBeNull();
 
-    expect(client.loginRedirect).toHaveBeenCalledTimes(1);
-    expect(client.loginRedirect).toHaveBeenCalledWith({ scopes: [SETTINGS.apiScope] });
-    expect(window.sessionStorage.getItem("health-pulse-return-query")).toBe(DEEP_LINK);
+    expect(client.loginRedirect).not.toHaveBeenCalled();
     expect(auth.account).toBeNull();
+  });
+
+  it.each([
+    { name: "one that returns from a sign-in", returned: { account: PERSONAL }, active: null, all: [] },
+    { name: "the active account", returned: null, active: PERSONAL, all: [] },
+    { name: "a cached account", returned: null, active: null, all: [PERSONAL] },
+  ])("says so when the only account is a personal one with no directory: $name", async ({ returned, active, all }) => {
+    const { client, auth } = build();
+    client.handleRedirectPromise.mockResolvedValue(returned);
+    client.getActiveAccount.mockReturnValue(active);
+    client.getAllAccounts.mockReturnValue(all);
+
+    const failure = await auth.ready().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(PersonalAccountError);
+    expect((failure as PersonalAccountError).username).toBe("ada@example.test");
+    expect(client.setActiveAccount).not.toHaveBeenCalled();
+    expect(auth.account).toBeNull();
+  });
+
+  it("signs in with the account of a directory when a personal account without one is cached too", async () => {
+    const { client, auth } = build();
+    client.getActiveAccount.mockReturnValue(PERSONAL);
+    client.getAllAccounts.mockReturnValue([PERSONAL, ACCOUNT]);
+
+    await expect(auth.ready()).resolves.toMatchObject({ tenantId: "tenant-1" });
+
+    expect(client.setActiveAccount).toHaveBeenCalledWith(ACCOUNT);
   });
 
   it("does not replace an address that already has a query", async () => {
@@ -163,7 +204,7 @@ describe("getToken", () => {
 
     await expect(auth.getToken(request)).resolves.toBe("access-1");
 
-    expect(client.acquireTokenSilent).toHaveBeenCalledWith({ scopes: [SETTINGS.apiScope], account: ACCOUNT, cacheLookupPolicy: policy });
+    expect(client.acquireTokenSilent).toHaveBeenCalledWith({ scopes: [SETTINGS.apiScope], authority: `${AUTHORITY_HOST}/tenant-1`, account: ACCOUNT, cacheLookupPolicy: policy });
     expect(client.acquireTokenRedirect).not.toHaveBeenCalled();
   });
 
@@ -175,7 +216,7 @@ describe("getToken", () => {
     expect(await outcome(auth.getToken())).toBe("pending");
 
     expect(client.acquireTokenRedirect).toHaveBeenCalledTimes(1);
-    expect(client.acquireTokenRedirect).toHaveBeenCalledWith({ scopes: [SETTINGS.apiScope], account: ACCOUNT });
+    expect(client.acquireTokenRedirect).toHaveBeenCalledWith({ scopes: [SCOPE], authority: `${AUTHORITY_HOST}/tenant-1`, account: ACCOUNT });
     expect(window.sessionStorage.getItem("health-pulse-return-query")).toBe(DEEP_LINK);
   });
 
@@ -195,7 +236,7 @@ describe("getToken", () => {
 
     expect(client.acquireTokenSilent).not.toHaveBeenCalled();
     expect(client.acquireTokenRedirect).toHaveBeenCalledTimes(1);
-    expect(client.acquireTokenRedirect).toHaveBeenCalledWith({ scopes: [SETTINGS.apiScope], account: ACCOUNT, claims: "eyJhY2Nlc3NfdG9rZW4iOnt9fQ==" });
+    expect(client.acquireTokenRedirect).toHaveBeenCalledWith({ scopes: [SCOPE], authority: `${AUTHORITY_HOST}/tenant-1`, account: ACCOUNT, claims: "eyJhY2Nlc3NfdG9rZW4iOnt9fQ==" });
   });
 
   it("refuses to ask for a token before anybody signed in", async () => {
@@ -205,13 +246,17 @@ describe("getToken", () => {
 });
 
 describe("signIn and signOut", () => {
-  it("starts a sign-in on request, keeping the address", async () => {
+  it.each([
+    { name: "any work or school directory by default", request: undefined, authority: `${AUTHORITY_HOST}/organizations`, extra: { prompt: "select_account" } },
+    { name: "the directory a tenant ID names", request: { directory: "7f1c0b1e-0000-4000-8000-00000000aaaa" }, authority: `${AUTHORITY_HOST}/7f1c0b1e-0000-4000-8000-00000000aaaa`, extra: { prompt: "select_account" } },
+    { name: "the directory a domain names, offering the account first", request: { directory: "contoso.com", loginHint: "ada@example.test" }, authority: `${AUTHORITY_HOST}/contoso.com`, extra: { loginHint: "ada@example.test" } },
+  ])("starts a sign-in on request to $name, asking which account unless one is offered, and keeping the address", async ({ request, authority, extra }) => {
     window.history.replaceState(null, "", `/${DEEP_LINK}`);
     const { client, auth } = build();
 
-    await auth.signIn();
+    await auth.signIn(request);
 
-    expect(client.loginRedirect).toHaveBeenCalledWith({ scopes: [SETTINGS.apiScope] });
+    expect(client.loginRedirect).toHaveBeenCalledWith({ scopes: [SCOPE], authority, ...extra });
     expect(window.sessionStorage.getItem("health-pulse-return-query")).toBe(DEEP_LINK);
   });
 
@@ -231,8 +276,8 @@ describe("signIn and signOut", () => {
 
 describe("createAuth", () => {
   it.each([
-    { name: "local mode", config: { authMode: "local", tenantId: null, clientId: null, apiScope: null } as const },
-    { name: "local mode that names a tenant anyway", config: { authMode: "local", tenantId: "t", clientId: "c", apiScope: "s" } as const },
+    { name: "local mode", config: { authMode: "local", clientId: null, apiScope: null } as const },
+    { name: "local mode that names a client anyway", config: { authMode: "local", clientId: "c", apiScope: "s" } as const },
   ])("signs nobody in for $name", async ({ config }) => {
     const auth = createAuth(config);
     expect(auth).toBe(localAuth);
@@ -241,17 +286,16 @@ describe("createAuth", () => {
   });
 
   it.each([
-    { name: "a tenant", config: { authMode: "entra", tenantId: null, clientId: "c", apiScope: "s" } as const },
-    { name: "a client", config: { authMode: "entra", tenantId: "t", clientId: null, apiScope: "s" } as const },
-    { name: "a scope", config: { authMode: "entra", tenantId: "t", clientId: "c", apiScope: null } as const },
+    { name: "a client", config: { authMode: "entra", clientId: null, apiScope: "s" } as const },
+    { name: "a scope", config: { authMode: "entra", clientId: "c", apiScope: null } as const },
   ])("refuses Entra mode without $name", ({ config }) => {
     expect(() => createAuth(config)).toThrow("sign-in settings are incomplete");
   });
 
   it("builds the Entra auth a complete config names, and the app runs with the one it was given", () => {
-    const auth = createAuth({ authMode: "entra", tenantId: "t", clientId: "c", apiScope: "api://c/access_as_user" });
+    const auth = createAuth({ authMode: "entra", clientId: "c", apiScope: "api://c/access_as_user" });
     expect(auth).not.toBe(localAuth);
-    expect(created).toEqual([msalConfiguration({ tenantId: "t", clientId: "c", apiScope: "api://c/access_as_user" }, window.location.origin)]);
+    expect(created).toEqual([msalConfiguration({ clientId: "c", apiScope: "api://c/access_as_user" }, window.location.origin)]);
     setAuth(auth);
     expect(getAuth()).toBe(auth);
   });

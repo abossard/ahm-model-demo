@@ -78,16 +78,36 @@ def sort_refs(refs):
 
 
 def list_models(health, default):
-    fallback = [fallback_ref(*default)]
+    """Every Health Model the user can read, in every subscription of their directory. Only a user of the app's own
+    directory has a default to fall back on, `None` for anyone else, and then a failed query is an error, not an empty list."""
+    fallback = [fallback_ref(*default)] if default else None
     try:
         rows = health.query_models()
     except (InteractionRequired, ConsentRequired):
         raise
     except Exception as error:
         logger.warning("model catalog query failed error_type=%s", type(error).__name__)
+        if fallback is None:
+            raise
         return fallback
     refs = [ref for ref in map(model_ref, rows) if ref]
-    return sort_refs(refs) or fallback
+    return sort_refs(refs) or fallback or []
+
+
+def default_model(models, default):
+    """The model that opens first: the app's own when the user can see it, else the first one they can, else none."""
+    wanted = tuple(part.casefold() for part in default) if default else None
+    chosen = next(
+        (
+            model
+            for model in models
+            if wanted == tuple(model[key].casefold() for key in ("subscriptionId", "resourceGroup", "name"))
+        ),
+        models[0] if models else None,
+    )
+    if chosen is None:
+        return None
+    return {key: chosen[key] for key in ("name", "resourceGroup", "subscriptionId")}
 
 
 def well_formed(requested):
@@ -101,9 +121,9 @@ def well_formed(requested):
 def resolve_selection(query_params, model_exists, default):
     requested = {key: query_params.get(key) for key in SELECTOR_KEYS}
     if not any(requested.values()):
-        return default, None
+        return (default, None) if default else (None, "unknown_model")
     selection = (
-        requested["subscription"] or default[0],
+        requested["subscription"] or (default[0] if default else None),
         requested["resourceGroup"],
         requested["model"],
     )
@@ -112,16 +132,23 @@ def resolve_selection(query_params, model_exists, default):
     return selection, None
 
 
-def read_inventory(health_client, resource_group, model_name):
+def read_raw(health_client, resource_group, model_name):
     model = health_client.health_models.get(resource_group, model_name)
     entities = list(
         health_client.entities.list_by_health_model(resource_group, model_name)
     )
-    graph = graph_dto(
-        entities,
-        health_client.relationships.list_by_health_model(resource_group, model_name),
-        model_name,
+    relationships = list(
+        health_client.relationships.list_by_health_model(resource_group, model_name)
     )
+    return model, entities, relationships
+
+
+def read_inventory(health_client, resource_group, model_name):
+    return inventory_from(*read_raw(health_client, resource_group, model_name), model_name)
+
+
+def inventory_from(model, entities, relationships, model_name):
+    graph = graph_dto(entities, relationships, model_name)
     entity_dtos = graph["entities"]
     relationships = graph["relationships"]
     model_properties = field(model, "properties")

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Grants tenant-wide admin consent for the delegated permissions of the web and MCP app registrations. The on-behalf-of
 # exchange has no interactive consent step, so without it every token request answers a claims challenge.
+# This consents in the directory the app belongs to only. An administrator of any other directory consents once for
+# their organization (infra/README.md, "Another directory").
 # Safe to run again. Needs an Entra role that may consent for the organization (Global Administrator, Privileged Role
 # Administrator, Cloud Application Administrator or Application Administrator). Optional: CONSENT_WAIT_SECONDS (180),
 # POLL_INTERVAL_SECONDS (10).

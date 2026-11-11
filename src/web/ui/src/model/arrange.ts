@@ -24,6 +24,18 @@ export interface Arrangement extends GraphLayout {
   readonly ranks: readonly (readonly string[])[];
 }
 
+export interface ArrangeOptions {
+  /**
+   * An order to keep: entity names per rank, in reading order, as `Arrangement.ranks` gives them.
+   * The entities of a rank that this list has for that rank keep the order it gives them, whatever
+   * would cross less. The others, new ones and those it has for another rank, are placed where
+   * the automatic order puts them among the fixed ones. Names it lists that are not drawn are
+   * ignored. The first part stays first; the parts after it follow the order of their roots in the
+   * first rank.
+   */
+  readonly order?: readonly (readonly string[])[];
+}
+
 export interface ArrangementScore {
   /** Cards, other than its own two, that the drawn route of a relationship passes through. */
   readonly throughCards: number;
@@ -501,13 +513,21 @@ const CANDIDATES: readonly Candidate[] = [
   { seed: "name", metric: "mean" },
 ];
 
-function seedLayers(layered: Layered, seed: Seed, rankCount: number): number[][] {
+/** `layer` with the fixed nodes in the slots they hold, in the order they are given; the others keep their slots. */
+function impose(layer: readonly number[], fixed: readonly number[] | undefined): number[] {
+  if (!fixed || fixed.length < 2) return [...layer];
+  const held = new Set(fixed);
+  let next = 0;
+  return layer.map((node) => (held.has(node) ? (fixed[next++] as number) : node));
+}
+
+function seedLayers(layered: Layered, seed: Seed, rankCount: number, fixed: readonly (readonly number[] | undefined)[]): number[][] {
   const layers: number[][] = Array.from({ length: rankCount }, () => []);
   if (seed === "name") {
     const key = (node: number): number => (node < layered.real ? node : (layered.bottom[node] as number));
     for (let node = 0; node < layered.size; node += 1) (layers[layered.rank[node] as number] as number[]).push(node);
     for (const layer of layers) layer.sort((left, right) => key(left) - key(right) || left - right);
-    return layers;
+    return layers.map((layer, at) => impose(layer, fixed[at]));
   }
   // Pre-order from the roots keeps the descendants of a parent next to each other in every rank.
   const seen = new Uint8Array(layered.size);
@@ -523,7 +543,7 @@ function seedLayers(layered: Layered, seed: Seed, rankCount: number): number[][]
     const list = layered.down[node] as number[];
     for (let at = list.length - 1; at >= 0; at -= 1) stack.push(list[at] as number);
   }
-  return layers;
+  return layers.map((layer, at) => impose(layer, fixed[at]));
 }
 
 function median(values: number[]): number {
@@ -602,13 +622,15 @@ function crossingsBetween(left: number, right: number, layered: Layered, pos: In
 }
 
 /** Swaps neighbours in a rank while that removes crossings with the ranks around it. */
-function transpose(layers: number[][], layered: Layered, pos: Int32Array): void {
+function transpose(layers: number[][], layered: Layered, pos: Int32Array, held: readonly (ReadonlySet<number> | undefined)[]): void {
   for (let pass = 0; pass < TRANSPOSE_PASSES; pass += 1) {
     let improved = false;
-    for (const layer of layers) {
+    for (const [at, layer] of layers.entries()) {
+      const fixed = held[at];
       for (let slot = 0; slot + 1 < layer.length; slot += 1) {
         const left = layer[slot] as number;
         const right = layer[slot + 1] as number;
+        if (fixed?.has(left) && fixed.has(right)) continue;
         if (crossingsBetween(right, left, layered, pos) < crossingsBetween(left, right, layered, pos)) {
           layer[slot] = right;
           layer[slot + 1] = left;
@@ -633,10 +655,12 @@ function orderLayers(
   layered: Layered,
   candidate: Candidate,
   rankCount: number,
+  fixed: readonly (readonly number[] | undefined)[],
 ): { layers: number[][]; crossings: number } {
-  let layers = seedLayers(layered, candidate.seed, rankCount);
+  const held = fixed.map((nodes) => (nodes && nodes.length > 1 ? new Set(nodes) : undefined));
+  let layers = seedLayers(layered, candidate.seed, rankCount, fixed);
   const pos = positionsOf(layers, layered.size);
-  transpose(layers, layered, pos);
+  transpose(layers, layered, pos, held);
   let best = layers.map((layer) => [...layer]);
   let fewest = orderCrossings(layers, layered, pos);
   let stalled = 0;
@@ -645,11 +669,14 @@ function orderLayers(
     const downward = sweep % 2 === 0;
     layers = layers.map((layer) => [...layer]);
     for (const at of downward ? ranks.slice(1) : ranks.slice(0, -1).reverse()) {
-      const next = reorder(layers[at] as number[], downward ? layered.up : layered.down, layers, layered, pos, candidate.metric);
+      const next = impose(
+        reorder(layers[at] as number[], downward ? layered.up : layered.down, layers, layered, pos, candidate.metric),
+        fixed[at],
+      );
       layers[at] = next;
       next.forEach((node, slot) => (pos[node] = slot));
     }
-    transpose(layers, layered, pos);
+    transpose(layers, layered, pos, held);
     const crossings = orderCrossings(layers, layered, pos);
     if (crossings < fewest) {
       fewest = crossings;
@@ -895,7 +922,7 @@ interface Block {
   readonly height: number;
 }
 
-function layoutBlock(graph: Graph, members: readonly number[]): Block {
+function layoutBlock(graph: Graph, members: readonly number[], order: readonly (readonly string[])[]): Block {
   if (members.length === 1) {
     const [only] = members as readonly [number];
     const rect = { x: 0, y: 0, width: graph.cross[only] as number, height: graph.along[only] as number };
@@ -914,6 +941,15 @@ function layoutBlock(graph: Graph, members: readonly number[]): Block {
   const { rank, forward } = rankEntities(members.length, links);
   const layered = expand(members.length, cross, rank, forward);
   const rankCount = rank.reduce((most, value) => Math.max(most, value), 0) + 1;
+  // The fixed order of each rank: the members the given order has for that rank, in its order.
+  const localOf = new Map(members.map((node, id) => [graph.names[node] as string, id] as const));
+  const fixed = Array.from({ length: rankCount }, (_unused, at): number[] | undefined => {
+    const row = (order[at] ?? []).flatMap((name) => {
+      const id = localOf.get(name);
+      return id !== undefined && rank[id] === at ? [id] : [];
+    });
+    return row.length > 1 ? [...new Set(row)] : undefined;
+  });
 
   const thickness = Array.from({ length: rankCount }, () => 0);
   members.forEach((_node, id) => {
@@ -960,7 +996,7 @@ function layoutBlock(graph: Graph, members: readonly number[]): Block {
   const seen = new Set<string>();
   let leader: { layers: number[][]; x: Float64Array; score: ArrangementScore } | null = null;
   for (const candidate of CANDIDATES) {
-    const { layers } = orderLayers(layered, candidate, rankCount);
+    const { layers } = orderLayers(layered, candidate, rankCount, fixed);
     const signature = layers.map((layer) => layer.join(",")).join("|");
     if (seen.has(signature)) continue;
     seen.add(signature);
@@ -987,6 +1023,7 @@ function layoutBlock(graph: Graph, members: readonly number[]): Block {
     const hit = new Set<number>();
     scoreRoutes(current.rects, links, graph.flat, hit);
     for (const card of [...hit].sort((a, b) => a - b)) {
+      if (fixed[rank[card] as number]?.includes(card)) continue;
       const row = current.layers[rank[card] as number] as number[];
       const from = row.indexOf(card);
       for (let to = 0; to < row.length && !improved && trials > 0; to += 1) {
@@ -1081,6 +1118,20 @@ function shelve(sizes: readonly { readonly width: number; readonly height: numbe
 }
 
 /**
+ * The parts in the order they are shelved: the first stays first and the parts that the fixed
+ * order of the first rank knows follow it in that order, in the places the unknown ones leave them.
+ */
+function shelfOrder(graph: Graph, parts: readonly (readonly number[])[], roots: readonly string[]): readonly (readonly number[])[] {
+  if (roots.length === 0 || parts.length < 3) return parts;
+  const at = new Map(roots.map((name, index) => [name, index] as const));
+  const key = (part: readonly number[]): number => Math.min(...part.map((node) => at.get(graph.names[node] as string) ?? Number.POSITIVE_INFINITY));
+  const rest = parts.slice(1);
+  const known = rest.filter((part) => Number.isFinite(key(part))).sort((left, right) => key(left) - key(right));
+  let next = 0;
+  return [parts[0] as readonly number[], ...rest.map((part) => (Number.isFinite(key(part)) ? (known[next++] as readonly number[]) : part))];
+}
+
+/**
  * Arranges the entities in ranks by longest path from the roots, orders each rank for few
  * crossings, and places parents over their children, so connections stay short. Computed once in
  * top-down space and turned for the other directions; unconnected parts are shelved beside or
@@ -1090,9 +1141,11 @@ export function arrange(
   nodes: readonly ArrangeNode[],
   edges: readonly ArrangeEdge[],
   direction: ArrangeDirection,
+  options: ArrangeOptions = {},
 ): Arrangement {
   const graph = buildGraph(nodes, edges, direction);
-  const blocks = partsOf(graph).map((members) => layoutBlock(graph, members));
+  const order = options.order ?? [];
+  const blocks = shelfOrder(graph, partsOf(graph), order[0] ?? []).map((members) => layoutBlock(graph, members, order));
   const oriented = blocks.map((block) => ({
     block,
     box: orient({ x: 0, y: 0, width: block.width, height: block.height }, direction, block),

@@ -1,13 +1,17 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agent_framework import Content, Message
+from agent_framework_foundry_hosting import ResponsesHostServer
 from mcp import types
+from starlette.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
@@ -112,7 +116,7 @@ class AzureMcpToolTests(unittest.TestCase):
         self.assertEqual(list(tool.allowed_tools), list(AZURE_MCP_TOOLS))
         self.assertFalse(tool.load_prompts_flag)
 
-    def test_the_listed_tools_are_the_ones_the_web_app_titles_know(self):
+    def test_the_listed_tools_are_the_read_only_tools_of_the_task_types(self):
         self.assertEqual(
             sorted(AZURE_MCP_TOOLS),
             sorted(
@@ -124,6 +128,7 @@ class AzureMcpToolTests(unittest.TestCase):
                     "monitor_metrics_query",
                     "monitor_workspace_log_query",
                     "group_resource_list",
+                    "monitor_activitylog_list",
                 ]
             ),
         )
@@ -334,6 +339,35 @@ class RemoteAzureTests(unittest.IsolatedAsyncioTestCase):
         for secret in (NONCE_A, TOKEN_A):
             with self.subTest(secret[:6]):
                 self.assertFalse([line for line in [*records, *files] if secret in line])
+
+
+class HostedRemoteAzureTests(unittest.TestCase):
+    """The hosted server opens the agent lazily at the first request, outside any run, and streams the run."""
+
+    @mock.patch.dict(os.environ, {"OTEL_SDK_DISABLED": "true"})
+    def test_a_streamed_task_reads_azure_with_the_token_of_its_task_only(self):
+        fake = FakeAzureMcp([TOKEN_A, TOKEN_B])
+        tokens = FakeTokens({NONCE_A: TOKEN_A, NONCE_B: TOKEN_B})
+        with serving(fake) as url, tempfile.TemporaryDirectory() as workspace:
+            client = ScriptedClient([[call("monitor_healthmodels_list")], [Content.from_text("Done.")]] * 2)
+            agent = build_agent(client, skills_dir=SKILLS_DIR, workspace=Path(workspace), tools=[azure_mcp_tool(url, tokens)], tokens=tokens)
+            outputs = []
+            with TestClient(ResponsesHostServer(agent)) as http:
+                for nonce, task_id in [(NONCE_A, "t-1"), (NONCE_B, "t-2")]:
+                    body = {"input": task_message(task_id, nonce), "store": False, "stream": True}
+                    with http.stream("POST", "/responses", json=body) as response:
+                        events = [json.loads(line[5:]) for line in response.iter_lines() if line.startswith("data:")]
+                    items = [event["item"] for event in events if event["type"] == "response.output_item.done"]
+                    outputs.append([item["output"] for item in items if item["type"] == "function_call_output"])
+                    self.assertEqual(events[-1]["type"], "response.completed")
+
+        for answers in outputs:
+            self.assertEqual([json.loads(answer)["status"] for answer in answers], [200])
+        by_token = [(request["authorization"], request["rpc"]) for request in fake.requests]
+        first_of_b = next(index for index, (authorization, _) in enumerate(by_token) if authorization == f"Bearer {TOKEN_B}")
+        self.assertEqual({authorization for authorization, _ in by_token[:first_of_b]}, {f"Bearer {TOKEN_A}"})
+        self.assertEqual({authorization for authorization, _ in by_token[first_of_b:]}, {f"Bearer {TOKEN_B}"})
+        self.assertEqual([rpc for _, rpc in by_token].count("tools/call"), 2)
 
 
 if __name__ == "__main__":

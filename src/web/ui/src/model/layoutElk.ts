@@ -1,6 +1,7 @@
 import ELK from "elkjs/lib/elk.bundled.js";
 import type { ElkNode } from "elkjs/lib/elk-api";
 import { boundsOf, linkedRelationships, type GraphLayout, type NodeSize, type Point, type SizeOf } from "./layout";
+import { ranksFromPositions } from "./customOrder";
 import type { Entity, Relationship } from "./types";
 
 export type ElkAlgorithm = "layered" | "radial";
@@ -63,16 +64,66 @@ function componentsOf(
   return groups;
 }
 
+/**
+ * The relationships of one connected component that form a tree from its root, in the order given.
+ * ELK radial is a tree layout and does not return for a component where a node has two parents.
+ */
+export function spanningTree(
+  group: readonly Entity[],
+  relationships: readonly Relationship[],
+): readonly Relationship[] {
+  const hasParent = new Set(relationships.map((item) => item.childEntityName));
+  const root = (group.find((item) => !hasParent.has(item.name)) ?? group[0])?.name;
+  if (root === undefined) return [];
+
+  const touching = new Map<string, Relationship[]>();
+  for (const item of relationships) {
+    for (const end of [item.parentEntityName, item.childEntityName]) {
+      const existing = touching.get(end);
+      if (existing) existing.push(item);
+      else touching.set(end, [item]);
+    }
+  }
+
+  const reached = new Set([root]);
+  const kept = new Map<string, Relationship>();
+  const queue = [root];
+  for (let head = 0; head < queue.length; head += 1) {
+    const current = queue[head] as string;
+    for (const item of touching.get(current) ?? []) {
+      const other = item.parentEntityName === current ? item.childEntityName : item.parentEntityName;
+      if (reached.has(other)) continue;
+      reached.add(other);
+      queue.push(other);
+      // The edge points away from the root, whichever way the relationship does.
+      kept.set(item.name, { ...item, parentEntityName: current, childEntityName: other });
+    }
+  }
+  return relationships.flatMap((item) => kept.get(item.name) ?? []);
+}
+
+/** Layers keep the order the nodes are given in, as far as that is possible. */
+const MODEL_ORDER: Readonly<Record<string, string>> = {
+  "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+  "elk.layered.crossingMinimization.forceNodeModelOrder": "true",
+};
+
 async function runElk(
   entities: readonly Entity[],
   relationships: readonly Relationship[],
   sizes: ReadonlyMap<string, NodeSize>,
   algorithm: ElkAlgorithm,
+  sequence?: readonly string[],
 ): Promise<Map<string, Point>> {
+  const place = new Map((sequence ?? []).map((name, index) => [name, index] as const));
+  // Entities the sequence does not know follow the ones it does, in the order they came.
+  const given = sequence
+    ? [...entities].sort((left, right) => (place.get(left.name) ?? Number.MAX_SAFE_INTEGER) - (place.get(right.name) ?? Number.MAX_SAFE_INTEGER))
+    : entities;
   const graph: ElkNode = {
     id: "root",
-    layoutOptions: OPTIONS[algorithm],
-    children: entities.map((item) => {
+    layoutOptions: sequence ? { ...OPTIONS[algorithm], ...MODEL_ORDER } : OPTIONS[algorithm],
+    children: given.map((item) => {
       const size = sizes.get(item.name) ?? { width: 0, height: 0 };
       return { id: item.name, width: size.width, height: size.height };
     }),
@@ -151,6 +202,8 @@ export async function elkLayout(
   relationships: readonly Relationship[],
   sizeOf: SizeOf,
   algorithm: ElkAlgorithm,
+  /** Entity names in the order the layers should keep (ELK layered only). */
+  sequence?: readonly string[],
 ): Promise<GraphLayout> {
   const sizes = new Map<string, NodeSize>(entities.map((item) => [item.name, sizeOf(item)] as const));
   const linked = linkedRelationships(entities, relationships);
@@ -170,7 +223,7 @@ export async function elkLayout(
         group.length > 1
           ? await runElk(
               group,
-              linked.filter((item) => names.has(item.parentEntityName)),
+              spanningTree(group, linked.filter((item) => names.has(item.parentEntityName))),
               sizes,
               algorithm,
             )
@@ -183,7 +236,7 @@ export async function elkLayout(
       offsetY = boundsOf(positions, sizes).height + COMPONENT_GAP;
     }
   } else {
-    for (const [name, point] of await runElk(entities, linked, sizes, algorithm)) {
+    for (const [name, point] of await runElk(entities, linked, sizes, algorithm, sequence)) {
       positions.set(name, point);
     }
   }
@@ -198,5 +251,9 @@ export async function elkLayout(
   }
 
   const finalPositions = algorithm === "radial" ? clearRadialOverlaps(positions, sizes) : positions;
-  return { positions: finalPositions, ...boundsOf(finalPositions, sizes) };
+  return {
+    positions: finalPositions,
+    ...boundsOf(finalPositions, sizes),
+    ...(algorithm === "layered" ? { ranks: ranksFromPositions(finalPositions, "x") } : {}),
+  };
 }

@@ -1,13 +1,22 @@
 import json
 import re
 
-from config import ERROR_MESSAGE_CHARS, REDACTED_TOKEN, TOKEN_MARKER, TOKEN_PATTERN, TOKEN_RUN
+from config import (
+    ERROR_MESSAGE_CHARS,
+    PROBLEM_CHARS,
+    PROBLEM_LIMIT,
+    PROBLEM_TEXT_CHARS,
+    REDACTED_TOKEN,
+    TOKEN_MARKER,
+    TOKEN_PATTERN,
+    TOKEN_RUN,
+)
 
 
 TEXT_LIMIT = 8000
 ARGUMENT_LIMIT = 2000
 SUMMARY_LIMIT = 160
-PROBLEM_LIMIT = 5
+IDLE_EVENTS = ("response.created", "response.in_progress", "response.queued", "response.failed", "error")
 SERVER_ERROR_MESSAGE = (
     "The agent service reported an internal error. "
     "A busy model deployment is the usual cause, so try again in a few minutes."
@@ -44,6 +53,26 @@ def clip(text, limit):
     return f"{text[:limit]}... [{len(text) - limit} more characters]"
 
 
+def clip_problems(problems, each=PROBLEM_TEXT_CHARS):
+    """Every problem, redacted and clipped, until the count or the total size is reached. A last line counts the rest."""
+    shown, used = [], 0
+    for problem in problems:
+        text = redact(str(problem))
+        text = text if each is None else clip(text, each)
+        if len(shown) >= PROBLEM_LIMIT or used + len(text) > PROBLEM_CHARS:
+            break
+        shown.append(text)
+        used += len(text)
+    left = len(problems) - len(shown)
+    return [*shown, f"{left} more problems not shown"] if left else shown
+
+
+def listed(value):
+    if isinstance(value, list):
+        return value
+    return [value] if value else []
+
+
 def safe_message(text, limit=ERROR_MESSAGE_CHARS):
     text = redact(str(text))
     return text if len(text) <= limit else f"{text[: limit - 3]}..."
@@ -64,6 +93,8 @@ def new_state():
         "calls": {},
         "accepted": None,
         "failure": None,
+        "rejection": None,
+        "worked": False,
     }
 
 
@@ -153,6 +184,11 @@ def tool_title(name, arguments):
     if name == "group_resource_list":
         group = arg("resourcegroup")
         return f"List resources in {group}" if group else "List resources"
+    if name == "monitor_activitylog_list":
+        return "List activity log"
+    if name == "clone_repository":
+        repository = (arg("url") or "").removeprefix("https://github.com/").strip("/")
+        return f"Clone repository {clip(repository, 80)}".rstrip()
     return name or "tool"
 
 
@@ -275,10 +311,12 @@ def finish_submission(state, call, title, text, payload):
     status = parse_json(text)
     status = status if isinstance(status, dict) else {}
     if status.get("status") != "accepted":
-        problems = [clip(redact(str(p)), 200) for p in (status.get("problems") or [])]
-        summary = f"{title}: rejected ({len(problems)} problems)"
-        payload = {**payload, "ok": False, "problems": problems[:PROBLEM_LIMIT]}
-        return state, [draft("tool_result", summary, payload)]
+        problems = listed(status.get("problems"))
+        shown = clip_problems(problems)
+        summary = f"{title}: rejected ({len(problems)} {'problem' if len(problems) == 1 else 'problems'})"
+        payload = {**payload, "ok": False, "problems": shown}
+        rejection = {"problems": shown, "count": len(problems)}
+        return {**state, "rejection": rejection}, [draft("tool_result", summary, payload)]
     events = [draft("tool_result", f"{title}: accepted", {**payload, "ok": True})]
     result = result_from(parse_arguments(call.get("arguments")))
     if result is None:
@@ -359,6 +397,8 @@ HANDLERS = {
 
 
 def reduce_event(state, name, data):
+    if name not in IDLE_EVENTS and not state["worked"]:
+        state = {**state, "worked": True}
     handler = HANDLERS.get(name)
     if handler is None or not isinstance(data, dict):
         return state, []
@@ -380,3 +420,13 @@ def accepted_result(state):
 
 def failure(state):
     return state["failure"]
+
+
+def last_rejection(state):
+    return state["rejection"]
+
+
+def is_busy(state):
+    """The service failed with `server_error`, which is how a busy model deployment answers, and nothing has run yet."""
+    failed_with = state["failure"]
+    return failed_with is not None and failed_with["code"] == "server_error" and not state["worked"]

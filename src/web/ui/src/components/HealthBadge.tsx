@@ -10,6 +10,7 @@ import {
 } from "@fluentui/react-components";
 import { stateTokens } from "../model/palette";
 import type { HealthState } from "../model/types";
+import { StateGlyph } from "./StateGlyph";
 
 const stateStyles = Object.fromEntries(
   Object.entries(stateTokens).map(([state, token]) => [
@@ -39,6 +40,7 @@ export const HealthBadge = memo(function HealthBadge({
       appearance="outline"
       shape="rounded"
       size="large"
+      icon={<StateGlyph state={known} size={14} />}
       data-testid="health-badge"
       data-state={state}
       className={mergeClasses(styles.badge, styles[known])}

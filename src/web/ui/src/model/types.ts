@@ -113,7 +113,8 @@ export type ModelDefault = ModelSelection;
 
 export interface ModelCatalog {
   readonly models: readonly ModelRef[];
-  readonly default: ModelDefault;
+  /** The model that opens first: the app's own when the user can read it, else the first they can; null when they can read none. */
+  readonly default: ModelDefault | null;
 }
 
 export interface HealthModel {
@@ -167,7 +168,6 @@ export interface ApiError {
 /** What `GET /api/config` says about signing in; it needs no token. `local` means the server acts as the developer and nobody signs in. */
 export interface AuthConfig {
   readonly authMode: "entra" | "local";
-  readonly tenantId: string | null;
   readonly clientId: string | null;
   readonly apiScope: string | null;
 }
@@ -211,6 +211,17 @@ export interface TaskBase {
 export interface TaskError {
   readonly code: string;
   readonly message: string;
+  /** Why the assistant's last result was rejected, when it was. */
+  readonly problems?: readonly string[];
+}
+
+/** How sure the assistant says it is of a result. */
+export type Confidence = "high" | "medium" | "low";
+
+/** The span of time an explanation looked at. */
+export interface ResultWindow {
+  readonly from: string;
+  readonly to: string;
 }
 
 export interface ExplainCause {
@@ -229,6 +240,8 @@ export interface ExplainResult {
   readonly state: HealthState;
   readonly summary: string;
   readonly causes: readonly ExplainCause[];
+  readonly confidence?: Confidence;
+  readonly window?: ResultWindow;
 }
 
 export type ChangeOp = "add" | "change" | "remove";
@@ -274,6 +287,7 @@ export interface DiffTaskResult {
   readonly changes: readonly SubmittedChange[];
   readonly verification: readonly VerificationRow[];
   readonly findings: readonly Finding[];
+  readonly confidence?: Confidence;
 }
 
 export type TaskResult = ExplainResult | DiffTaskResult;

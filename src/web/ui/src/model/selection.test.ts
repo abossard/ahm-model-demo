@@ -41,6 +41,11 @@ describe("model selection", () => {
     expect(selectionFromSearch("", orphaned).selected?.name).toBe("hm-b");
   });
 
+  it("opens the first model of a catalog that names no default, and none when it is empty", () => {
+    expect(selectionFromSearch("", { models: CATALOG.models, default: null }).selected).toEqual(CATALOG.models[0]);
+    expect(selectionFromSearch("", { models: [], default: null })).toEqual({ selected: null, unavailable: null });
+  });
+
   it("returns null when the catalog is empty", () => {
     expect(
       selectionFromSearch("?model=hm-a&resourceGroup=rg-a&subscription=sub-1", {

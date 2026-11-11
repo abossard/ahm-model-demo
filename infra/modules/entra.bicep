@@ -17,6 +17,12 @@ param tokenExchangeAudience string = 'api://AzureADTokenExchange'
 @description('Pre-authorize the Azure CLI for the web API scope, so a signed-in developer can run "az account get-access-token --scope <ENTRA_API_SCOPE>" and call the API as themselves. Any user in the tenant can then script the API, so it is off unless needed. The MCP app is never affected.')
 param allowAzureCli bool = false
 
+// Both registrations accept work or school accounts of any directory and personal Microsoft accounts. A personal
+// account reaches Azure through a directory where it is a member or a guest, so it signs in at that directory's
+// authority, and the app refuses a token of the personal-account tenant itself. Personal accounts need token version 2
+// and a globally unique application id URI, both already true of api://<application id>.
+var signInAudience = 'AzureADandPersonalMicrosoftAccount'
+
 var webUniqueName = 'ahm-${environmentName}-web'
 var mcpUniqueName = 'ahm-${environmentName}-mcp'
 var webScopeValue = 'access_as_user'
@@ -33,6 +39,28 @@ var logAnalyticsDataReadId = 'e8dac03d-d467-4a7e-9293-9cca7df08b31'
 // The Azure CLI public client. It is the only client ever pre-authorized for the web scope, and never for the MCP scope.
 var azureCliApplicationId = '04b07795-8ddb-461a-bbee-02f9e1bf7b46'
 
+var mcpScope = {
+  id: mcpScopeId
+  type: 'User'
+  value: mcpScopeValue
+  isEnabled: true
+  adminConsentDisplayName: 'Call the Azure MCP server'
+  adminConsentDescription: 'Lets the web app call the Azure MCP server on behalf of the signed-in user.'
+  userConsentDisplayName: 'Call the Azure MCP server'
+  userConsentDescription: 'Lets the app call the Azure MCP server on your behalf.'
+}
+
+var webScope = {
+  id: webScopeId
+  type: 'User'
+  value: webScopeValue
+  isEnabled: true
+  adminConsentDisplayName: 'Use the app as the signed-in user'
+  adminConsentDescription: 'Lets the single-page app call the web API as the signed-in user.'
+  userConsentDisplayName: 'Use the app as you'
+  userConsentDescription: 'Lets the app call its API on your behalf.'
+}
+
 var armAccess = {
   resourceAppId: armApplicationId
   resourceAccess: [
@@ -45,39 +73,50 @@ var armAccess = {
 
 // Each registration points at the other one (the web app needs the MCP scope, the MCP server pre-authorizes the web
 // app) and at itself (identifierUris). An application id exists only after creation, so each app is declared twice
-// with the same uniqueName: the first declaration creates it, the second one sets everything that needs an id.
+// with the same uniqueName: the first declaration creates it with its scope, the second one sets everything that
+// needs an id. Graph refuses to pre-authorize a scope in the same request that adds it, so the scope must already
+// exist when the second declaration runs.
 resource mcpCreated 'Microsoft.Graph/applications@v1.0' = {
   uniqueName: mcpUniqueName
   displayName: 'AHM Demo ${environmentName} MCP'
-  signInAudience: 'AzureADMyOrg'
+  signInAudience: signInAudience
+  api: {
+    requestedAccessTokenVersion: 2
+    oauth2PermissionScopes: [
+      mcpScope
+    ]
+  }
 }
 
 resource webCreated 'Microsoft.Graph/applications@v1.0' = {
   uniqueName: webUniqueName
   displayName: 'AHM Demo ${environmentName} web'
-  signInAudience: 'AzureADMyOrg'
+  signInAudience: signInAudience
+  api: {
+    requestedAccessTokenVersion: 2
+    oauth2PermissionScopes: [
+      webScope
+    ]
+  }
 }
 
 resource mcpApp 'Microsoft.Graph/applications@v1.0' = {
   uniqueName: mcpUniqueName
   displayName: 'AHM Demo ${environmentName} MCP'
-  signInAudience: 'AzureADMyOrg'
+  signInAudience: signInAudience
   identifierUris: [
     'api://${mcpCreated.appId}'
   ]
   api: {
     requestedAccessTokenVersion: 2
     oauth2PermissionScopes: [
-      {
-        id: mcpScopeId
-        type: 'User'
-        value: mcpScopeValue
-        isEnabled: true
-        adminConsentDisplayName: 'Call the Azure MCP server'
-        adminConsentDescription: 'Lets the web app call the Azure MCP server on behalf of the signed-in user.'
-        userConsentDisplayName: 'Call the Azure MCP server'
-        userConsentDescription: 'Lets the app call the Azure MCP server on your behalf.'
-      }
+      mcpScope
+    ]
+    // A user of another directory consents once for the web app, and Entra provisions this server's service principal
+    // there with it: the web app's token for this scope could not be issued without one. Both registrations are in
+    // this tenant, as this attribute requires.
+    knownClientApplications: [
+      webCreated.appId
     ]
     preAuthorizedApplications: [
       {
@@ -105,23 +144,14 @@ resource mcpApp 'Microsoft.Graph/applications@v1.0' = {
 resource webApp 'Microsoft.Graph/applications@v1.0' = {
   uniqueName: webUniqueName
   displayName: 'AHM Demo ${environmentName} web'
-  signInAudience: 'AzureADMyOrg'
+  signInAudience: signInAudience
   identifierUris: [
     'api://${webCreated.appId}'
   ]
   api: {
     requestedAccessTokenVersion: 2
     oauth2PermissionScopes: [
-      {
-        id: webScopeId
-        type: 'User'
-        value: webScopeValue
-        isEnabled: true
-        adminConsentDisplayName: 'Use the app as the signed-in user'
-        adminConsentDescription: 'Lets the single-page app call the web API as the signed-in user.'
-        userConsentDisplayName: 'Use the app as you'
-        userConsentDescription: 'Lets the app call its API on your behalf.'
-      }
+      webScope
     ]
     preAuthorizedApplications: allowAzureCli
       ? [

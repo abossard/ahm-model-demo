@@ -609,6 +609,7 @@ def diff_view(result, base, model_name, target, applies, appliable):
         "verification": result["verification"],
         "findings": result["findings"],
         "summary": result["summary"],
+        **({"confidence": result["confidence"]} if "confidence" in result else {}),
         "target": target,
         "appliable": appliable,
         "applies": applies,

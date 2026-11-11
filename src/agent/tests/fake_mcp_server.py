@@ -53,11 +53,15 @@ class FakeAzureMcp:
                 body += message.get("body", b"")
                 more = message.get("more_body", False)
             try:
-                rpc = json.loads(body).get("method", "") if body else ""
-            except ValueError:
-                rpc = ""
+                sent = json.loads(body) if body else {}
+                rpc = sent.get("method", "")
+                arguments = (sent.get("params") or {}).get("arguments") if rpc == "tools/call" else None
+            except (ValueError, AttributeError):
+                rpc, arguments = "", None
             authorization = headers.get("authorization")
-            requests.append({"method": scope["method"], "rpc": rpc, "authorization": authorization, "session": headers.get("mcp-session-id")})
+            requests.append(
+                {"method": scope["method"], "rpc": rpc, "authorization": authorization, "session": headers.get("mcp-session-id"), "arguments": arguments}
+            )
             if authorization is None or authorization.removeprefix("Bearer ") not in valid:
                 await send({"type": "http.response.start", "status": 401, "headers": [(b"content-type", b"application/json")]})
                 return await send({"type": "http.response.body", "body": b'{"error":"unauthorized"}'})

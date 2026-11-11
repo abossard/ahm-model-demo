@@ -66,6 +66,11 @@ def mint(oid=ADA, key=PRIVATE, kid="k1", **changes):
     return jwt.encode(payload, key, algorithm="RS256", headers={"kid": kid})
 
 
+def other_directory(oid=ADA, **changes):
+    """A user token of OTHER_TENANT: a work or school account of another directory."""
+    return mint(oid, tid=OTHER_TENANT, iss=f"https://login.microsoftonline.com/{OTHER_TENANT}/v2.0", **changes)
+
+
 def app_token(oid=AGENT, **changes):
     return mint(oid, scp=None, idtyp="app", roles=["Task.Run"], **changes)
 
@@ -92,6 +97,7 @@ class Keys:
 class Credentials:
     def __init__(self):
         self.asked = []
+        self.directories = []
         self.error = None
 
     def credential(self, caller):
@@ -100,6 +106,7 @@ class Credentials:
         class ForCaller:
             def get_token(self, *scopes, claims=None, **_):
                 credentials.asked.append((caller.oid, caller.assertion, scopes, claims))
+                credentials.directories.append(caller.tenant_id)
                 if credentials.error:
                     raise credentials.error
                 return AccessToken(f"mcp-token-of-{caller.oid}", NOW + 3600)
@@ -236,7 +243,7 @@ class SignInTests(EntraCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(
                 response.json(),
-                {"authMode": "entra", "tenantId": TENANT, "clientId": CLIENT, "apiScope": API_SCOPE},
+                {"authMode": "entra", "clientId": CLIENT, "apiScope": API_SCOPE},
             )
             self.assertEqual(response.headers["cache-control"], "no-store")
 
@@ -336,7 +343,8 @@ class SignInTests(EntraCase):
             ("a key id nobody knows", bearer(mint(kid="forged"))),
             ("an expired token", bearer(mint(exp=NOW - 3600))),
             ("a token that is not valid yet", bearer(mint(nbf=NOW + 3600))),
-            ("a token of another tenant", bearer(mint(tid=OTHER_TENANT, iss=f"https://login.microsoftonline.com/{OTHER_TENANT}/v2.0"))),
+            ("a token whose issuer is not the directory it names", bearer(mint(tid=OTHER_TENANT))),
+            ("a token without a tenant", bearer(mint(tid=None))),
             ("a version 1 issuer", bearer(mint(iss=f"https://sts.windows.net/{TENANT}/"))),
             ("a token for another app", bearer(mint(aud="api://66666666-6666-6666-6666-666666666666"))),
             ("a token for another scope", bearer(mint(scp="user_impersonation"))),
@@ -350,6 +358,7 @@ class SignInTests(EntraCase):
             ("POST", "/api/sessions", {"json": {}}),
             ("GET", "/api/sessions/abc/tasks/1/events", {"headers": {"Last-Event-ID": "2"}}),
             ("GET", "/api/health-model", {}),
+            ("GET", "/api/timeline", {}),
         ]
         reached = []
         for name in ("list_sessions", "create_session", "get_session", "get_task"):
@@ -397,7 +406,7 @@ class SignInTests(EntraCase):
 
     def test_the_key_service_being_down_is_a_retryable_503_and_not_a_bad_token(self):
         self.keys.error = URLError("down")
-        with mock.patch.object(self.module.authenticator, "_keys", self.auth.signing_keys(TENANT)):
+        with mock.patch.object(self.module.authenticator, "_keys", self.auth.signing_keys()):
             with TestClient(self.module.app) as client:
                 response = client.get("/api/sessions", headers=bearer(mint()))
 
@@ -568,6 +577,7 @@ class IsolationTests(EntraCase):
                 ("GET", "/api/health-models", None),
                 ("GET", "/api/health-model", None),
                 ("GET", "/api/entities/orders-api", None),
+                ("GET", "/api/timeline", None),
                 ("POST", "/api/entities/orders-api/health-reports", REPORT),
                 ("POST", f"/api/sessions/{sid}/tasks", {"type": "review", "target": TARGET}),
             ]
@@ -580,6 +590,104 @@ class IsolationTests(EntraCase):
                     self.assertLess(response.status_code, 300, response.text)
                     self.assertTrue(seen and set(seen) == {CY}, seen)
             self.finish(client, sid, CY)
+
+
+class DirectoryTests(EntraCase):
+    def test_a_user_of_another_directory_is_served_and_is_not_the_home_user_with_the_same_object_id(self):
+        token = other_directory(ADA)
+        seen = []
+        original = self.health.as_user
+        self.health.as_user = lambda caller: seen.append(caller) or original(caller)
+
+        with TestClient(self.module.app) as client:
+            created = client.post("/api/sessions", json={"title": "Away"}, headers=bearer(token))
+            home = self.new_session(client, ADA, title="Home")
+            away = client.get("/api/sessions", headers=bearer(token)).json()["sessions"]
+            at_home = self.call(client, "GET", "/api/sessions", ADA).json()["sessions"]
+            stranger = client.get(f"/api/sessions/{home}", headers=bearer(token))
+            catalog = client.get("/api/health-models", headers=bearer(token))
+
+        self.assertEqual((created.status_code, catalog.status_code), (201, 200))
+        self.assertEqual([s["title"] for s in away], ["Away"])
+        self.assertEqual([s["title"] for s in at_home], ["Home"])
+        self.assert_error(stranger, 404, "session_not_found", False)
+        self.assertEqual([(c.oid, c.tenant_id, c.in_home_tenant) for c in seen], [(ADA, OTHER_TENANT, False)])
+        self.assertEqual(asyncio.run(self.store.list_sessions(f"{OTHER_TENANT}/{ADA}"))[0]["id"], created.json()["id"])
+        self.assertEqual([s["id"] for s in asyncio.run(self.store.list_sessions(ADA))], [home])
+
+    def test_a_personal_account_is_refused_with_its_own_code_before_any_route_runs(self):
+        consumers = self.config.CONSUMERS_TENANT_ID
+        token = mint(tid=consumers, iss=f"https://login.microsoftonline.com/{consumers}/v2.0")
+        routes = [("GET", "/api/sessions"), ("POST", "/api/sessions"), ("GET", "/api/health-models"), ("GET", "/api/health-model")]
+        reached = []
+        original = self.store.list_sessions
+        self.store.list_sessions = lambda *args: reached.append(args) or original(*args)
+
+        with TestClient(self.module.app) as client:
+            for method, path in routes:
+                with self.subTest(route=f"{method} {path}"):
+                    response = client.request(method, path, headers=bearer(token), json={} if method == "POST" else None)
+
+                    error = self.assert_error(response, 403, "personal_account", False)
+                    self.assertIn("directory", error["message"])
+                    self.assertNotIn("www-authenticate", response.headers)
+
+        self.assertEqual(reached, [])
+
+    def test_directories_can_be_limited_to_a_list_and_the_home_directory_is_always_on_it(self):
+        rules = self.auth.TokenRules(TENANT, CLIENT, "access_as_user", frozenset({OTHER_TENANT}))
+        third = "99999999-9999-9999-9999-999999999999"
+        cases = [
+            ("a listed directory", other_directory(), 200, None),
+            ("the home directory", mint(), 200, None),
+            ("a directory that is not listed", mint(tid=third, iss=f"https://login.microsoftonline.com/{third}/v2.0"), 403, "tenant_not_allowed"),
+        ]
+        with mock.patch.object(self.module, "authenticator", self.auth.Authenticator(rules, self.module.authenticator._keys)):
+            with TestClient(self.module.app) as client:
+                for label, token, status, code in cases:
+                    with self.subTest(label=label):
+                        response = client.get("/api/sessions", headers=bearer(token))
+
+                        if code:
+                            self.assert_error(response, status, code, False)
+                        self.assertEqual(response.status_code, status)
+
+    def test_the_token_broker_exchanges_in_the_directory_of_the_user_who_started_the_task(self):
+        gate, sent = self.gated()
+        away = other_directory(BOB)
+        with TestClient(self.module.app) as client:
+            home, abroad = self.new_session(client, ADA), client.post("/api/sessions", json={}, headers=bearer(away)).json()["id"]
+            self.start(client, home, ADA, type="review", target=TARGET)
+            first = self.nonce(sent, 1)
+            client.post(f"/api/sessions/{abroad}/tasks", json={"type": "review", "target": TARGET}, headers=bearer(away))
+            second = self.nonce(sent, 2)
+            answers = [self.agent_call(client, {"nonce": nonce}) for nonce in (first, second)]
+            client.portal.call(gate.set)
+            self.finish(client, home)
+
+        self.assertEqual([r.status_code for r in answers], [200, 200])
+        self.assertEqual(self.credentials.directories, [TENANT, OTHER_TENANT])
+        self.assertEqual([entry[0] for entry in self.credentials.asked], [ADA, BOB])
+
+    def test_a_design_task_is_only_for_users_of_the_directory_the_app_belongs_to(self):
+        with TestClient(self.module.app) as client:
+            home = self.start(client, self.new_session(client, ADA), ADA, type="design")
+            abroad_session = client.post("/api/sessions", json={}, headers=bearer(other_directory())).json()["id"]
+            abroad = client.post(f"/api/sessions/{abroad_session}/tasks", json={"type": "design"}, headers=bearer(other_directory()))
+
+        self.assertEqual(home.status_code, 202)
+        self.assert_error(abroad, 403, "design_unavailable", False)
+
+    def test_a_task_of_another_directory_cannot_name_a_model_without_a_subscription(self):
+        with TestClient(self.module.app) as client:
+            session = client.post("/api/sessions", json={}, headers=bearer(other_directory())).json()["id"]
+            response = client.post(
+                f"/api/sessions/{session}/tasks",
+                json={"type": "review", "target": {"resourceGroup": GROUP, "name": MODEL}},
+                headers=bearer(other_directory()),
+            )
+
+        self.assert_error(response, 400, "unknown_model", False)
 
 
 class BrokerTests(EntraCase):
@@ -769,6 +877,7 @@ class DelegatedAccessTests(EntraCase):
                 ("the catalog", "GET", "/api/health-models", None),
                 ("the model", "GET", "/api/health-model", None),
                 ("an entity", "GET", "/api/entities/orders-api", None),
+                ("the timeline", "GET", "/api/timeline", None),
                 ("a health report", "POST", "/api/entities/orders-api/health-reports", REPORT),
                 ("a task", "POST", f"/api/sessions/{sid}/tasks", {"type": "review", "target": TARGET}),
                 ("a selected model", "GET", f"/api/health-model?model={MODEL}&resourceGroup={GROUP}", None),
@@ -811,7 +920,9 @@ class DelegatedAccessTests(EntraCase):
         with TestClient(self.module.app) as client:
             response = self.call(client, "GET", "/api/health-models")
 
-        self.assertIn("admin consent", response.json()["error"]["message"])
+        message = response.json()["error"]["message"]
+        self.assertIn("administrator of your directory", message)
+        self.assertNotIn("az ad", message)
 
     def test_a_task_whose_exchange_is_refused_while_it_runs_ends_failed_with_the_matching_code(self):
         cases = [

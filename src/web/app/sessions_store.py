@@ -21,7 +21,8 @@ tracer = trace.get_tracer("ahm-demo")
 
 UNFINISHED = ("queued", "running")
 SUMMARY_KEY = "summary"
-OWNER = re.compile(r"[A-Za-z0-9-]{1,64}")
+# A user is `<object id>` in the directory the app belongs to and `<tenant id>/<object id>` in any other.
+OWNER = re.compile(r"[A-Za-z0-9-]{1,64}(/[A-Za-z0-9-]{1,64})?")
 
 
 class SessionNotFound(Exception):
@@ -135,7 +136,17 @@ class MemorySessionsStore:
     async def list_sessions(self, owner):
         return most_recent_first(
             [
-                session_summary(json.loads(text), len(self._seqs(owner, sid)), self._last.get((owner, sid)))
+                {
+                    **session_summary(json.loads(text), len(self._seqs(owner, sid)), self._last.get((owner, sid))),
+                    "openTask": next(
+                        (
+                            seq
+                            for seq in reversed(self._seqs(owner, sid))
+                            if json.loads(self._tasks[(owner, sid, seq)]).get("status") in UNFINISHED
+                        ),
+                        None,
+                    ),
+                }
                 for (o, sid), text in self._sessions.items()
                 if o == owner
             ]
@@ -240,10 +251,11 @@ class BlobSessionsStore:
 
     def _seqs(self, owner, sid):
         seqs = []
-        for blob in self._container.list_blobs(name_starts_with=f"{home(owner)}/{sid}/tasks/"):
-            parts = blob.name.split("/")
-            if len(parts) == 6 and parts[5] == "task.json" and parts[4].isdigit():
-                seqs.append(int(parts[4]))
+        prefix = f"{home(owner)}/{sid}/tasks/"
+        for blob in self._container.list_blobs(name_starts_with=prefix):
+            parts = blob.name[len(prefix):].split("/")
+            if len(parts) == 2 and parts[1] == "task.json" and parts[0].isdigit():
+                seqs.append(int(parts[0]))
         return sorted(seqs)
 
     def _summaries(self, owner=None):
@@ -252,8 +264,9 @@ class BlobSessionsStore:
         for blob in self._container.list_blobs(name_starts_with=prefix, include=["metadata"]):
             parts = blob.name.split("/")
             summary = decode_summary(blob.metadata)
-            if len(parts) == 4 and parts[3] == "session.json" and summary:
-                found.append((parts[1], parts[2], summary))
+            who = "/".join(parts[1:-2])
+            if parts[-1] == "session.json" and summary and OWNER.fullmatch(who) and (owner is None or who == owner):
+                found.append((who, parts[-2], summary))
         return found
 
     def _summary_of(self, owner, sid):
@@ -290,7 +303,7 @@ class BlobSessionsStore:
     def _list_sessions(self, owner):
         return most_recent_first(
             [
-                {"id": sid, **{k: summary[k] for k in ("title", "createdAt", "taskCount", "lastTaskAt")}}
+                {"id": sid, **{k: summary[k] for k in ("title", "createdAt", "taskCount", "lastTaskAt")}, "openTask": summary.get("openTask")}
                 for _, sid, summary in self._summaries(owner)
             ]
         )

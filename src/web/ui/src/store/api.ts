@@ -1,4 +1,5 @@
 import { getAuth, type TokenRequest } from "../auth";
+import { parseLiveFrame, type LiveEvent } from "../model/live";
 import { createSseParser } from "../model/sse";
 import type {
   ApiError,
@@ -17,6 +18,7 @@ import type {
   TaskInput,
 } from "../model/types";
 import { searchFromSelection } from "../model/selection";
+import type { TimelineResponse } from "../model/timeline";
 
 function fallbackError(message: string): ApiError {
   return {
@@ -111,7 +113,6 @@ export async function fetchAuthConfig(): Promise<AuthConfig> {
     if (config.authMode !== "entra" && config.authMode !== "local") throw new Error("unknown authMode");
     return {
       authMode: config.authMode,
-      tenantId: config.tenantId ?? null,
       clientId: config.clientId ?? null,
       apiScope: config.apiScope ?? null,
     };
@@ -128,8 +129,10 @@ export function fetchModelCatalog(): Promise<ModelCatalog> {
   return requestJson<ModelCatalog>("/api/health-models");
 }
 
-export function fetchHealthModel(selection: ModelSelection | null): Promise<HealthModel> {
-  return requestJson<HealthModel>(scoped("/api/health-model", selection));
+/** `fresh` makes the app read the model from Azure now instead of answering from what it keeps warm. */
+export function fetchHealthModel(selection: ModelSelection | null, fresh = false): Promise<HealthModel> {
+  const url = scoped("/api/health-model", selection);
+  return requestJson<HealthModel>(fresh ? `${url}${url.includes("?") ? "&" : "?"}refresh=1` : url);
 }
 
 export function fetchEntityDetail(
@@ -294,6 +297,130 @@ export function openTaskEvents(sid: string, seq: number, handlers: TaskStreamHan
       failures = Math.max(failures, 1);
       const base = parser.retry() ?? RECONNECT_BASE_MS;
       await pause(Math.min(RECONNECT_CAP_MS, base * 2 ** (failures - 1)), signal);
+    }
+  };
+
+  void follow();
+  return { close: () => controller.abort() };
+}
+
+export interface TimelineQuery {
+  readonly from: number;
+  readonly to: number;
+  readonly include: readonly ("states" | "annotations" | "reports" | "signals")[];
+  readonly entities?: readonly string[];
+}
+
+/** The history of the selected model for the signal timeline: GET /api/timeline. `signal` cancels it. */
+export function fetchTimeline(
+  selection: ModelSelection | null,
+  query: TimelineQuery,
+  signal?: AbortSignal,
+): Promise<TimelineResponse> {
+  const params = new URLSearchParams(selection ? searchFromSelection(selection) : "");
+  params.set("from", new Date(query.from).toISOString());
+  params.set("to", new Date(query.to).toISOString());
+  params.set("include", query.include.join(","));
+  for (const entity of query.entities ?? []) params.append("entity", entity);
+  return requestJson<TimelineResponse>(`/api/timeline?${params.toString()}`, signal ? { signal } : undefined);
+}
+
+export type ModelStreamStatus = "connecting" | "open" | "reconnecting";
+
+export interface ModelStreamHandlers {
+  readonly onEvent: (event: LiveEvent) => void;
+  readonly onStatus: (status: ModelStreamStatus) => void;
+  /** The stream ended for good: the app refused it, or the account lost access. The caller falls back to polling. */
+  readonly onFailure: (error: ApiError) => void;
+}
+
+export interface ModelStream {
+  readonly close: () => void;
+}
+
+const LIVE_BACKOFF_BASE_MS = 500;
+const LIVE_BACKOFF_CAP_MS = 30_000;
+/** The server sends a comment every 15 s: a connection that stays silent for three times that is dead. */
+const LIVE_SILENCE_MS = 45_000;
+
+/**
+ * The live feed of the selected model: GET /api/health-model/stream, read with `fetch` so it carries the token. A token
+ * that expires ends the stream with `reconnect`; the next connection takes a fresh one and the last event id, so the
+ * viewer sees no gap. A dropped connection is taken up again after a delay that doubles up to 30 s. `resync` and a
+ * server that no longer knows the id make the next connection start from a snapshot.
+ */
+export function openModelStream(selection: ModelSelection | null, handlers: ModelStreamHandlers): ModelStream {
+  const controller = new AbortController();
+  const { signal } = controller;
+  const url = `/api/health-model/stream${selection ? searchFromSelection(selection) : ""}`;
+
+  const follow = async (): Promise<void> => {
+    const parser = createSseParser();
+    const decoder = new TextDecoder();
+    let lastId: string | null = null;
+    let failures = 0;
+    let first = true;
+    while (!signal.aborted) {
+      handlers.onStatus(first ? "connecting" : "reconnecting");
+      first = false;
+      const connection = new AbortController();
+      const stop = (): void => connection.abort();
+      signal.addEventListener("abort", stop, { once: true });
+      let silence = 0;
+      const watch = (): void => {
+        window.clearTimeout(silence);
+        silence = window.setTimeout(stop, LIVE_SILENCE_MS);
+      };
+      let again = "backoff";
+      try {
+        const response = await authorized(url, {
+          headers: { Accept: "text/event-stream", ...(lastId === null ? {} : { "Last-Event-ID": lastId }) },
+          signal: connection.signal,
+        });
+        if (!response.ok) {
+          if (!signal.aborted) handlers.onFailure(await readError(response));
+          return;
+        }
+        if (response.body === null) throw new Error("The live stream has no body.");
+        handlers.onStatus("open");
+        watch();
+        const reader = response.body.getReader();
+        read: for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          watch();
+          for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
+            failures = 0;
+            if (signal.aborted) return;
+            const event = parseLiveFrame(frame.event, frame.data, frame.id);
+            if (frame.id !== null) lastId = frame.id;
+            if (event === null) continue;
+            if (event.kind === "error") {
+              handlers.onFailure({ code: event.code, message: event.message, retryable: false, operationId: null });
+              void reader.cancel();
+              return;
+            }
+            handlers.onEvent(event);
+            if (event.kind === "resync" || event.kind === "reconnect") {
+              if (event.kind === "resync") lastId = null;
+              again = "now";
+              void reader.cancel();
+              break read;
+            }
+          }
+        }
+      } catch (cause) {
+        if (signal.aborted) return;
+        failures += 1;
+        void cause;
+      } finally {
+        window.clearTimeout(silence);
+        signal.removeEventListener("abort", stop);
+      }
+      if (signal.aborted) return;
+      if (again === "now") continue;
+      failures = Math.max(failures, 1);
+      await pause(Math.min(LIVE_BACKOFF_CAP_MS, (parser.retry() ?? LIVE_BACKOFF_BASE_MS) * 2 ** (failures - 1)), signal);
     }
   };
 

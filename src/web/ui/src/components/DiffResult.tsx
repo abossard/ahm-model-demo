@@ -9,6 +9,7 @@ import {
   MessageBar,
   MessageBarActions,
   MessageBarBody,
+  MessageBarTitle,
   SkeletonItem,
   Spinner,
   Text,
@@ -16,11 +17,15 @@ import {
   tokens,
 } from "@fluentui/react-components";
 import { unattachedVerification } from "../model/changes";
+import { openFailure } from "../model/errors";
 import type { DiffView, Finding, FindingSeverity, Task, VerificationRow } from "../model/types";
 import { actions, useStore } from "../store/store";
+import { AgentText, AnswerText } from "./AgentText";
 import { ApplyResult, SelectionBar } from "./ApplyPanel";
 import { ChangeList } from "./ChangeList";
+import { HowSure } from "./HowSure";
 import { OffScreenTarget } from "./OffScreenTarget";
+import { TechnicalLine } from "./TechnicalLine";
 
 const SEVERITIES: readonly FindingSeverity[] = ["high", "medium", "low"];
 const SEVERITY_COLOR = { high: "danger", medium: "warning", low: "informative" } as const;
@@ -47,9 +52,10 @@ const useStyles = makeStyles({
   mono: { fontFamily: tokens.fontFamilyMonospace, color: tokens.colorNeutralForeground2 },
 });
 
+// The Verification of a signal, as the user reads it: a test of the signal against real data.
 const STATUS_LABEL: Readonly<Record<VerificationRow["status"], string>> = {
-  verified: "verified",
-  failing: "failing",
+  verified: "passed",
+  failing: "failed",
   not_run: "not run",
 };
 const STATUS_COLOR = { verified: "success", failing: "danger", not_run: "informative" } as const;
@@ -58,7 +64,7 @@ function Findings({ view }: { readonly view: DiffView }): JSX.Element | null {
   const styles = useStyles();
   if (view.findings.length === 0) return null;
   return (
-    <ul className={styles.list} aria-label="Findings" data-testid="findings">
+    <ul className={styles.list} aria-label="What the assistant found" data-testid="findings">
       {SEVERITIES.flatMap((severity) =>
         view.findings
           .map((finding, index) => [finding, index] as const)
@@ -70,7 +76,7 @@ function Findings({ view }: { readonly view: DiffView }): JSX.Element | null {
               </Badge>
               <span className={styles.findingText}>
                 {finding.entity ? <strong>{finding.entity}: </strong> : null}
-                {finding.text}
+                <AgentText text={finding.text} />
               </span>
               {finding.changeIds.length > 0 ? (
                 <Button
@@ -80,7 +86,7 @@ function Findings({ view }: { readonly view: DiffView }): JSX.Element | null {
                   aria-label={`Select the ${finding.changeIds.length} ${finding.changeIds.length === 1 ? "change" : "changes"} of this finding`}
                   data-testid={`finding-select-${index}`}
                 >
-                  Select {finding.changeIds.length}
+                  Select {finding.changeIds.length === 1 ? "1 change" : `${finding.changeIds.length} changes`}
                 </Button>
               ) : null}
             </li>
@@ -97,8 +103,8 @@ function VerificationSummary({ view }: { readonly view: DiffView }): JSX.Element
   const failing = count("failing");
   return (
     <Text className={styles.caption} data-testid="verification-summary">
-      Verification: {count("verified")} verified, {failing} failing, {count("not_run")} not run.
-      {failing > 0 ? " A failing signal does not block Apply." : ""}
+      Signal tests on live data: {count("verified")} passed, {failing} failed, {count("not_run")} not run.
+      {failing > 0 ? " A failed test does not stop you from applying." : ""}
     </Text>
   );
 }
@@ -111,7 +117,7 @@ function VerificationRows({ view }: { readonly view: DiffView }): JSX.Element | 
   return (
     <Accordion collapsible data-testid="verification-rows">
       <AccordionItem value="rows">
-        <AccordionHeader size="small">Verification details ({rows.length})</AccordionHeader>
+        <AccordionHeader size="small">Signal test details ({rows.length})</AccordionHeader>
         <AccordionPanel>
           <ul className={styles.rows}>
             {rows.map((row) => (
@@ -143,7 +149,7 @@ function EarlierApplies({ view }: { readonly view: DiffView }): JSX.Element | nu
   return (
     <Accordion collapsible data-testid="earlier-applies">
       <AccordionItem value="applies">
-        <AccordionHeader size="small">Earlier Apply outcomes ({view.applies.length})</AccordionHeader>
+        <AccordionHeader size="small">Earlier changes to the live model ({view.applies.length})</AccordionHeader>
         <AccordionPanel>
           <ul className={styles.applies}>
             {view.applies.map((outcome, index) => (
@@ -163,11 +169,12 @@ function EarlierApplies({ view }: { readonly view: DiffView }): JSX.Element | nu
 export function DiffResult({ task }: { readonly task: Task }): JSX.Element {
   const styles = useStyles();
   const diff = useStore((state) => state.diff);
+  const shownFailure = diff.kind === "failure" ? openFailure(diff.error, "changes") : null;
 
   if (diff.kind === "idle" || diff.kind === "loading") {
     return (
       <div data-testid="diff-loading">
-        <Spinner size="small" label="Loading the Health model diff" />
+        <Spinner size="small" label="Loading the proposed changes" />
         <SkeletonItem size={72} />
       </div>
     );
@@ -175,10 +182,14 @@ export function DiffResult({ task }: { readonly task: Task }): JSX.Element {
   if (diff.kind === "failure") {
     return (
       <MessageBar intent="error" role="alert" data-testid="diff-error">
-        <MessageBarBody>{diff.error.message}</MessageBarBody>
+        <MessageBarBody>
+          <MessageBarTitle>{shownFailure?.title}</MessageBarTitle>
+          {shownFailure?.message}
+          <TechnicalLine text={shownFailure?.technical ?? null} />
+        </MessageBarBody>
         <MessageBarActions>
           <Button size="small" onClick={() => void actions.openTask(task.seq)}>
-            Retry
+            Try again
           </Button>
         </MessageBarActions>
       </MessageBar>
@@ -196,11 +207,12 @@ export function DiffResult({ task }: { readonly task: Task }): JSX.Element {
           {...(proposes ? { tabIndex: 0, role: "region", "aria-label": "Summary and findings" } : {})}
         >
           <Text as="p" data-testid="diff-summary">
-            {view.summary}
+            <AnswerText text={view.summary} />
           </Text>
           <Findings view={view} />
           <VerificationSummary view={view} />
         </div>
+        <HowSure confidence={task.result?.kind === "diff" ? task.result.confidence : undefined} testId="diff-confidence" />
         <VerificationRows view={view} />
         {proposes ? <SelectionBar view={view} /> : null}
         {proposes ? <ApplyResult view={view} /> : null}

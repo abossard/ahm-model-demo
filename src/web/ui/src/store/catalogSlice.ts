@@ -26,7 +26,7 @@ export const catalogSlice: StateCreator<Store, [], [], CatalogState & CatalogAct
 
   loadModelCatalog: async (search = window.location.search) => {
     set({ catalog: LOADING });
-    const catalog = await settle(api.fetchModelCatalog(), "The health models could not be listed.");
+    const catalog = await settle(api.fetchModelCatalog(), "The health models could not be loaded.");
     if (catalog.kind !== "success") {
       set({ catalog, unavailableSelection: null });
       return;
@@ -47,6 +47,7 @@ export const catalogSlice: StateCreator<Store, [], [], CatalogState & CatalogAct
       detail: IDLE,
       report: IDLE,
       collapsed: [],
+      openChips: [],
       highlightedName: null,
       focusNames: [],
       focusSeq: 0,

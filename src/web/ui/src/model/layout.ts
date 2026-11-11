@@ -1,6 +1,7 @@
 import dagre from "@dagrejs/dagre";
 import type { Entity, Relationship } from "./types";
 import { arrange, type ArrangeDirection } from "./arrange";
+import { type CustomOrder } from "./customOrder";
 import { elkLayout } from "./layoutElk";
 import { createForceLayoutSession, forceLayout } from "./layoutForce";
 import type { LayoutFlow } from "./edgeRouting";
@@ -19,6 +20,11 @@ export interface GraphLayout {
   readonly positions: ReadonlyMap<string, Point>;
   readonly width: number;
   readonly height: number;
+  /**
+   * Entity names per rank in reading order, for layouts that have ranks and were asked to be
+   * arranged: what a viewer reorders by dragging.
+   */
+  readonly ranks?: readonly (readonly string[])[];
 }
 
 export type SizeOf = (entity: Entity) => NodeSize;
@@ -163,20 +169,30 @@ export interface LiveLayoutSession {
   dispose: () => void;
 }
 
+export interface LayoutOptions {
+  /**
+   * Ask the hierarchy layouts for the arrangement with short connections; the other layouts have
+   * their own idea of order and ignore it.
+   */
+  readonly shortest?: boolean;
+  /**
+   * An order a viewer gave by dragging. A layout keeps what it can of it: ranks for the hierarchy
+   * and ELK layered, places for ELK radial and the force layout. An order of the other kind, or
+   * for entities that are gone, changes nothing. Hierarchy layouts take it as `shortest`.
+   */
+  readonly custom?: CustomOrder | null;
+}
+
 export interface LayoutEngine {
   readonly id: LayoutId;
   readonly label: string;
   readonly rankAxis: RankAxis;
   readonly flow: LayoutFlow;
-  /**
-   * `shortest` asks the hierarchy layouts for the arrangement with short connections; the other
-   * layouts have their own idea of order and ignore it.
-   */
   readonly run: (
     entities: readonly Entity[],
     relationships: readonly Relationship[],
     sizeOf: SizeOf,
-    shortest?: boolean,
+    options?: LayoutOptions,
   ) => Promise<GraphLayout>;
   readonly startLive?: (callbacks: {
     readonly onFrame: (layout: GraphLayout) => void;
@@ -264,10 +280,19 @@ function arrangedLayout(
   relationships: readonly Relationship[],
   sizeOf: SizeOf,
   direction: ArrangeDirection,
+  custom: CustomOrder | null | undefined,
 ): GraphLayout {
   const nodes = entities.map((entity) => ({ name: entity.name, ...sizeOf(entity) }));
-  const { positions, width, height } = arrange(nodes, relationships, direction);
-  return { positions, width, height };
+  const { positions, width, height, ranks } = arrange(nodes, relationships, direction, custom?.kind === "ranks" ? { order: custom.ranks } : {});
+  return { positions, width, height, ranks };
+}
+
+/** Keeps the places a viewer gave: every entity the order knows stands where it says, the others where the layout put them. */
+function withSlots(layout: GraphLayout, custom: CustomOrder | null | undefined, sizeOf: SizeOf, entities: readonly Entity[]): GraphLayout {
+  if (custom?.kind !== "slots") return layout;
+  const sizes = new Map(entities.map((entity) => [entity.name, sizeOf(entity)] as const));
+  const known = new Map(Object.entries(custom.slots).filter(([name]) => layout.positions.has(name)));
+  return known.size === 0 ? layout : anchorLayout(layout, known, sizes);
 }
 
 function dagreEngine(id: LayoutId, label: string, rankdir: RankDir): LayoutEngine {
@@ -276,10 +301,10 @@ function dagreEngine(id: LayoutId, label: string, rankdir: RankDir): LayoutEngin
     label,
     rankAxis: rankdir === "TB" || rankdir === "BT" ? "x" : "y",
     flow: rankdir.toLowerCase() as LayoutFlow,
-    run: (entities, relationships, sizeOf, shortest = false) =>
+    run: (entities, relationships, sizeOf, options = {}) =>
       Promise.resolve(
-        shortest
-          ? arrangedLayout(entities, relationships, sizeOf, rankdir.toLowerCase() as ArrangeDirection)
+        options.shortest || options.custom?.kind === "ranks"
+          ? arrangedLayout(entities, relationships, sizeOf, rankdir.toLowerCase() as ArrangeDirection, options.custom)
           : dagreLayout(entities, relationships, sizeOf, rankdir),
       ),
   };
@@ -295,21 +320,24 @@ export const LAYOUT_CHOICES: readonly LayoutEngine[] = [
     label: "ELK layered",
     rankAxis: "x",
     flow: "tb",
-    run: (entities, relationships, sizeOf) => elkLayout(entities, relationships, sizeOf, "layered"),
+    run: (entities, relationships, sizeOf, options = {}) =>
+      elkLayout(entities, relationships, sizeOf, "layered", options.custom?.kind === "ranks" ? options.custom.ranks.flat() : undefined),
   },
   {
     id: "elk-radial",
     label: "ELK radial",
     rankAxis: null,
     flow: "free",
-    run: (entities, relationships, sizeOf) => elkLayout(entities, relationships, sizeOf, "radial"),
+    run: async (entities, relationships, sizeOf, options = {}) =>
+      withSlots(await elkLayout(entities, relationships, sizeOf, "radial"), options.custom, sizeOf, entities),
   },
   {
     id: "d3-force",
     label: "Force directed",
     rankAxis: null,
     flow: "free",
-    run: (entities, relationships, sizeOf) => forceLayout(entities, relationships, sizeOf),
+    run: async (entities, relationships, sizeOf, options = {}) =>
+      withSlots(await forceLayout(entities, relationships, sizeOf), options.custom, sizeOf, entities),
   },
   {
     id: "d3-force-adaptive",

@@ -10,32 +10,16 @@ import {
   PopoverTrigger,
   Radio,
   RadioGroup,
-  Select,
-  ToggleButton,
-  Tooltip,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import {
-  ArrowSortDown20Regular,
-  ArrowSortUp20Regular,
-  Filter20Regular,
-  Search20Regular,
-} from "@fluentui/react-icons";
-import {
-  CONNECTION_POLICY_CHOICES,
-  EDGE_STYLE_CHOICES,
-  type ConnectionPolicy,
-  type EdgeStyle,
-} from "../model/edgeRouting";
-import { visibleGraph } from "../model/collapse";
-import { LAYOUT_CHOICES, type LayoutId } from "../model/layout";
-import { SORT_CHOICES, type SortKey } from "../model/ordering";
+import { Filter20Regular, Search20Regular } from "@fluentui/react-icons";
 import { tokensFor } from "../model/palette";
 import type { Entity, Relationship } from "../model/types";
+import { viewDefinition } from "../views/registry";
 import { actions, useStore } from "../store/store";
 import type { ExcludedEntityMode, HealthFilterState } from "../store/uiSlice";
-import { useInlineField } from "./inlineField";
+import { ViewSwitch } from "./ViewSwitch";
 
 const HEALTH_STATES: readonly HealthFilterState[] = ["Healthy", "Degraded", "Unhealthy", "Unknown"];
 
@@ -107,13 +91,13 @@ function HealthFilter(): JSX.Element {
     const next = selectedHealth.includes(state)
       ? selectedHealth.filter((item) => item !== state)
       : [...selectedHealth, state];
-    actions.announce(`Health filter updated: ${next.length > 0 ? next.join(", ") : "none selected"}.`);
+    actions.announce(next.length > 0 ? `Showing ${next.join(", ")} entities.` : "Showing no entities. Pick a state to see them.");
   };
 
   const setMode = (mode: ExcludedEntityMode): void => {
     actions.setExcludedEntityMode(mode);
     actions.announce(
-      mode === "hide" ? "Excluded health states are hidden." : "Excluded health states are gray dots.",
+      mode === "hide" ? "Entities that do not match are hidden." : "Entities that do not match are shown as gray dots.",
     );
   };
 
@@ -131,13 +115,13 @@ function HealthFilter(): JSX.Element {
           aria-expanded={open}
           aria-controls={popupId}
         >
-          Health
+          Filter by state
         </Button>
       </PopoverTrigger>
       <PopoverSurface id={popupId} className={styles.surface} data-testid="health-filter-popup">
         <div role="group" aria-labelledby={stateLegendId} className={styles.group}>
           <Label id={stateLegendId} size="small">
-            Health state
+            Show entities that are
           </Label>
           {HEALTH_STATES.map((state) => (
             <Checkbox
@@ -158,12 +142,12 @@ function HealthFilter(): JSX.Element {
             />
           ))}
         </div>
-        <Field label="Not selected entities" size="small" className={styles.groupDivider}>
+        <Field label="Entities that do not match" size="small" className={styles.groupDivider}>
           <RadioGroup
             value={excludedEntityMode}
             onChange={(_, data) => setMode(data.value as ExcludedEntityMode)}
           >
-            <Radio value="hide" label="Hide with edges" />
+            <Radio value="hide" label="Hide with their lines" />
             <Radio value="dot" label="Gray dot" />
           </RadioGroup>
         </Field>
@@ -179,108 +163,13 @@ interface GraphToolbarProps {
 
 export function GraphToolbar({ entities, relationships }: GraphToolbarProps): JSX.Element {
   const styles = useStyles();
-  const inlineField = useInlineField();
-  const layoutId = useStore((state) => state.layoutId);
-  const sortKey = useStore((state) => state.sortKey);
-  const sortReversed = useStore((state) => state.sortReversed);
-  const edgeStyle = useStore((state) => state.edgeStyle);
-  const connectionPolicy = useStore((state) => state.connectionPolicy);
-
-  const onLayout = (next: LayoutId): void => {
-    const engine = LAYOUT_CHOICES.find((item) => item.id === next);
-    const { collapsed, selectedHealth, excludedEntityMode } = useStore.getState();
-    const visible = visibleGraph(entities, relationships, new Set(collapsed), {
-      selectedHealth: new Set(selectedHealth),
-      excludedEntityMode,
-    });
-    actions.setLayout(next);
-    actions.announce(`Layout changed to ${engine?.label ?? next}. ${visible.entities.length} nodes visible.`);
-  };
-
-  const onEdgeStyle = (next: EdgeStyle): void => {
-    actions.setEdgeStyle(next);
-    actions.announce(
-      `Edge style changed to ${EDGE_STYLE_CHOICES.find((item) => item.id === next)?.label ?? next}.`,
-    );
-  };
-
-  const onConnectionPolicy = (next: ConnectionPolicy): void => {
-    actions.setConnectionPolicy(next);
-    actions.announce(
-      `Connection points changed to ${
-        CONNECTION_POLICY_CHOICES.find((item) => item.id === next)?.label ?? next
-      }.`,
-    );
-  };
+  const view = useStore((state) => state.view);
+  const Controls = viewDefinition(view).Controls;
 
   return (
-    <div className={styles.root} data-testid="graph-toolbar" role="group" aria-label="Graph controls">
-      <Field label="Layout" orientation="horizontal" size="small" className={inlineField.root}>
-        <Select
-          size="small"
-          data-testid="layout-picker"
-          value={layoutId}
-          onChange={(_, data) => onLayout(data.value as LayoutId)}
-        >
-          {LAYOUT_CHOICES.map((engine) => (
-            <option key={engine.id} value={engine.id}>
-              {engine.label}
-            </option>
-          ))}
-        </Select>
-      </Field>
-      <Field label="Edge style" orientation="horizontal" size="small" className={inlineField.root}>
-        <Select
-          size="small"
-          data-testid="edge-style-picker"
-          value={edgeStyle}
-          onChange={(_, data) => onEdgeStyle(data.value as EdgeStyle)}
-        >
-          {EDGE_STYLE_CHOICES.map((choice) => (
-            <option key={choice.id} value={choice.id}>
-              {choice.label}
-            </option>
-          ))}
-        </Select>
-      </Field>
-      <Field label="Connection points" orientation="horizontal" size="small" className={inlineField.root}>
-        <Select
-          size="small"
-          data-testid="connection-policy-picker"
-          value={connectionPolicy}
-          onChange={(_, data) => onConnectionPolicy(data.value as ConnectionPolicy)}
-        >
-          {CONNECTION_POLICY_CHOICES.map((choice) => (
-            <option key={choice.id} value={choice.id}>
-              {choice.label}
-            </option>
-          ))}
-        </Select>
-      </Field>
-      <Field label="Order" orientation="horizontal" size="small" className={inlineField.root}>
-        <Select
-          size="small"
-          data-testid="sort-key"
-          value={sortKey}
-          onChange={(_, data) => actions.setSortKey(data.value as SortKey)}
-        >
-          {SORT_CHOICES.map((choice) => (
-            <option key={choice.key} value={choice.key}>
-              {choice.label}
-            </option>
-          ))}
-        </Select>
-      </Field>
-      <Tooltip content={sortReversed ? "Sort descending" : "Sort ascending"} relationship="label">
-        <ToggleButton
-          size="small"
-          disabled={sortKey === "shortest"}
-          checked={sortReversed}
-          data-testid="sort-reverse"
-          icon={sortReversed ? <ArrowSortDown20Regular /> : <ArrowSortUp20Regular />}
-          onClick={() => actions.toggleSortDirection()}
-        />
-      </Tooltip>
+    <div className={styles.root} data-testid="graph-toolbar" role="group" aria-label="View controls">
+      <ViewSwitch />
+      {Controls ? <Controls entities={entities} relationships={relationships} /> : null}
       <Button
         size="small"
         icon={<Search20Regular />}

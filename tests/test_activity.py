@@ -351,6 +351,37 @@ class ServerErrorTests(unittest.TestCase):
         self.assertLessEqual(len(activity.SERVER_ERROR_MESSAGE), 300)
 
 
+class BusyTests(unittest.TestCase):
+    def test_a_run_is_busy_only_when_the_service_failed_with_server_error_before_anything_ran(self):
+        server_error = {"code": "server_error", "message": "An internal server error occurred."}
+        failed = ("response.failed", {"response": {"error": server_error}})
+        error = ("error", server_error)
+        created = ("response.created", {"response": {"id": "r1"}})
+        progress = ("response.in_progress", {"response": {"id": "r1"}})
+        cases = [
+            ("a failure and nothing else", [failed], True),
+            ("a failure after the start", [created, failed], True),
+            ("a failure after the start and its progress", [created, progress, failed], True),
+            ("an error event", [created, error], True),
+            ("two failure events", [created, error, failed], True),
+            ("a text arrived", [created, *message("m1", "Looking.")] + [failed], False),
+            ("a text delta arrived", [created, ("response.output_text.delta", {"item_id": "m1", "delta": "Lo"}), failed], False),
+            ("a tool call arrived", [created, *call("c1", "monitor_healthmodels_get", {"model": "m"}), failed], False),
+            ("a tool call started", [created, ("response.output_item.added", {"item": {"id": "fc", "type": "function_call", "call_id": "c", "name": "x", "arguments": ""}}), failed], False),
+            ("an event nobody maps arrived", [created, ("response.content_part.added", {"part": {}}), failed], False),
+            ("a reasoning item arrived", [created, ("response.output_item.added", {"item": {"id": "r", "type": "reasoning"}}), failed], False),
+            ("another failure code", [created, ("response.failed", {"response": {"error": {"code": "denied", "message": "no"}}})], False),
+            ("a failure without a code", [created, ("response.failed", {"response": {"error": {"message": "no"}}})], False),
+            ("no failure", [created, progress], False),
+            ("a completed run", [created, ("response.completed", {"response": {"id": "r1"}})], False),
+        ]
+        for label, events, busy in cases:
+            with self.subTest(label=label):
+                state, _ = run(events)
+
+                self.assertIs(activity.is_busy(state), busy)
+
+
 class LateFailureTests(unittest.TestCase):
     def test_a_failure_after_the_accepted_result_is_a_status_and_before_it_an_error(self):
         accepted = call("c1", "submit_result", {"result": diff("a")}, ACCEPTED)
@@ -396,6 +427,9 @@ class ToolTitleTests(unittest.TestCase):
             ("monitor_workspace_log_query", {"query": "secret", "table": "AppRequests"}, "Run log query on AppRequests"),
             ("monitor_workspace_log_query", {}, "Run log query"),
             ("group_resource_list", {"resource-group": "rg-x"}, "List resources in rg-x"),
+            ("monitor_activitylog_list", {"resource-name": "ca-x"}, "List activity log"),
+            ("clone_repository", {"url": "https://github.com/owner/repo"}, "Clone repository owner/repo"),
+            ("clone_repository", {}, "Clone repository"),
             ("some_new_tool", {"a": 1}, "some_new_tool"),
             (None, {}, "tool"),
         ]
@@ -428,6 +462,71 @@ class SubmittedResultTests(unittest.TestCase):
         self.assertFalse(drafts[1]["payload"]["ok"])
         self.assertEqual(drafts[1]["payload"]["problems"], ["changes[0].name: too short", "changes: duplicate"])
         self.assertIn("rejected (2 problems)", drafts[1]["summary"])
+
+    def test_a_rejection_keeps_every_problem_within_the_count_and_size_bounds(self):
+        long = "x" * 300
+        many = [f"p{n}" for n in range(130)]
+        cases = [
+            ("one problem", ["only"], ["only"], 1),
+            ("two problems", ["a", "b"], ["a", "b"], 2),
+            ("none listed", [], [], 0),
+            ("none at all", None, [], 0),
+            ("a text instead of a list", "bad name", ["bad name"], 1),
+            ("as many as the limit", many[:50], many[:50], 50),
+            ("one over the limit", many[:51], [*many[:50], "1 more problems not shown"], 51),
+            ("far over the limit", many, [*many[:50], "80 more problems not shown"], 130),
+            ("things that are not text", [3, None, {"a": 1}], ["3", "None", "{'a': 1}"], 3),
+            ("a long problem is clipped", [long], [f"{'x' * 200}... [100 more characters]"], 1),
+        ]
+        for label, problems, shown, count in cases:
+            with self.subTest(label=label):
+                output = json.dumps({"status": "rejected", **({"problems": problems} if problems is not None else {})})
+
+                state, drafts = run(call("c1", "submit_result", {"result": diff("a")}, output))
+
+                self.assertEqual(drafts[1]["payload"]["problems"], shown)
+                self.assertTrue(drafts[1]["summary"].endswith(f"rejected ({count} {'problem' if count == 1 else 'problems'})"), drafts[1]["summary"])
+                self.assertEqual(activity.last_rejection(state), {"problems": shown, "count": count})
+
+    def test_the_problems_of_one_rejection_stop_at_the_total_size(self):
+        problems = [f"{n:03d} " + "y" * 196 for n in range(60)]
+        output = json.dumps({"status": "rejected", "problems": problems})
+
+        state, drafts = run(call("c1", "submit_result", {"result": diff("a")}, output))
+
+        shown = drafts[1]["payload"]["problems"]
+        kept = shown[:-1]
+        self.assertEqual(kept, problems[: len(kept)])
+        self.assertLessEqual(sum(len(p) for p in kept), 8 * 1024)
+        self.assertGreater(sum(len(p) for p in kept) + 200, 8 * 1024)
+        self.assertEqual(shown[-1], f"{60 - len(kept)} more problems not shown")
+        self.assertIn("rejected (60 problems)", drafts[1]["summary"])
+        self.assertLessEqual(len(json.dumps(drafts[1])), 10 * 1024)
+
+    def test_the_problems_of_one_rejection_may_fill_the_total_size_exactly_and_no_more(self):
+        problems = ["a" * 200] * 40 + ["b" * 192] + ["c"]
+        output = json.dumps({"status": "rejected", "problems": problems})
+
+        _, drafts = run(call("c1", "submit_result", {"result": diff("a")}, output))
+
+        shown = drafts[1]["payload"]["problems"]
+        self.assertEqual(shown, [*problems[:41], "1 more problems not shown"])
+        self.assertEqual(sum(len(p) for p in shown[:-1]), 8 * 1024)
+
+    def test_the_last_rejection_is_the_one_remembered(self):
+        first = json.dumps({"status": "rejected", "problems": ["old one", "old two"]})
+        second = json.dumps({"status": "rejected", "problems": ["new one"]})
+        cases = [
+            ("nothing submitted", [], None),
+            ("one rejection", call("c1", "submit_result", {"result": diff("a")}, first), {"problems": ["old one", "old two"], "count": 2}),
+            ("two rejections", call("c1", "submit_result", {"result": diff("a")}, first) + call("c2", "submit_result", {"result": diff("b")}, second), {"problems": ["new one"], "count": 1}),
+            ("only an acceptance", call("c1", "submit_result", {"result": diff("a")}, ACCEPTED), None),
+        ]
+        for label, events, expected in cases:
+            with self.subTest(label=label):
+                state, _ = run(events)
+
+                self.assertEqual(activity.last_rejection(state), expected)
 
     def test_the_last_accepted_submission_wins(self):
         cases = [

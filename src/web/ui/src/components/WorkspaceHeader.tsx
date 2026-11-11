@@ -60,7 +60,7 @@ export function WorkspaceHeader({
         appearance="subtle"
         size="small"
         icon={<PanelLeftContract20Regular />}
-        aria-label="Close the Session workspace"
+        aria-label="Close the assistant panel"
         onClick={() => actions.setWorkspaceOpen(false)}
         data-testid="workspace-close"
       />

@@ -61,20 +61,23 @@ function ApplyDialog({
     <Dialog open={open} onOpenChange={(_, data) => (data.open ? undefined : onClose())}>
       <DialogSurface data-testid="apply-dialog">
         <DialogBody>
-          <DialogTitle>Apply to {view.target.name}?</DialogTitle>
+          <DialogTitle>Change the live model {view.target.name}?</DialogTitle>
           <DialogContent>
             <Text as="p">
-              Apply writes {plural(written.length)} to the live health model{" "}
+              This will write {plural(written.length)} to the health model{" "}
               <strong data-testid="apply-dialog-target">
                 {view.target.name} ({view.target.resourceGroup})
-              </strong>
-              . It cannot be undone from the app.
+              </strong>{" "}
+              in Azure, where it is live. The app cannot undo it.
             </Text>
-            <ul className={styles.names} aria-label="Changes Apply writes">
+            <Text as="p" size={200} className={styles.caption}>
+              What will be written:
+            </Text>
+            <ul className={styles.names} aria-label="Changes that will be written">
               {written.map((id) => (
                 <li key={id}>
                   {nameOf(id)}
-                  {needed.has(id) ? <span className={styles.needed}> (needed by a selected change)</span> : null}
+                  {needed.has(id) ? <span className={styles.needed}> (needed by a change you picked)</span> : null}
                 </li>
               ))}
             </ul>
@@ -109,7 +112,7 @@ export function SelectionBar({ view }: { readonly view: DiffView }): JSX.Element
   const preview = useMemo(() => previewSelection(view.changes, selected), [view, selected]);
   const nameOf = nameLookup(view);
   const blocked = !view.appliable
-    ? "This Health model diff cannot be applied."
+    ? "These changes cannot be applied."
     : selected.length === 0
       ? "Select the changes to apply."
       : null;
@@ -128,7 +131,7 @@ export function SelectionBar({ view }: { readonly view: DiffView }): JSX.Element
         </Button>
         <span className={styles.grow} />
         <Switch
-          label="Compare"
+          label="Compare now and after"
           checked={compare}
           onChange={(_, data) => actions.setCompare(data.checked)}
           data-testid="compare-toggle"
@@ -152,7 +155,7 @@ export function SelectionBar({ view }: { readonly view: DiffView }): JSX.Element
       </div>
       {preview.added.length > 0 ? (
         <Text className={styles.caption} data-testid="apply-added">
-          Added automatically because a selected change needs them: {preview.added.map(nameOf).join(", ")}.
+          Also included, because the changes you picked need them: {preview.added.map(nameOf).join(", ")}.
         </Text>
       ) : null}
       <ApplyDialog
@@ -183,7 +186,7 @@ function OutcomeSummary({ view, outcome }: { readonly view: DiffView; readonly o
     <MessageBar intent="warning" data-testid="apply-result" data-outcome="partial">
       <MessageBarBody>
         <MessageBarTitle>Partly applied</MessageBarTitle>
-        {outcome.written.length} of {outcome.expanded.length} changes written to {view.target.name}
+        {outcome.written.length} of {outcome.expanded.length} changes were written to {view.target.name}
         {outcome.written.length > 0 ? ` (${written})` : ""}.{" "}
         {outcome.failed ? `Apply stopped at ${nameOf(outcome.failed.changeId)}: ${outcome.failed.message}` : "Apply stopped early."}
       </MessageBarBody>
@@ -203,20 +206,17 @@ export function ApplyResult({ view }: { readonly view: DiffView }): JSX.Element 
     return (
       <MessageBar intent="error" data-testid="apply-result" data-outcome="base_changed">
         <MessageBarBody>
-          <MessageBarTitle>The model changed after this Review</MessageBarTitle>
-          This Health model diff was computed against an earlier Base model, so nothing was written. Start a new Review
-          to compare against the current model.
+          <MessageBarTitle>The model changed since these changes were proposed</MessageBarTitle>
+          They were worked out against an earlier version of the model, so nothing was written. Check the model again to
+          compare against the current one.
         </MessageBarBody>
         <MessageBarActions>
           <Button
             size="small"
-            onClick={() => {
-              void actions.openTask(null);
-              actions.prefillTask("review");
-            }}
+            onClick={() => void actions.rerunTask({ type: "review", target: view.target, instruction: "" })}
             data-testid="apply-new-review"
           >
-            Start a new Review
+            Check again
           </Button>
         </MessageBarActions>
       </MessageBar>
@@ -227,7 +227,7 @@ export function ApplyResult({ view }: { readonly view: DiffView }): JSX.Element 
   return (
     <MessageBar intent="error" data-testid="apply-result" data-outcome={code}>
       <MessageBarBody>
-        <MessageBarTitle>{refused?.title ?? "Nothing was applied"}</MessageBarTitle>
+        <MessageBarTitle>{refused?.title ?? "Nothing was changed"}</MessageBarTitle>
         {refused?.message ?? message}
       </MessageBarBody>
     </MessageBar>

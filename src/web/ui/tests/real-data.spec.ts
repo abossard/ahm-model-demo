@@ -1,11 +1,12 @@
 import { expect, test } from "@playwright/test";
 import { DISCOVERED_SIGNALS, healthModel, installStubs, realShapeModel } from "./fixture";
+import { openView } from "./views";
 
 // Shapes the deployed app served that the first fixtures never had.
 
 test("a card row keeps a long fraction on one line, rounded, with the raw value on hover", async ({ page }) => {
   await installStubs(page, { healthModelFails: false, model: realShapeModel });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
 
   const rows = await page
@@ -40,12 +41,13 @@ test("a card row keeps a long fraction on one line, rounded, with the raw value 
 
 test("the signal history heading and its empty note sit on separate lines", async ({ page }) => {
   await installStubs(page, { healthModelFails: false, model: healthModel });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
   await page.locator('.react-flow__node[data-id="svc-e"] .entity-node').click();
+  await page.getByTestId("report-open").click();
 
   const heading = page.locator("#signal-heading");
-  const note = page.getByText("No signal history yet.");
+  const note = page.getByText("No history for this signal yet.");
   await expect(note).toBeVisible();
   const [head, text] = await Promise.all([heading.boundingBox(), note.boundingBox()]);
   expect(text!.y).toBeGreaterThanOrEqual(head!.y + head!.height - 1);
@@ -53,7 +55,7 @@ test("the signal history heading and its empty note sit on separate lines", asyn
 
 test("a reload that fails keeps the last observation on screen and says so", async ({ page }) => {
   await installStubs(page, { healthModelFails: false, model: realShapeModel });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
   const nodes = realShapeModel.entities.length;
   await expect(page.locator(".react-flow__node")).toHaveCount(nodes);
@@ -69,7 +71,7 @@ test("a reload that fails keeps the last observation on screen and says so", asy
 
   await expect(page.getByTestId("status-error")).toContainText("Health model not refreshed");
   await expect(page.getByTestId("status-error-message")).toHaveText("Azure is temporarily busy. Try again.");
-  await expect(page.getByTestId("status-last-observed")).toContainText(`Last successful observation ${realShapeModel.observedAt}`);
+  await expect(page.getByTestId("status-last-observed")).toHaveText(/^Last updated 30 Jul \d{2}:05:00$/);
   await expect(page.locator(".react-flow__node")).toHaveCount(nodes);
   await expect(page.getByTestId("model-name")).toHaveText("hm-real");
 
@@ -83,7 +85,7 @@ test("a model with no entity says so instead of showing an unexplained blank can
   page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
   page.on("pageerror", (error) => errors.push(String(error)));
   await installStubs(page, { healthModelFails: false, model: { ...healthModel, entities: [], relationships: [] } });
-  await page.goto("/");
+  await openView(page, "zoom");
 
   await expect(page.getByTestId("graph-empty")).toHaveText("This health model has no entities.");
   await expect(page.locator(".react-flow__node")).toHaveCount(0);

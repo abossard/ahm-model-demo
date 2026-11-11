@@ -14,6 +14,7 @@ import activity
 import model_diff
 from config import (
     BROKER_CALLS_PER_MINUTE,
+    BUSY_RETRY_SECONDS,
     FINAL_SAVE_DELAYS,
     INTERRUPTED_GRACE_SECONDS,
     MAX_CONCURRENT_RUNS,
@@ -36,7 +37,7 @@ HEADLINES = {
 }
 INTERRUPTED_MESSAGE = "The task was interrupted before it finished."
 SIGN_IN_AGAIN = "Your sign-in no longer allows this task to reach Azure. Sign in again and start the task again."
-CONSENT_MISSING = "The app has no consent to reach Azure for you yet. An administrator must grant admin consent for the app registrations."
+CONSENT_MISSING = "The app has not been approved to reach Azure for you yet. An administrator of your directory has to approve it for the organization."
 
 
 class TaskRunning(Exception):
@@ -56,16 +57,17 @@ class TooManySubscribers(Exception):
 
 
 class TaskFailure(Exception):
-    def __init__(self, code, message, reported=False):
+    def __init__(self, code, message, reported=False, problems=None):
         super().__init__(message)
         self.code = code
         self.message = message
         self.reported = reported
+        self.problems = problems
 
 
 class Run:
     def __init__(self, caller):
-        self.owner = caller.oid
+        self.owner = caller.owner
         self.caller = caller
         self.nonce = secrets.token_urlsafe(NONCE_BYTES)
         self.health = None
@@ -101,6 +103,24 @@ def agent_message(task, base, nonce):
     return f"{HEADLINES[task['type']]}\n{json.dumps(envelope, ensure_ascii=False)}"
 
 
+def hold_failures(state, held, drafts):
+    """Splits new events into those to show now and those kept back, from the first failure on, while the run can be retried."""
+    if not activity.is_busy(state):
+        return [], [*held, *drafts]
+    kept, ready = list(held), []
+    for draft in drafts:
+        (kept if kept or draft["kind"] == "error" else ready).append(draft)
+    return kept, ready
+
+
+def rejected_message(rejection):
+    more = rejection["count"] - 1
+    return (
+        "The agent got no result accepted. The last one was rejected: "
+        f"{activity.clip(rejection['problems'][0], 120)}" + (f" (and {more} more)" if more > 0 else "")
+    )
+
+
 def age_seconds(task):
     try:
         return (datetime.now(timezone.utc) - datetime.fromisoformat(task["createdAt"])).total_seconds()
@@ -130,10 +150,10 @@ class TaskRunner:
         return (owner, sid) in self._running
 
     async def start(self, caller, sid, fields):
-        key = (caller.oid, sid)
+        key = (caller.owner, sid)
         if key in self._running:
             raise TaskRunning(sid)
-        if any(run.owner == caller.oid for run in self._running.values()):
+        if any(run.owner == caller.owner for run in self._running.values()):
             raise UserBusy(sid)
         if len(self._running) >= MAX_CONCURRENT_RUNS:
             raise AgentsBusy()
@@ -141,7 +161,7 @@ class TaskRunner:
         run.health = self._health.as_user(caller)
         self._running[key] = run
         try:
-            run.task = await self._store.create_task(caller.oid, sid, {**fields, "status": "running"})
+            run.task = await self._store.create_task(caller.owner, sid, {**fields, "status": "running"})
         except BaseException:
             self._running.pop(key, None)
             run.close()
@@ -249,7 +269,9 @@ class TaskRunner:
                 async with asyncio.timeout(self._timeout):
                     await self._execute(sid, run)
             except TaskFailure as failure:
-                await self._fail(sid, run, span, failure.code, failure.message, failure.reported)
+                await self._fail(
+                    sid, run, span, failure.code, failure.message, failure.reported, failure.problems
+                )
             except asyncio.CancelledError:
                 await self._fail(
                     sid, run, span, "interrupted", "The web app stopped while the task was running."
@@ -288,23 +310,17 @@ class TaskRunner:
                     raise
                 await asyncio.sleep(delay)
 
-    async def _fail(self, sid, run, span, code, message, reported=False):
+    async def _fail(self, sid, run, span, code, message, reported=False, problems=None):
         span.set_status(Status(StatusCode.ERROR, code))
         shown = activity.safe_message(message)
         if shown != message:
             logger.warning("task failure message shortened code=%s message=%s", code, activity.redact(message))
         message = shown
+        error = {"code": code, "message": message, **({"problems": problems} if problems else {})}
         try:
             if not reported:
-                await self._emit(
-                    sid, run, activity.draft("error", message, {"code": code, "message": message})
-                )
-            run.task = {
-                **run.task,
-                "status": "failed",
-                "error": {"code": code, "message": message},
-                "finishedAt": utc_now(),
-            }
+                await self._emit(sid, run, activity.draft("error", message, error))
+            run.task = {**run.task, "status": "failed", "error": error, "finishedAt": utc_now()}
             await self._save_final(sid, run)
         except Exception as error:
             logger.error("could not record task failure error_type=%s", type(error).__name__)
@@ -367,16 +383,40 @@ class TaskRunner:
             await self._emit(sid, run, draft)
         return state
 
+    async def _wait_out_busy(self, sid, run, attempt):
+        delay = BUSY_RETRY_SECONDS[attempt]
+        logger.warning("agent service busy before any event, trying again attempt=%s wait=%s", attempt + 1, delay)
+        await self._emit(
+            sid,
+            run,
+            activity.draft(
+                "status",
+                "The assistant is busy, trying again",
+                {"attempt": attempt + 1, "of": len(BUSY_RETRY_SECONDS), "waitSeconds": delay},
+            ),
+        )
+        await asyncio.sleep(delay)
+
     async def _respond(self, sid, run, conversation_id, message):
-        for attempt in (1, 2):
-            state = activity.new_state()
+        restarted, busy = False, 0
+        while True:
+            state, held = activity.new_state(), []
             try:
                 async for event in self._agent.stream_response(conversation_id, message):
                     state, drafts = activity.reduce_event(state, event.name, event.data)
-                    for draft in drafts:
+                    held, ready = hold_failures(state, held, drafts)
+                    for draft in ready:
                         await self._emit(sid, run, draft)
+                if held and busy < len(BUSY_RETRY_SECONDS):
+                    await self._wait_out_busy(sid, run, busy)
+                    busy += 1
+                    continue
+                for draft in held:
+                    await self._emit(sid, run, draft)
                 return await self._flush(sid, run, state)
             except (ConversationNotFound, AgentError) as error:
+                for draft in held:
+                    await self._emit(sid, run, draft)
                 if activity.accepted_result(state) is not None:
                     code = getattr(error, "code", "conversation_not_found")
                     detail = getattr(error, "message", "The agent conversation was not found.")
@@ -392,10 +432,11 @@ class TaskRunner:
                     return await self._flush(sid, run, state)
                 if isinstance(error, AgentError):
                     raise TaskFailure(error.code, error.message) from error
-                if attempt == 2:
+                if restarted:
                     raise TaskFailure(
                         "conversation_lost", "The agent conversation could not be restored."
                     ) from error
+                restarted = True
                 conversation_id = await self._new_conversation(run.owner, sid)
                 await self._emit(
                     sid, run, activity.draft("status", "Conversation expired; started a new one")
@@ -409,6 +450,9 @@ class TaskRunner:
         if result is None:
             if failure:
                 raise TaskFailure("agent_failed", failure["message"], reported=True)
+            rejection = activity.last_rejection(state)
+            if rejection and rejection["problems"]:
+                raise TaskFailure("no_result", rejected_message(rejection), problems=rejection["problems"])
             raise TaskFailure(
                 "no_result", "The agent finished without submitting an accepted result."
             )
@@ -419,14 +463,15 @@ class TaskRunner:
             )
         problems = model_diff.validate_result(result, base, run.task["target"])
         if problems:
+            shown = activity.clip_problems(problems, each=None)
             more = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
             message = f"The result is not valid: {problems[0]}{more}"
             await self._emit(
                 sid,
                 run,
-                activity.draft("error", message, {"code": "invalid_result", "problems": problems}),
+                activity.draft("error", message, {"code": "invalid_result", "problems": shown}),
             )
-            raise TaskFailure("invalid_result", message, reported=True)
+            raise TaskFailure("invalid_result", message, reported=True, problems=shown)
         await self._emit(sid, run, activity.draft("status", "Result verified"))
         run.task = {**run.task, "status": "done", "result": result, "finishedAt": utc_now()}
         await self._save_final(sid, run)

@@ -9,11 +9,13 @@ import {
   paymentsHealthModel,
   reportResponse,
 } from "./fixture";
+import { openView } from "./views";
 
 const STATE_PALETTE: Readonly<
   Record<string, { readonly border: string; readonly fill: string; readonly word: string }>
 > = {
-  "svc-a": { border: "rgb(160, 216, 160)", fill: "rgb(242, 248, 242)", word: "Healthy" },
+  // A Healthy card is neutral; only the states that need attention are tinted.
+  "svc-a": { border: "rgb(209, 209, 209)", fill: "rgb(255, 255, 255)", word: "Healthy" },
   "svc-b": { border: "rgb(219, 117, 0)", fill: "rgb(251, 242, 231)", word: "Degraded" },
   "svc-c": { border: "rgb(186, 13, 22)", fill: "rgb(250, 236, 235)", word: "Unhealthy" },
   "svc-d": { border: "rgb(200, 198, 196)", fill: "rgb(246, 246, 245)", word: "Unknown" },
@@ -36,7 +38,7 @@ function validRelationships(): readonly { parent: string; child: string; label: 
 
 async function bootTopology(page: Page): Promise<void> {
   await installStubs(page, { healthModelFails: false });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
 }
 
@@ -52,7 +54,7 @@ test("shell is one document with a single script and no server-rendered state", 
     expect(html, `shell must not server-render ${entity.displayName}`).not.toContain(entity.displayName);
   }
 
-  await page.goto("/");
+  await openView(page, "zoom");
   const domScriptSrc = await page.evaluate(() => document.querySelectorAll("script[src]").length);
   expect(domScriptSrc).toBe(1);
 });
@@ -130,7 +132,7 @@ test("AC6 — activating a node opens the detail panel by pointer and keyboard",
     pointerParams.get("resourceGroup"),
     pointerParams.get("subscription"),
   ]).toEqual(["hm-demo", "rg-demo", SUBSCRIPTION_A]);
-  await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await expect(page.getByTestId("entity-details")).toBeVisible();
   await expect(page.getByTestId("entity-name")).toHaveText("Service A");
 
   const keyboardRequest = page.waitForRequest(
@@ -205,9 +207,7 @@ test("cards of different heights on the same rank are top aligned", async ({ pag
 });
 
 test("report submission posts the exact body and shows the receipt", async ({ page }) => {
-  await bootTopology(page);
-  await page.locator(`.react-flow__node[data-id="svc-a"] .entity-node`).click();
-  await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await openReportForm(page);
 
   await page.selectOption("#report-state", { label: "Degraded" });
   await page.selectOption("#report-value", { label: "0.5" });
@@ -218,7 +218,7 @@ test("report submission posts the exact body and shows the receipt", async ({ pa
     (req) =>
       new URL(req.url()).pathname === "/api/entities/svc-a/health-reports" && req.method() === "POST",
   );
-  await page.getByRole("button", { name: "Submit report" }).click();
+  await page.getByRole("button", { name: "Send report" }).click();
   const posted = await postRequest;
   expect([...new URL(posted.url()).searchParams]).toEqual([
     ["model", "hm-demo"],
@@ -240,9 +240,7 @@ test("report submission posts the exact body and shows the receipt", async ({ pa
 });
 
 test("empty custom reason blocks submission and announces the error", async ({ page }) => {
-  await bootTopology(page);
-  await page.locator(`.react-flow__node[data-id="svc-a"] .entity-node`).click();
-  await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await openReportForm(page);
 
   let postCount = 0;
   page.on("request", (req) => {
@@ -250,7 +248,7 @@ test("empty custom reason blocks submission and announces the error", async ({ p
   });
 
   await page.selectOption("#report-reason", { label: "Custom reason" });
-  await page.getByRole("button", { name: "Submit report" }).click();
+  await page.getByRole("button", { name: "Send report" }).click();
 
   const textarea = page.locator("#report-custom-reason");
   const describedBy = await textarea.getAttribute("aria-describedby");
@@ -266,13 +264,13 @@ test("empty custom reason blocks submission and announces the error", async ({ p
 test("health-model failure shows error and retry recovers the topology", async ({ page }) => {
   const state = { healthModelFails: true };
   await installStubs(page, state);
-  await page.goto("/");
+  await openView(page, "zoom");
 
   await expect(page.getByTestId("status-error")).toBeVisible();
   await expect(page.getByTestId("status-error-message")).toHaveText(
     "The health model service is unavailable.",
   );
-  await expect(page.getByTestId("status-last-observed")).toHaveText("No successful observation yet");
+  await expect(page.getByTestId("status-last-observed")).toHaveText("Not updated yet");
 
   state.healthModelFails = false;
   await page.getByTestId("status-retry").click();
@@ -356,7 +354,7 @@ test("model picker renders a capped, filterable list for a few hundred models", 
       default: { name: "hm-000", resourceGroup: "rg-demo", subscriptionId: SUBSCRIPTION_A },
     },
   });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
 
   const search = page.getByTestId("model-picker-search");
@@ -373,7 +371,7 @@ test("model picker renders a capped, filterable list for a few hundred models", 
 
 test("deep-linked unavailable selection shows a fallback notice", async ({ page }) => {
   await installStubs(page, {});
-  await page.goto(`/?model=hm-missing&resourceGroup=rg-missing&subscription=${SUBSCRIPTION_A}`);
+  await openView(page, "zoom", `/?model=hm-missing&resourceGroup=rg-missing&subscription=${SUBSCRIPTION_A}`);
   await expect(page.getByTestId("model-picker")).toHaveValue(SELECTED_KEY);
   await expect(page.getByTestId("model-picker-unavailable-selection")).toContainText(
     "Requested hm-missing (rg-missing) is unavailable.",
@@ -382,7 +380,7 @@ test("deep-linked unavailable selection shows a fallback notice", async ({ page 
 
 test("a deep link to the right model in the wrong subscription is unavailable", async ({ page }) => {
   await installStubs(page, {});
-  await page.goto(`/?model=hm-demo&resourceGroup=rg-demo&subscription=${SUBSCRIPTION_B}`);
+  await openView(page, "zoom", `/?model=hm-demo&resourceGroup=rg-demo&subscription=${SUBSCRIPTION_B}`);
   await expect(page.getByTestId("model-picker")).toHaveValue(SELECTED_KEY);
   await expect(page.getByTestId("model-picker-unavailable-selection")).toContainText(
     "Requested hm-demo (rg-demo) is unavailable.",
@@ -398,7 +396,7 @@ test("model picker keyboard navigation selects entries and does not break graph 
       "hm-payments": paymentsHealthModel,
     },
   });
-  await page.goto("/");
+  await openView(page, "zoom");
   const search = page.getByTestId("model-picker-search");
   await search.focus();
   await search.press("ArrowDown");
@@ -520,7 +518,9 @@ for (const theme of ["light", "dark"] as const) {
         .toBe(theme);
     }
     await page.locator(`.react-flow__node[data-id="svc-a"] .entity-node`).click();
-    await expect(page.getByTestId("entity-panel")).toBeVisible();
+    await expect(page.getByTestId("entity-details")).toBeVisible();
+    await page.getByTestId("report-open").click();
+    await expect(page.getByTestId("report-submit")).toBeVisible();
 
     const ratios = await page.evaluate(() => {
       const parse = (value: string): [number, number, number] => {
@@ -576,11 +576,11 @@ test("AC9 — choosing a model refetches it, closes the entity panel and redraws
     healthModelFails: false,
     modelsByName: { "hm-demo": healthModel, "hm-payments": paymentsHealthModel },
   });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
 
   await page.locator(`.react-flow__node[data-id="svc-a"] .entity-node`).click();
-  await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await expect(page.getByTestId("entity-details")).toBeVisible();
 
   const refetch = page.waitForRequest(
     (req) => req.url().includes("/api/health-model?") && req.url().includes("model=hm-payments"),
@@ -592,7 +592,7 @@ test("AC9 — choosing a model refetches it, closes the entity panel and redraws
   expect(url.searchParams.get("resourceGroup")).toBe("rg-demo");
   expect(url.searchParams.get("subscription")).toBe(SUBSCRIPTION_A);
 
-  await expect(page.getByTestId("entity-panel")).toHaveCount(0);
+  await expect(page.getByTestId("entity-details")).toHaveCount(0);
   await expect(page.getByTestId("model-name")).toHaveText(paymentsHealthModel.model.name);
   await expect(page.locator(".react-flow__node")).toHaveCount(paymentsHealthModel.entities.length);
 });
@@ -602,7 +602,7 @@ test("AC10 — the selected model round-trips through the URL on reload", async 
     healthModelFails: false,
     modelsByName: { "hm-demo": healthModel, "hm-payments": paymentsHealthModel },
   });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
   await page.getByTestId("model-picker-search").click();
   await page.getByRole("option", { name: "hm-payments (rg-demo)" }).click();
@@ -610,7 +610,7 @@ test("AC10 — the selected model round-trips through the URL on reload", async 
 
   const shared = page.url();
   expect(new URL(shared).search).toBe(
-    `?model=hm-payments&resourceGroup=rg-demo&subscription=${SUBSCRIPTION_A}`,
+    `?model=hm-payments&resourceGroup=rg-demo&subscription=${SUBSCRIPTION_A}&view=zoom`,
   );
 
   const requests: string[] = [];
@@ -640,7 +640,9 @@ const QUICK_SEND_COLOURS: Readonly<Record<string, string>> = {
 async function openReportForm(page: Page): Promise<void> {
   await bootTopology(page);
   await page.locator(`.react-flow__node[data-id="svc-a"] .entity-node`).click();
-  await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await expect(page.getByTestId("entity-details")).toBeVisible();
+  await page.getByTestId("report-open").click();
+  await expect(page.getByTestId("quick-send")).toBeVisible();
 }
 
 test("quick-send offers one button per health state in its own colour", async ({ page }) => {
@@ -729,14 +731,6 @@ test("an in-flight refresh shows the indicator and keeps the topology rendered",
   await expect(page.getByTestId("refresh-indicator")).toBeHidden();
 });
 
-test("auto-refresh offers Off, 1 min and 5 min and defaults to Off", async ({ page }) => {
-  await bootTopology(page);
-  const picker = page.getByTestId("auto-refresh");
-  const labels = await picker.locator("option").allTextContents();
-  expect(labels.map((label) => label.trim())).toEqual(["Off", "Every 1 min", "Every 5 min"]);
-  await expect(picker).toHaveValue("0");
-});
-
 test("an accepted report counts down from 10 and then refreshes the model", async ({ page }) => {
   await page.clock.install();
   await openReportForm(page);
@@ -759,71 +753,12 @@ test("an accepted report counts down from 10 and then refreshes the model", asyn
   await expect.poll(() => reloads).toBe(1);
 });
 
-test("auto-refresh reloads once a minute when on and never when off", async ({ page }) => {
-  await page.clock.install();
-  await installStubs(page, { healthModelFails: false });
-  await page.goto("/");
-  await expect(page.getByTestId("auto-refresh")).toBeVisible();
-
-  let reloads = 0;
-  page.on("request", (req) => {
-    if (new URL(req.url()).pathname === "/api/health-model") reloads += 1;
-  });
-
-  await page.clock.fastForward("05:00");
-  expect(reloads, "Off must not reload").toBe(0);
-
-  await page.getByTestId("auto-refresh").selectOption("60000");
-  await page.clock.fastForward("01:00");
-  await expect.poll(() => reloads).toBe(1);
-});
-
-test("auto-refresh survives a failed load and keeps firing from the error state", async ({ page }) => {
-  await page.clock.install();
-  let failing = false;
-  let reloads = 0;
-  await installStubs(page, { healthModelFails: false });
-  await page.route("**/api/health-model*", async (route) => {
-    reloads += 1;
-    if (failing) {
-      await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "sdk_unavailable", message: "down", retryable: true, operationId: "op-1" },
-        }),
-      });
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(healthModel),
-    });
-  });
-
-  await page.goto("/");
-  await expect(page.getByTestId("auto-refresh")).toBeVisible();
-  await page.getByTestId("auto-refresh").selectOption("60000");
-
-  failing = true;
-  await page.clock.fastForward("01:00");
-  await expect(page.getByTestId("status-error")).toBeVisible();
-
-  await expect(page.getByTestId("refresh-now")).toBeVisible();
-  await expect(page.getByTestId("auto-refresh")).toHaveValue("60000");
-
-  const before = reloads;
-  await page.clock.fastForward("01:00");
-  await expect.poll(() => reloads).toBeGreaterThan(before);
-});
-
 test("switching models does not leave the previous model on screen while loading", async ({ page }) => {
   await installStubs(page, {
     healthModelFails: false,
     modelsByName: { "hm-demo": healthModel, "hm-payments": paymentsHealthModel },
   });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
   await expect(page.getByTestId("model-name")).toHaveText(healthModel.model.name);
 
@@ -863,9 +798,10 @@ test("an unrecognised health state does not unmount the app", async ({ page }) =
   ];
 
   await installStubs(page, { healthModelFails: false, model: exotic });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
   await page.locator(`.react-flow__node[data-id="svc-a"] .entity-node`).click();
+  await page.getByTestId("report-open").click();
 
   await expect(page.getByTestId("app-shell")).toBeVisible();
   await expect(page.locator(`[data-testid="quick-send"] button`)).toHaveCount(

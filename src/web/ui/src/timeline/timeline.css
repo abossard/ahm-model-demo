@@ -1,0 +1,18 @@
+/* State words and glyphs in the timeline take the health palette, so no state rests on colour alone: each also has a shape. */
+.tl-state[data-state="Healthy"] { color: var(--healthy-label); }
+.tl-state[data-state="Degraded"] { color: var(--degraded-label); }
+.tl-state[data-state="Unhealthy"] { color: var(--unhealthy-label); }
+.tl-state[data-state="Unknown"] { color: var(--unknown-label); }
+.tl-state[data-state="Deleted"] { color: var(--deleted-label); }
+.tl-state[data-state="None"] { color: var(--colorNeutralForeground3); }
+
+/* The legend's swatches and marks: the colours the canvas draws, from the same custom properties. */
+.tl-swatch { display: inline-block; width: 16px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.tl-swatch[data-state="Healthy"] { background: var(--healthy-dot); }
+.tl-swatch[data-state="Degraded"] { background: var(--degraded-dot); }
+.tl-swatch[data-state="Unhealthy"] { background: var(--unhealthy-dot); }
+.tl-swatch[data-state="Unknown"] { background: var(--unknown-dot); }
+.tl-swatch[data-state="Deleted"] { background: var(--deleted-border); }
+.tl-mark { color: var(--colorNeutralForeground1); line-height: 1; }
+.tl-mark[data-mark="annotation"] { color: var(--colorBrandForeground1); }
+.tl-pin { display: inline-block; width: 2px; height: 12px; background: var(--colorBrandForeground1); flex-shrink: 0; }

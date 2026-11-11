@@ -16,7 +16,7 @@ It provisions Azure, deploys the web app and creates the hosted agent. See the [
 - You need permission to create resources, custom roles and role assignments in the subscription. Owner covers it.
   [Hosted agent deploy](../infra/README.md#hosted-agent-deploy) lists what the hook needs on top.
 - Quota for the model deployment. The check is in [Foundry](../infra/README.md#foundry).
-- To browse beyond the application model, follow [catalog access](../infra/README.md#model-catalog-access).
+- The app lists every health model the signed-in user can read, in every subscription of their directory. A user of another directory needs [an administrator's consent](../infra/README.md#another-directory).
 
 ## Commands
 
@@ -63,16 +63,18 @@ make ui
 .venv-health-ui/bin/python -m uvicorn --app-dir src/web/app --host 127.0.0.1 --port 8080 main:app
 ```
 
+Add `FIXTURE_LIVE_SECONDS=60` to make the fixture model change over time (a scripted incident of that period: `orders-db` degrades, fails and recovers, `orders-api` follows) and `HUB_POLL_SECONDS=2` to push it quickly. Without them the fixture stays still, as the specs expect.
+
 The connection string sends telemetry to a closed local port, so nothing leaves the machine. The Azure Monitor exporter logs warnings.
 `src/web/ui/playwright.real.config.ts` runs the app with the same values: change both together.
 
 ## Run the agent locally
 
-[src/agent/README.md](../src/agent/README.md) has the steps: build `azmcp` for your machine, set four variables, start the agent on port 8088 and send a Task with `curl`.
+[src/agent/README.md](../src/agent/README.md) has the steps: set five variables, start the agent on port 8088 against the deployed MCP server and send a Task with `curl`.
 
-- You need the .NET SDK (the image build uses SDK 10.0), `uv` and `az login`.
+- You need `uv` and `az login`. `azmcp` is built in the registry from `src/mcp`, not on your machine.
 - The web app reaches the agent only through the Foundry project endpoint, so a local agent takes `curl` requests. To use an agent change in Tasks, ship it with `azd hooks run postdeploy`.
-- The image tag hashes the agent sources and the resolved `azmcp` commit. An unchanged tag skips the build.
+- The image tag hashes the agent sources. An unchanged tag skips the build.
   See [Hosted agent deploy](../infra/README.md#hosted-agent-deploy).
 
 ## Checks
@@ -89,7 +91,7 @@ az bicep build --file infra/main.bicep --stdout > /dev/null
 
 - The Python suite needs `.venv-health-ui` (`make deps`). It covers the web app and the infrastructure; `tests/test_infra.py` compiles `infra/main.bicep`.
 - The e2e suite builds the UI, serves it with `vite preview` and stubs the API, so it needs no Azure. The stubs answer `GET /api/config` as `local`: nobody signs in.
-  `tests/entra.spec.ts` runs the real MSAL library through the redirect flow against a stand-in for the Entra endpoints, under the policy the web app sends.
+  `tests/entra.spec.ts` runs the real MSAL library through the redirect flow against a stand-in for the Entra endpoints, under the policy the web app sends: the sign-in page, a directory named by domain, ID or subscription ID, and a personal account that lands in no directory.
   Playwright needs its browser once: `npm --prefix src/web/ui exec playwright -- install chromium`.
 - The real-backend run (`tests/real-backend.spec.ts`, 4 tests) builds the UI and starts uvicorn in the offline mode above on a free port.
   It drives the real web app with the scripted agent and the fixture models, so the run stubs nothing and reaches nothing in Azure. It needs `.venv-health-ui` (`make deps`).
@@ -115,7 +117,7 @@ LIVE_BASE_URL=https://<deployed-web-app-url> \
 npm --prefix src/web/ui run e2e -- --config playwright.live.config.ts
 ```
 
-- It runs only `@live-readonly` tests: the shell and its policy, the catalog, every model, layouts, search, the entity panel, the Sessions workspace,
+- It runs only `@live-readonly` tests: the shell and its policy, the catalog, every model, layouts, search, the selected entity above the timeline, the Sessions workspace,
   finished Tasks, addresses, light and dark and a phone width. They change nothing and cost no model tokens. Each fails on a console error,
   a security policy violation, a failed request or an unhandled rejection. None clicks Apply.
 - `@live-mutation` tests run only with `LIVE_INCLUDE_MUTATION=1`. They send a health report with a 1 minute expiry on `LIVE_REPORT_ENTITY`

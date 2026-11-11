@@ -21,12 +21,16 @@ AUTH_MODES = ("entra", "local")
 ENTRA_ENV = ("ENTRA_TENANT_ID", "ENTRA_CLIENT_ID", "ENTRA_API_SCOPE", "MCP_SCOPE", "AZURE_CLIENT_ID")
 LOCAL_OID = "local"
 LOCAL_NAME = "Local developer"
+# The tenant id Entra gives to personal Microsoft accounts. A token issued by it never reaches Azure Resource Manager.
+CONSUMERS_TENANT_ID = "9188040d-6c67-4c5b-b112-36a304b66dad"
+AUTHORITY_HOST = "https://login.microsoftonline.com"
 TOKEN_EXCHANGE_SCOPE = "api://AzureADTokenExchange/.default"
 ARM_DEFAULT_SCOPE = "https://management.azure.com/.default"
 ARM_DELEGATED_SCOPE = "https://management.azure.com/user_impersonation"
 MAX_TOKEN_CHARS = 16 * 1024
 TOKEN_LEEWAY_SECONDS = 60
 OBO_TOKEN_CACHE_SIZE = 256
+OBO_APPLICATION_CACHE_SIZE = 64
 OBO_EXPIRY_MARGIN_SECONDS = 300
 NONCE_BYTES = 32
 NONCE_MAX_CHARS = 128
@@ -36,7 +40,8 @@ FAKE_AGENT_ENDPOINT = "fake:"
 TASK_TYPES = ("review", "explain", "design")
 INSTRUCTION_MAX_CHARS = 2000
 SESSION_TITLE_MAX_CHARS = 120
-TASK_TIMEOUT_SECONDS = 1800
+TASK_TIMEOUT_SECONDS = 600
+BUSY_RETRY_SECONDS = (5, 15, 30)
 SSE_KEEP_ALIVE_SECONDS = 15
 AGENT_TOKEN_SCOPE = "https://ai.azure.com/.default"
 AGENT_API_VERSION = "v1"
@@ -58,6 +63,9 @@ MODEL_CACHE_SIZE = 256
 INTERRUPTED_GRACE_SECONDS = 120
 FINAL_SAVE_DELAYS = (0.2, 0.5, 1.0)
 ERROR_MESSAGE_CHARS = 300
+PROBLEM_LIMIT = 50
+PROBLEM_CHARS = 8 * 1024
+PROBLEM_TEXT_CHARS = 200
 TOKEN_MARKER = "eyJ"
 TOKEN_RUN = re.compile(r"[\w-]+")
 TOKEN_PATTERN = re.compile(r"eyJ[\w-]+\.[\w-]+\.[\w-]+")
@@ -66,6 +74,40 @@ GUID = re.compile(r"[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
 RESOURCE_GROUP_NAME = re.compile(r"[A-Za-z0-9_.()-]{1,90}")
 ARM_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{1,258}[A-Za-z0-9]")
 CLOUDHEALTH_API_VERSION = "2026-11-01"
+TIMELINE_RETENTION_DAYS = 30
+TIMELINE_MIN_SPAN_SECONDS = 60
+TIMELINE_DEFAULT_SPAN_HOURS = 24
+TIMELINE_MAX_SERIES = 120
+TIMELINE_MAX_ENTITIES = 200
+TIMELINE_MAX_CALLS = 400
+TIMELINE_CALL_CONCURRENCY = 8
+TIMELINE_GLOBAL_CONCURRENCY = 24
+TIMELINE_DEADLINE_SECONDS = 40
+TIMELINE_SIGNAL_PAGES = 4
+TIMELINE_STATE_PAGES = 5
+TIMELINE_ANNOTATION_PAGES = 3
+TIMELINE_ANNOTATION_PAGE_SIZE = 100
+TIMELINE_LIVE_CACHE_SECONDS = 30
+TIMELINE_PAST_CACHE_SECONDS = 300
+TIMELINE_STRUCTURE_CACHE_SECONDS = 30
+TIMELINE_CACHE_SIZE = 4096
+HUB_POLL_SECONDS = 30
+LIVE_RETRY_MS = 3000
+HUB_GRACE_SECONDS = 20
+HUB_MAX_BACKOFF_SECONDS = 300
+HUB_MAX_HUBS = 8
+HUB_MAX_SUBSCRIBERS = 50
+HUB_MAX_STREAMS_PER_USER = 6
+HUB_QUEUE_SIZE = 64
+HUB_RING_SIZE = 256
+HUB_ACCESS_RECHECK_SECONDS = 300
+HUB_ANNOTATION_SECONDS = 300
+HUB_READ_CONCURRENCY = 4
+HUB_OVERLAP_MS = 2 * 60 * 1000
+HISTORY_BUCKET_SECONDS = 24 * 3600
+HISTORY_SAFETY_SECONDS = 15 * 60
+HISTORY_MEMORY_BUCKETS = 4096
+HISTORY_PREFIX = "history/v1"
 CANONICAL_SIGNAL_NAME = "web-ui-health-report"
 RESERVED_SIGNAL_NAME = "database-connectivity-probe"
 HEALTH_STATES = ("Healthy", "Degraded", "Unhealthy", "Unknown")
@@ -89,7 +131,7 @@ REPORT_KEYS = {
 SECURITY_POLICY = (
     "default-src 'self'; script-src 'self'; "
     "style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; "
-    "img-src 'self' data:; connect-src 'self' https://login.microsoftonline.com; base-uri 'none'; "
+    "img-src 'self' data:; connect-src 'self' https://login.microsoftonline.com https://management.azure.com; base-uri 'none'; "
     "frame-ancestors 'none'"
 )
 
@@ -99,6 +141,18 @@ UI_DIST_DIR = Path(
         str(Path(__file__).resolve().parent.parent / "ui" / "dist"),
     )
 )
+
+
+def parse_allowed_tenants(text):
+    """The tenant ids that may sign in, from a comma or space separated list. Empty means every directory."""
+    tenants = frozenset(item.casefold() for item in re.split(r"[,\s]+", text) if item)
+    for tenant in tenants:
+        if not GUID.fullmatch(tenant) or tenant == CONSUMERS_TENANT_ID:
+            raise RuntimeError(
+                "ENTRA_ALLOWED_TENANTS must list directory (tenant) ids separated by commas, "
+                "and never the personal-account tenant."
+            )
+    return tenants
 
 
 def require_runtime_config(environment):
@@ -129,6 +183,7 @@ def require_runtime_config(environment):
         "foundry_agent_name": environment["FOUNDRY_AGENT_NAME"].strip(),
         "auth_mode": auth_mode,
         "tenant_id": environment.get("ENTRA_TENANT_ID", "").strip() or None,
+        "allowed_tenants": parse_allowed_tenants(environment.get("ENTRA_ALLOWED_TENANTS", "")),
         "client_id": environment.get("ENTRA_CLIENT_ID", "").strip() or None,
         "api_scope": environment.get("ENTRA_API_SCOPE", "").strip() or None,
         "mcp_scope": environment.get("MCP_SCOPE", "").strip() or None,

@@ -36,6 +36,7 @@ WEB_ENV = (
     "FOUNDRY_AGENT_NAME",
     "FOUNDRY_AGENT_PRINCIPAL_ID",
     "ENTRA_TENANT_ID",
+    "ENTRA_ALLOWED_TENANTS",
     "ENTRA_CLIENT_ID",
     "ENTRA_API_SCOPE",
     "MCP_SCOPE",
@@ -802,6 +803,7 @@ class InfrastructureContractTests(unittest.TestCase):
                     "webImage",
                     "mcpImage",
                     "entraAllowAzureCli",
+                    "entraAllowedTenants",
                     "foundryAgentPrincipalId",
                 ]
             ),
@@ -863,6 +865,7 @@ class InfrastructureContractTests(unittest.TestCase):
             sorted(declared),
             [
                 "entraAllowAzureCli",
+                "entraAllowedTenants",
                 "environmentName",
                 "foundryAgentPrincipalId",
                 "location",
@@ -882,6 +885,8 @@ class InfrastructureContractTests(unittest.TestCase):
             ("webImage", "${SERVICE_WEB_IMAGE_NAME}"),
             ("mcpImage", "${SERVICE_MCP_IMAGE_NAME}"),
             ("entraAllowAzureCli", "${ENTRA_ALLOW_AZURE_CLI:-false}"),
+            # Empty lets every directory sign in.
+            ("entraAllowedTenants", "${ENTRA_ALLOWED_TENANTS}"),
             # Set by the agent deploy script with `azd env set`; empty until the agent exists.
             ("foundryAgentPrincipalId", "${FOUNDRY_AGENT_PRINCIPAL_ID}"),
         ):
@@ -892,6 +897,7 @@ class InfrastructureContractTests(unittest.TestCase):
             ("mcpImage", ""),
             ("foundryAgentPrincipalId", ""),
             ("entraAllowAzureCli", False),
+            ("entraAllowedTenants", ""),
         ):
             with self.subTest(default=name):
                 self.assertEqual(parameters[name]["defaultValue"], default)
@@ -1096,6 +1102,7 @@ class InfrastructureContractTests(unittest.TestCase):
                 self.assertIn(f"'Microsoft.Resources/deployments', '{source}'", env[name])
         self.assertRegex(env["MCP_URL"], r"\[format\('https://\{0\}/', " + app_host("mcpAppName") + r"\)\]")
         self.assertEqual(env["FOUNDRY_AGENT_PRINCIPAL_ID"], "[parameters('foundryAgentPrincipalId')]")
+        self.assertEqual(env["ENTRA_ALLOWED_TENANTS"], "[parameters('entraAllowedTenants')]")
         self.assertEqual(module_parameter("container-app-web", "targetPort"), 8080)
         self.assertIs(module_parameter("container-app-web", "external"), True)
 
@@ -1442,7 +1449,7 @@ def keys_of(value):
 
 
 class EntraAndMcpContractTests(unittest.TestCase):
-    def test_app_registrations_are_single_tenant_use_token_version_2_and_hold_no_secret(self):
+    def test_app_registrations_accept_any_directory_and_personal_accounts_use_token_version_2_and_hold_no_secret(self):
         entra = templates()["entra"]
         graph = resources(entra)
         apps = {name: r for name, r in entra["resources"].items() if r["type"] == "Microsoft.Graph/applications@v1.0"}
@@ -1455,7 +1462,7 @@ class EntraAndMcpContractTests(unittest.TestCase):
         )
         for name, app in apps.items():
             with self.subTest(app=name):
-                self.assertEqual(app["properties"]["signInAudience"], "AzureADMyOrg")
+                self.assertEqual(app["properties"]["signInAudience"], "[variables('signInAudience')]")
                 self.assertEqual(
                     app["properties"]["uniqueName"],
                     "[variables('mcpUniqueName')]" if name.startswith("mcp") else "[variables('webUniqueName')]",
@@ -1463,6 +1470,11 @@ class EntraAndMcpContractTests(unittest.TestCase):
         for name in ("mcpApp", "webApp"):
             with self.subTest(token_version=name):
                 self.assertEqual(apps[name]["properties"]["api"]["requestedAccessTokenVersion"], 2)
+        # Work or school accounts of any directory and personal accounts, which need token version 2 and a global id URI.
+        self.assertEqual(entra["variables"]["signInAudience"], "AzureADandPersonalMicrosoftAccount")
+        for name in ("mcpApp", "webApp"):
+            with self.subTest(identifier_uri=name):
+                self.assertEqual(apps[name]["properties"]["identifierUris"], [f"[format('api://{{0}}', reference('{name[:-3]}Created').appId)]"])
         self.assertEqual(entra["variables"]["webUniqueName"], "[format('ahm-{0}-web', parameters('environmentName'))]")
         self.assertEqual(entra["variables"]["mcpUniqueName"], "[format('ahm-{0}-mcp', parameters('environmentName'))]")
         # A federated credential replaces every secret, key and certificate.
@@ -1493,14 +1505,24 @@ class EntraAndMcpContractTests(unittest.TestCase):
         self.assertEqual(variables["mcpScopeId"], "[guid(variables('mcpUniqueName'), variables('mcpScopeValue'))]")
         for name, app, scope in (("web", web, "webScope"), ("mcp", mcp, "mcpScope")):
             with self.subTest(scope=name):
-                scopes = app["api"]["oauth2PermissionScopes"]
+                declared = variables[scope]
+                created = entra["resources"][f"{name}Created"]["properties"]
 
-                self.assertEqual(len(scopes), 1)
                 self.assertEqual(
-                    (scopes[0]["id"], scopes[0]["value"], scopes[0]["type"], scopes[0]["isEnabled"]),
+                    (declared["id"], declared["value"], declared["type"], declared["isEnabled"]),
                     (f"[variables('{scope}Id')]", f"[variables('{scope}Value')]", "User", True),
                 )
+                self.assertEqual(app["api"]["oauth2PermissionScopes"], [f"[variables('{scope}')]"])
+                # Graph refuses to pre-authorize a scope in the request that adds it: the creating declaration
+                # must already carry the scope the second declaration pre-authorizes.
+                self.assertEqual(created["api"]["oauth2PermissionScopes"], [f"[variables('{scope}')]"])
+                self.assertEqual(created["api"]["requestedAccessTokenVersion"], 2)
+                self.assertNotIn("preAuthorizedApplications", created["api"])
                 self.assertEqual(app["identifierUris"], [f"[format('api://{{0}}', reference('{name}Created').appId)]"])
+        # Consent of a user of another directory to the web app provisions the MCP server there with it, and only the
+        # web app is such a client.
+        self.assertEqual(mcp["api"]["knownClientApplications"], ["[reference('webCreated').appId]"])
+        self.assertNotIn("knownClientApplications", web["api"])
         # The web app is pre-authorized for the MCP scope: nobody consents to it interactively.
         self.assertEqual(
             mcp["api"]["preAuthorizedApplications"],
@@ -1635,7 +1657,8 @@ class EntraAndMcpContractTests(unittest.TestCase):
             ],
         )
         self.assertEqual(env["AzureAd__Instance"], "[environment().authentication.loginEndpoint]")
-        self.assertRegex(env["AzureAd__TenantId"], entra_output("tenantId"))
+        # Users of any directory call it: the issuer and the on-behalf-of exchange follow the tenant of each token.
+        self.assertEqual(env["AzureAd__TenantId"], "organizations")
         self.assertRegex(env["AzureAd__ClientId"], entra_output("mcpClientId"))
         self.assertRegex(env["AzureAd__ClientCredentials__0__ManagedIdentityClientId"], r"identityClientId\.value")
         for name, value in (

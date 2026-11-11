@@ -1,7 +1,6 @@
 import type { JSX } from "react";
 import { Button, MessageBar, MessageBarActions, MessageBarBody } from "@fluentui/react-components";
 import { sameModel } from "../model/selection";
-import { taskLabel } from "../model/tasks";
 import type { Task } from "../model/types";
 import { actions, useStore } from "../store/store";
 
@@ -14,11 +13,11 @@ export function OffScreenTarget({ task, testId }: { readonly task: Task; readonl
   return (
     <MessageBar intent="info" data-testid={`${testId}-off-screen`}>
       <MessageBarBody>
-        This {taskLabel(task.type)} task ran on {task.target.name}, which is not the model on screen.
+        This was about {task.target.name}, which is not the model on screen.
       </MessageBarBody>
       <MessageBarActions>
         <Button size="small" disabled={target === undefined} onClick={() => target && actions.chooseModel(target)} data-testid={`${testId}-open-target`}>
-          Open target model
+          Open that model
         </Button>
       </MessageBarActions>
     </MessageBar>

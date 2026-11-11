@@ -55,16 +55,17 @@ export function activity(
 /** What a Review streams: a status, tool calls with their results, and the submitted result. */
 export function reviewEvents(count = 10): readonly ActivityEvent[] {
   return [
-    activity(1, "status", "Task started"),
-    activity(2, "text", "Reading the Base model", { text: "Reading the Base model before proposing changes." }),
-    activity(3, "tool_call", "Inspect hm-demo", { arguments: JSON.stringify({ model: "hm-demo", depth: 3 }) }),
-    activity(4, "tool_result", "Inspected 6 entities", { ok: true }),
-    activity(5, "tool_call", "Run a KQL query on Log Analytics", { arguments: JSON.stringify({ query: "Queue | take 5" }) }),
-    activity(6, "tool_result", "The query returned 12 rows", { ok: true }),
-    activity(7, "text", "Drafting the Health model diff"),
-    activity(8, "tool_call", "submit_result"),
-    activity(9, "tool_result", "submit_result accepted", { ok: true }),
-    activity(10, "result", "Result ready: a Health model diff with 5 changes"),
+    // The titles the app gives these steps (activity.py), so the specs read them as a person does.
+    activity(1, "status", "Agent started"),
+    activity(2, "text", "Reading the current model", { text: "Reading the current model before proposing changes." }),
+    activity(3, "tool_call", "Inspect health model hm-demo (entity svc-a)", { name: "monitor_healthmodels_inspect", arguments: JSON.stringify({ healthModel: "hm-demo", entity: "svc-a" }) }),
+    activity(4, "tool_result", "Inspect health model hm-demo (entity svc-a): ok, 12.0 KB", { name: "monitor_healthmodels_inspect", size: 12288, ok: true }),
+    activity(5, "tool_call", "Run log query on Queue", { name: "monitor_workspace_log_query", arguments: JSON.stringify({ table: "Queue", query: "Queue | take 5" }) }),
+    activity(6, "tool_result", "Run log query on Queue: ok, 1.1 KB", { name: "monitor_workspace_log_query", size: 1126, ok: true }),
+    activity(7, "text", "Drafting the proposed changes"),
+    activity(8, "tool_call", "Submit result (diff, 5 changes)", { name: "submit_result" }),
+    activity(9, "tool_result", "Submit result (diff, 5 changes): accepted", { name: "submit_result", ok: true }),
+    activity(10, "result", "Result accepted (diff, 5 changes)", { resultKind: "diff" }),
   ].slice(0, count);
 }
 
@@ -215,7 +216,7 @@ export function explainResult(): ExplainResult {
     kind: "explain",
     entity: "svc-c",
     state: "Unhealthy",
-    summary: "Service C is unhealthy because Service B's queue is past its threshold and the rollup takes the worst child.",
+    summary: "Service C is unhealthy because Service B's queue is past its threshold and a service takes the worst state of what it depends on.",
     causes: [
       { entity: "svc-c", signal: null, state: "Unhealthy", threshold: null, value: null, rollup: "Worst of its inputs", note: "Service C reports no signal of its own." },
       { entity: "svc-b", signal: "queue", state: "Degraded", threshold: "above 40", value: 42, rollup: null, note: "The queue holds 42 items; Degraded starts above 40." },
@@ -226,10 +227,10 @@ export function explainResult(): ExplainResult {
 
 export function explainEvents(): readonly ActivityEvent[] {
   return [
-    activity(1, "status", "Task started"),
-    activity(2, "tool_call", "Inspect svc-c"),
-    activity(3, "tool_result", "Traced 3 entities", { ok: true }),
-    activity(4, "result", "Result ready: why Service C is Unhealthy"),
+    activity(1, "status", "Agent started"),
+    activity(2, "tool_call", "Inspect health model hm-demo (entity svc-c)", { name: "monitor_healthmodels_inspect", arguments: JSON.stringify({ healthModel: "hm-demo", entity: "svc-c" }) }),
+    activity(3, "tool_result", "Inspect health model hm-demo (entity svc-c): ok, 4.0 KB", { name: "monitor_healthmodels_inspect", size: 4096, ok: true }),
+    activity(4, "result", "Result accepted (explain, 3 causes)", { resultKind: "explain" }),
   ];
 }
 
@@ -287,7 +288,7 @@ export function designDiff(): DiffView {
 }
 
 export function designEvents(): readonly ActivityEvent[] {
-  return [activity(1, "status", "Task started"), activity(2, "result", "Result ready: a design with 3 changes")];
+  return [activity(1, "status", "Agent started"), activity(2, "result", "Result accepted (diff, 3 changes)", { resultKind: "diff" })];
 }
 
 export interface StubScript {
@@ -438,6 +439,31 @@ export class WorkspaceStub {
     this.serveStream(request, response, record);
   });
 
+  /** The Sessions that hold no Task, as the app lists them: what a start that went wrong must not leave behind. */
+  emptySessions(): SessionSummary[] {
+    return this.sessions.flatMap((item) => {
+      const listed = this.summary(item.id);
+      return listed && listed.taskCount === 0 ? [listed] : [];
+    });
+  }
+
+  private startGate: Deferred | null = null;
+
+  /** Makes the next Task starts wait, so the page can be seen while it waits; the returned function lets them go. */
+  holdStarts(): () => void {
+    const gate = deferred();
+    this.startGate = gate;
+    return () => {
+      this.startGate = null;
+      gate.resolve();
+    };
+  }
+
+  /** The app lets a user run one Task at a time, in any Session. */
+  private runsAnywhere(): boolean {
+    return [...this.records.values()].some((records) => records.some(({ task }) => task.status === "running"));
+  }
+
   /** Starts the event stream server; `close` stops it. */
   async listen(): Promise<void> {
     await new Promise<void>((resolve) => this.server.listen(0, "127.0.0.1", resolve));
@@ -487,6 +513,8 @@ export class WorkspaceStub {
     if (record) {
       record.released = true;
       record.gate.resolve();
+      // The app finishes a Task whether or not anyone follows its stream.
+      if (record.task.status === "running" && record.open.size === 0) this.finalize(record);
     }
   }
 
@@ -645,6 +673,7 @@ export class WorkspaceStub {
     if (rawSeq === undefined) {
       const body = request.postDataJSON() as TaskInput;
       this.posts.push({ sessionId: sid, body });
+      await this.startGate?.promise;
       const refusal = this.startRefusals.shift();
       if (refusal) {
         await this.json(route, refusal.status, errorEnvelope(refusal.code, refusal.message, refusal.retryable));
@@ -655,8 +684,8 @@ export class WorkspaceStub {
         this.conflictWith = null;
         this.add(taskOf(this.list(sid).length + 1, { status: "running", createdAt: new Date().toISOString() }), script);
       }
-      if (this.list(sid).some(({ task }) => task.status === "running")) {
-        await this.json(route, 409, errorEnvelope("task_running", "A Task is already running in this Session."));
+      if (this.runsAnywhere()) {
+        await this.json(route, 409, errorEnvelope("task_running", "You already have a task running in another session. Wait for it to finish."));
         return;
       }
       const script = this.scripts[body.type] ?? defaultScript(body.type);
@@ -691,7 +720,7 @@ export class WorkspaceStub {
     } else if (leaf === "diff") {
       if (this.diffFailures > 0) {
         this.diffFailures -= 1;
-        await this.json(route, 503, errorEnvelope("diff_unavailable", "The Health model diff could not be built."));
+        await this.json(route, 503, errorEnvelope("diff_unavailable", "The proposed changes could not be built."));
         return;
       }
       await (record.diff

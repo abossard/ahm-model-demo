@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import { healthModel, installStubs, liveShapeModel } from "./fixture";
 import { getBezierPath, getSmoothStepPath, Position } from "@xyflow/react";
 import { DENSE_SEED, denseModel, realAnbomovModel } from "./denseModel";
+import { openView } from "./views";
 
 const LAYOUT_IDS = [
   "dagre-tb",
@@ -27,7 +28,7 @@ interface Box {
 
 async function boot(page: Page): Promise<void> {
   await installStubs(page, { healthModelFails: false });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
   await expect(page.locator(".react-flow__edge")).toHaveCount(4);
 }
@@ -108,7 +109,7 @@ test("AC2 — switching layout repositions every node and flips the graph orient
   expect(await relation()).toEqual({ below: false, right: true });
 });
 
-test("AC5 — the order control offers the shortest connections first and three explicit keys with a reversible direction toggle", async ({ page }) => {
+test("AC5 — the order control offers the shortest connections first, three explicit keys with a reversible direction toggle, and Custom last", async ({ page }) => {
   await boot(page);
   const key = page.getByTestId("sort-key");
   const reverse = page.getByTestId("sort-reverse");
@@ -119,8 +120,12 @@ test("AC5 — the order control offers the shortest connections first and three 
     "name",
     "observed",
     "health",
+    "custom",
   ]);
   await expect(key).toHaveValue("shortest");
+  await expect(reverse).toBeDisabled();
+
+  await key.selectOption("custom");
   await expect(reverse).toBeDisabled();
 
   await key.selectOption("name");
@@ -347,7 +352,7 @@ test("AC21 — layout, collapse and search changes are announced politely", asyn
 const SERVED_CSP =
   "default-src 'self'; script-src 'self'; " +
   "style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; " +
-  "img-src 'self' data:; connect-src 'self' https://login.microsoftonline.com; base-uri 'none'; " +
+  "img-src 'self' data:; connect-src 'self' https://login.microsoftonline.com https://management.azure.com; base-uri 'none'; " +
   "frame-ancestors 'none'";
 
 test("AC23 — the built app runs clean under the policy the server actually sends", async ({ page }) => {
@@ -397,7 +402,8 @@ test("AC23 — the built app runs clean under the policy the server actually sen
   await page.getByTestId("theme-toggle").hover();
   await chooseLayout(page, "dagre-tb");
   await page.locator('.react-flow__node[data-id="svc-a"] .entity-node').click();
-  await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await expect(page.getByTestId("entity-details")).toBeVisible();
+  await page.getByTestId("report-open").click();
   await page.getByTestId("quick-send-Degraded").click();
   await expect(page.getByTestId("report-confirmation")).toBeVisible();
 
@@ -406,11 +412,11 @@ test("AC23 — the built app runs clean under the policy the server actually sen
     const style = getComputedStyle(shell);
     return {
       surface: style.getPropertyValue("--colorNeutralBackground1").trim(),
-      healthy: style.getPropertyValue("--healthy-fill").trim(),
+      degraded: style.getPropertyValue("--degraded-fill").trim(),
       background: style.backgroundColor,
     };
   });
-  expect(theme).toEqual({ surface: "#ffffff", healthy: "#f2f8f2", background: "rgb(255, 255, 255)" });
+  expect(theme).toEqual({ surface: "#ffffff", degraded: "#fbf2e7", background: "rgb(255, 255, 255)" });
 
   expect(violations).toEqual([]);
   expect(await page.evaluate(() => (window as unknown as { __violations: string[] }).__violations)).toEqual([]);
@@ -555,7 +561,7 @@ test("AC12b — a self-loop or an edge to an absent entity offers no collapse to
       ],
     },
   });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
 
   for (const name of ["svc-e", "svc-f"]) {
@@ -812,7 +818,7 @@ test("C3-3b — three parents reaching one child keep three separate ports", asy
       ],
     },
   });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
   await expect(page.locator(".react-flow__edge")).toHaveCount(5);
 
@@ -894,7 +900,7 @@ for (const style of ["smooth", "rounded", "right-angle"] as const) {
   test(`C11 native ${style} paths and labels match the installed helper on offset Ask LR edges`, async ({ page }) => {
     const model = realAnbomovModel();
     await installStubs(page, { healthModelFails: false, model });
-    await page.goto("/");
+    await openView(page, "zoom");
     await expect(page.locator(".react-flow__edge")).toHaveCount(23);
     await expect(page.getByLabel("Edge style")).toHaveValue("smooth");
     await chooseLayout(page, "dagre-lr");
@@ -977,14 +983,16 @@ test("C9-5 and C9-6 — dropdown changes preserve graph state and remain usable 
   await page.getByLabel("Edge style").selectOption("rounded");
   await page.locator('.react-flow__node[data-id="svc-b"] [data-testid="collapse-toggle"]').click();
   await page.locator('.react-flow__node[data-id="svc-a"] .entity-node__name').click();
-  await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await expect(page.getByTestId("entity-details")).toBeVisible();
+  // The timeline that the pick opened takes room from the graph, which fits it: let that finish before the state is compared.
+  await page.waitForTimeout(900);
   await openSearch(page);
   await page.getByTestId("search-input").fill("Queue");
 
   const snapshot = () => page.evaluate(() => ({
     nodes: [...document.querySelectorAll(".react-flow__node")].map((node) => node.outerHTML),
     viewport: (document.querySelector(".react-flow__viewport") as HTMLElement).style.transform,
-    panel: document.querySelector('[data-testid="entity-panel"]')?.textContent,
+    panel: document.querySelector('[data-testid="entity-details"]')?.textContent,
     search: document.querySelector('[data-testid="search-overlay"]')?.textContent,
     query: (document.querySelector('[data-testid="search-input"]') as HTMLInputElement).value,
     edges: [...document.querySelectorAll(".react-flow__edge")].map((edge) => ({
@@ -1000,7 +1008,7 @@ test("C9-5 and C9-6 — dropdown changes preserve graph state and remain usable 
   await page.getByTestId("edge-style-picker").selectOption("smooth");
   await expect(page.getByTestId("graph-announcement")).toContainText("Edge style changed to Smooth curves");
   await expect(page.getByLabel("Connection points")).toHaveValue("with-layout");
-  await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await expect(page.getByTestId("entity-details")).toBeVisible();
   expect(await edgePathShapes(page)).not.toEqual(beforePaths);
   expect(await snapshot()).toEqual(before);
 
@@ -1074,14 +1082,14 @@ test("C3-5 — a card keeps every signal row and its existing selection behaviou
   expect(nullRow).toEqual([{ name: "Heartbeat", value: "", dots: 1 }]);
 
   await card.click();
-  await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await expect(page.getByTestId("entity-details")).toBeVisible();
 
   for (const key of ["Enter", " "]) {
-    await page.getByRole("button", { name: "Close panel" }).click();
-    await expect(page.getByTestId("entity-panel")).toHaveCount(0);
+    await page.getByRole("button", { name: "Close details" }).click();
+    await expect(page.getByTestId("entity-details")).toHaveCount(0);
     await card.focus();
     await page.keyboard.press(key);
-    await expect(page.getByTestId("entity-panel")).toBeVisible();
+    await expect(page.getByTestId("entity-details")).toBeVisible();
   }
 });
 
@@ -1121,12 +1129,12 @@ test("C3-6 — the collapse control is a header chevron with an accessible discl
   await toggle.focus();
   await page.keyboard.press("Enter");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(page.getByTestId("entity-panel")).toHaveCount(0);
+  await expect(page.getByTestId("entity-details")).toHaveCount(0);
   await expect(page.getByTestId("graph-announcement")).toContainText("3 nodes hidden");
 
   await page.keyboard.press(" ");
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  await expect(page.getByTestId("entity-panel")).toHaveCount(0);
+  await expect(page.getByTestId("entity-details")).toHaveCount(0);
 
   // A card with nothing to collapse renders no control and reserves no gap for one.
   await expect(
@@ -1620,7 +1628,7 @@ test("C4-2 — the header disclosure keeps a contained 24px pointer target acros
   const box = (await toggle.boundingBox()) as { x: number; y: number; width: number; height: number };
   await page.mouse.click(box.x + box.width / 2 + 11, box.y + box.height / 2 + 11);
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(page.getByTestId("entity-panel")).toHaveCount(0);
+  await expect(page.getByTestId("entity-details")).toHaveCount(0);
   await expect(page.locator(".react-flow__node")).toHaveCount(3);
 
   await toggle.focus();
@@ -1628,7 +1636,7 @@ test("C4-2 — the header disclosure keeps a contained 24px pointer target acros
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator(".react-flow__node")).toHaveCount(healthModel.entities.length);
   await page.locator('.react-flow__node[data-id="svc-a"] .entity-node__name').click();
-  await expect(page.getByTestId("entity-panel")).toBeVisible();
+  await expect(page.getByTestId("entity-details")).toBeVisible();
 });
 
 test("C4-2b — a 22-node graph keeps every visible disclosure clickable from default fit through ordinary wheel zoom", async ({
@@ -1643,7 +1651,7 @@ test("C4-2b — a 22-node graph keeps every visible disclosure clickable from de
       .map((item) => item.name),
   );
   await installStubs(page, { healthModelFails: false, model });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
   await expect(page.locator(".react-flow__node")).toHaveCount(22);
   await expect(page.locator(".react-flow__edge")).toHaveCount(24);
@@ -1673,7 +1681,7 @@ test("C4-2b — a 22-node graph keeps every visible disclosure clickable from de
   const box = (await toggle.boundingBox()) as { x: number; y: number; width: number; height: number };
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(page.getByTestId("entity-panel")).toHaveCount(0);
+  await expect(page.getByTestId("entity-details")).toHaveCount(0);
   await expect(page.locator(".react-flow__node")).not.toHaveCount(22);
 
   await page.mouse.click(
@@ -1686,7 +1694,7 @@ test("C4-2b — a 22-node graph keeps every visible disclosure clickable from de
 
 test("C12 — connection labels of the live model do not overlap in any hierarchy layout", async ({ page }) => {
   await installStubs(page, { healthModelFails: false, model: liveShapeModel });
-  await page.goto("/");
+  await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");
 
   for (const id of ["dagre-tb", "dagre-bt", "dagre-lr", "dagre-rl"]) {
