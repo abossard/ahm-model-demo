@@ -14,12 +14,12 @@ import { openView } from "./views";
 const STATE_PALETTE: Readonly<
   Record<string, { readonly border: string; readonly fill: string; readonly word: string }>
 > = {
-  // A Healthy card is neutral; only the states that need attention are tinted.
-  "svc-a": { border: "rgb(209, 209, 209)", fill: "rgb(255, 255, 255)", word: "Healthy" },
-  "svc-b": { border: "rgb(219, 117, 0)", fill: "rgb(251, 242, 231)", word: "Degraded" },
-  "svc-c": { border: "rgb(186, 13, 22)", fill: "rgb(250, 236, 235)", word: "Unhealthy" },
-  "svc-d": { border: "rgb(200, 198, 196)", fill: "rgb(246, 246, 245)", word: "Unknown" },
-  "svc-e": { border: "rgb(134, 97, 197)", fill: "rgb(244, 240, 251)", word: "Standby" },
+  // Every state tints its card: green, amber, red, grey and violet.
+  "svc-a": { border: "rgb(59, 138, 53)", fill: "rgb(228, 245, 224)", word: "Healthy" },
+  "svc-b": { border: "rgb(184, 106, 0)", fill: "rgb(253, 240, 213)", word: "Degraded" },
+  "svc-c": { border: "rgb(196, 38, 46)", fill: "rgb(251, 225, 223)", word: "Unhealthy" },
+  "svc-d": { border: "rgb(112, 123, 139)", fill: "rgb(241, 243, 246)", word: "Unknown" },
+  "svc-e": { border: "rgb(124, 86, 191)", fill: "rgb(239, 232, 250)", word: "Standby" },
 };
 
 /** What the picker shows for one model: its name and group, then the short subscription hint. */
@@ -177,10 +177,10 @@ test("edges carry no arrowhead marker", async ({ page }) => {
 test("each edge is stroked with its child entity health colour", async ({ page }) => {
   await bootTopology(page);
   const expected: Readonly<Record<string, string>> = {
-    r1: "rgb(194, 106, 0)",
-    r2: "rgb(197, 15, 24)",
-    r3: "rgb(138, 136, 134)",
-    r4: "rgb(197, 15, 24)",
+    r1: "rgb(184, 106, 0)",
+    r2: "rgb(196, 38, 46)",
+    r3: "rgb(112, 123, 139)",
+    r4: "rgb(196, 38, 46)",
   };
   for (const [id, colour] of Object.entries(expected)) {
     const stroke = await page

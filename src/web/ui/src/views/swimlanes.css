@@ -45,7 +45,7 @@
   border-width: 1.5px;
   border-style: solid;
   border-radius: var(--borderRadiusLarge);
-  box-shadow: var(--shadow2);
+  box-shadow: var(--card-shadow);
   font-family: var(--fontFamilyBase);
   color: var(--colorNeutralForeground1);
   cursor: pointer;
@@ -66,8 +66,12 @@
   border-width: 2px;
 }
 
+.swim-card:hover {
+  box-shadow: var(--card-shadow-lift);
+}
+
 .swim-card.is-selected {
-  box-shadow: 0 0 0 2px var(--colorBrandStroke1);
+  box-shadow: 0 0 0 2px var(--select-ring), var(--card-shadow-lift);
 }
 
 .swim-card:focus-visible {
@@ -75,11 +79,11 @@
 }
 
 .swim-card.is-highlighted {
-  box-shadow: 0 0 0 3px var(--colorBrandStroke1);
+  box-shadow: 0 0 0 3px var(--highlight-ring), var(--card-shadow-lift);
 }
 
 .swim-card.is-marked {
-  box-shadow: 0 0 0 2px var(--changed-line);
+  box-shadow: 0 0 0 2px var(--changed-line), var(--card-shadow-lift);
 }
 
 .swim-card-ring {
@@ -90,7 +94,7 @@
   content: "";
   position: absolute;
   inset: -5px;
-  border: 2px dashed var(--colorBrandStroke1);
+  border: 2px dashed var(--select-ring);
   border-radius: calc(var(--borderRadiusLarge) + 4px);
   pointer-events: none;
 }

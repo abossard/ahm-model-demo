@@ -8,7 +8,7 @@ import { visibleGraph } from "../model/collapse";
 import { SIDE_LABEL, linkKey, noEntitiesText } from "../model/compare";
 import { layerOf } from "../model/layerOf";
 import { chainSteps } from "../model/chainSteps";
-import { diffTokens, edgeAppearance, impactOf, impactStyle, tokensFor } from "../model/palette";
+import { cardTokens, diffTokens, edgeAppearance, impactOf, impactStyle, tokensFor } from "../model/palette";
 import { drawnParents, type ReorderWorld } from "../model/reorder";
 import { LANE_GUTTER, contentKey, firstProblem, foldId, layoutSwimlanes, lineageOf, withParents, type SwimCard, type SwimFold, type SwimLane, type SwimlaneLayout } from "../model/swimlanes";
 import type { Entity } from "../model/types";
@@ -46,7 +46,7 @@ const useStyles = makeStyles({
     borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   grow: { flex: 1 },
-  canvas: { flex: 1, minHeight: 0, position: "relative", overflow: "hidden", "@media (max-width: 720px)": { flex: "1 0 320px" } },
+  canvas: { flex: 1, minHeight: 0, position: "relative", overflow: "hidden", backgroundColor: cardTokens.canvas, "@media (max-width: 720px)": { flex: "1 0 320px" } },
   empty: {
     position: "absolute",
     inset: 0,

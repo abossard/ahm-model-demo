@@ -780,7 +780,7 @@ function TopologyCanvas({
           }}
           proOptions={{ hideAttribution: false }}
         >
-          <Background id={idPrefix} />
+          <Background id={idPrefix} color={cardTokens.grid} />
           {minimap ? (
             <MiniMap
               pannable
@@ -789,7 +789,7 @@ function TopologyCanvas({
               nodeStrokeWidth={0}
               nodeBorderRadius={3}
               nodeColor={heatOf}
-              maskColor="rgba(128, 128, 128, 0.18)"
+              maskColor={cardTokens.minimapMask}
               style={{ backgroundColor: cardTokens.pillFill, border: `1px solid ${cardTokens.pillStroke}` }}
             />
           ) : null}

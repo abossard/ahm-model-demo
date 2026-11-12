@@ -45,7 +45,7 @@ const useStyles = makeStyles({
   },
   calm: { fontWeight: tokens.fontWeightSemibold, color: tokens.colorNeutralForeground1 },
   grow: { flex: 1 },
-  canvas: { flex: 1, minHeight: 0, position: "relative", overflow: "hidden", "@media (max-width: 720px)": { flex: "1 0 320px" } },
+  canvas: { flex: 1, minHeight: 0, position: "relative", overflow: "hidden", backgroundColor: cardTokens.canvas, "@media (max-width: 720px)": { flex: "1 0 320px" } },
   empty: {
     position: "absolute",
     inset: 0,
@@ -498,7 +498,7 @@ function CausePathCanvas({ entities, relationships, selectedName, highlightedNam
           elementsSelectable={false}
           proOptions={{ hideAttribution: false }}
         >
-          <Background id="cause" />
+          <Background id="cause" color={cardTokens.grid} />
         </ReactFlow>
         {entities.length === 0 ? (
           <div className={styles.empty} data-testid="graph-empty" data-graph="cause">

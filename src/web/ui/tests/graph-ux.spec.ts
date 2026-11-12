@@ -416,7 +416,7 @@ test("AC23 — the built app runs clean under the policy the server actually sen
       background: style.backgroundColor,
     };
   });
-  expect(theme).toEqual({ surface: "#ffffff", degraded: "#fbf2e7", background: "rgb(255, 255, 255)" });
+  expect(theme).toEqual({ surface: "#ffffff", degraded: "#fdf0d5", background: "rgb(255, 255, 255)" });
 
   expect(violations).toEqual([]);
   expect(await page.evaluate(() => (window as unknown as { __violations: string[] }).__violations)).toEqual([]);
@@ -1036,9 +1036,9 @@ test("C3-4 — each edge carries the health colour of the entity it points at", 
 
   // Degraded target, Unhealthy target, and the dashed Unknown state that is likeliest to fall
   // through a colour lookup and pick up the healthy stroke.
-  expect(strokes.r1).toBe("rgb(194, 106, 0)");
-  expect(strokes.r2).toBe("rgb(197, 15, 24)");
-  expect(strokes.r3).toBe("rgb(138, 136, 134)");
+  expect(strokes.r1).toBe("rgb(184, 106, 0)");
+  expect(strokes.r2).toBe("rgb(196, 38, 46)");
+  expect(strokes.r3).toBe("rgb(112, 123, 139)");
   expect(new Set(Object.values(strokes)).size).toBeGreaterThan(1);
 });
 

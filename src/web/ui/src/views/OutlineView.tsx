@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { JSX, PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent } from "react";
 import { FlatTree, FlatTreeItem, TreeItemLayout, makeStyles, mergeClasses, tokens } from "@fluentui/react-components";
 import type { FlatTreeProps } from "@fluentui/react-components";
 import type { ChangeBadge } from "../model/changes";
@@ -19,7 +19,7 @@ import {
   typeAheadRow,
   type OutlineRow,
 } from "../model/outline";
-import { diffTokens, impactOf, impactStyle, tokensFor } from "../model/palette";
+import { cardTokens, diffTokens, impactOf, impactStyle, tokensFor, type StateTokens } from "../model/palette";
 import type { ReorderWorld } from "../model/reorder";
 import { actions, useStore } from "../store/store";
 import { selectLastChange } from "../store/timelineSlice";
@@ -48,7 +48,7 @@ const useStyles = makeStyles({
     borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   body: { flex: 1, minHeight: 0, display: "flex", position: "relative", "@media (max-width: 720px)": { flex: "1 0 320px" } },
-  scroller: { flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto", overflowX: "hidden", backgroundColor: tokens.colorNeutralBackground1 },
+  scroller: { flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto", overflowX: "hidden", backgroundColor: cardTokens.canvas },
   empty: {
     position: "absolute",
     inset: 0,
@@ -71,8 +71,8 @@ const useStyles = makeStyles({
     // The name gives way to the counts on a narrow screen instead of the row running past its edge.
     "& .fui-TreeItemLayout__main": { flex: "1 1 0", minWidth: 0 },
   },
-  selected: { backgroundColor: tokens.colorBrandBackground2, boxShadow: `inset 3px 0 0 ${tokens.colorBrandStroke1}` },
-  highlighted: { outline: `2px solid ${tokens.colorBrandStroke1}`, outlineOffset: "-2px" },
+  selected: { backgroundColor: tokens.colorBrandBackground2, boxShadow: `inset 3px 0 0 ${cardTokens.select}` },
+  highlighted: { outline: `2px solid ${cardTokens.highlight}`, outlineOffset: "-2px" },
   dimmed: { opacity: 0.5 },
   content: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", rowGap: "2px" },
   line: { display: "flex", alignItems: "center", columnGap: tokens.spacingHorizontalS, minWidth: 0, minHeight: `${ROW_HEIGHT}px`, whiteSpace: "nowrap" },
@@ -116,6 +116,11 @@ const useStyles = makeStyles({
     fontWeight: tokens.fontWeightBold,
   },
 });
+
+/** A row carries its state in a bar at its start and a tint behind it, so the text stays on a calm ground. */
+function rowTint(token: StateTokens): CSSProperties {
+  return { backgroundColor: `color-mix(in srgb, ${token.fill} 60%, ${cardTokens.canvas})`, boxShadow: `inset 3px 0 0 ${token.border}` };
+}
 
 interface ItemProps {
   readonly row: OutlineRow;
@@ -201,7 +206,7 @@ const Item = memo(function Item({ row, top, active, selected, highlighted, marke
       onFocus={() => onFocusRow(row.key)}
       onPointerDown={(event) => onGrabRow(row.key, event)}
     >
-      <TreeItemLayout className={mergeClasses(styles.layout, selected && styles.selected, highlighted && styles.highlighted, row.dimmed && styles.dimmed)}>
+      <TreeItemLayout className={mergeClasses(styles.layout, selected && styles.selected, highlighted && styles.highlighted, row.dimmed && styles.dimmed)} style={selected ? undefined : rowTint(tokensFor(entity.healthState))}>
         <span className={styles.content}>
           <span className={styles.line}>
             {reference ? (

@@ -45,6 +45,7 @@ body {
 .topology .react-flow {
   width: 100%;
   height: 100%;
+  background-color: var(--canvas-bg);
 }
 
 .topology .react-flow__panel {
@@ -85,15 +86,19 @@ body {
   border-width: 2px;
   border-style: solid;
   border-radius: var(--borderRadiusXLarge);
-  box-shadow: var(--shadow4);
+  box-shadow: var(--card-shadow);
   font-family: var(--fontFamilyBase);
   cursor: pointer;
   outline: none;
   pointer-events: all;
 }
 
+.entity-node:hover {
+  box-shadow: var(--card-shadow-lift);
+}
+
 .entity-node.is-selected {
-  box-shadow: 0 0 0 2px var(--colorBrandStroke1);
+  box-shadow: 0 0 0 2px var(--select-ring), var(--card-shadow-lift);
 }
 
 .entity-node:focus-visible {
@@ -101,16 +106,16 @@ body {
 }
 
 .entity-node.is-highlighted {
-  box-shadow: 0 0 0 3px var(--colorBrandStroke1);
+  box-shadow: 0 0 0 3px var(--highlight-ring), var(--card-shadow-lift);
 }
 
 .entity-node.is-chain {
-  outline: 2px dashed var(--colorBrandStroke1);
+  outline: 2px dashed var(--select-ring);
   outline-offset: 3px;
 }
 
 .entity-node.is-marked {
-  box-shadow: 0 0 0 3px var(--colorPaletteMarigoldBorderActive);
+  box-shadow: 0 0 0 3px var(--mark-ring), var(--card-shadow-lift);
 }
 
 /* A card on its way to another place: it stays where its place would be, dimmed, and a see-through copy follows the pointer. */
@@ -447,11 +452,15 @@ body {
   border-width: 2px;
   border-style: solid;
   border-radius: var(--borderRadiusXLarge);
-  box-shadow: var(--shadow4);
+  box-shadow: var(--card-shadow);
   font-family: var(--fontFamilyBase);
   cursor: pointer;
   outline: none;
   pointer-events: all;
+}
+
+.cause-node:hover {
+  box-shadow: var(--card-shadow-lift);
 }
 
 .cause-node[data-state="Unhealthy"] {
@@ -468,7 +477,7 @@ body {
 }
 
 .cause-node.is-selected {
-  box-shadow: 0 0 0 2px var(--colorBrandStroke1);
+  box-shadow: 0 0 0 2px var(--select-ring), var(--card-shadow-lift);
 }
 
 .cause-node:focus-visible {
@@ -476,15 +485,15 @@ body {
 }
 
 .cause-node.is-highlighted {
-  box-shadow: 0 0 0 3px var(--colorBrandStroke1);
+  box-shadow: 0 0 0 3px var(--highlight-ring), var(--card-shadow-lift);
 }
 
 .cause-node.is-marked {
-  box-shadow: 0 0 0 3px var(--colorPaletteMarigoldBorderActive);
+  box-shadow: 0 0 0 3px var(--mark-ring), var(--card-shadow-lift);
 }
 
 .cause-node.is-chain {
-  outline: 2px dashed var(--colorBrandStroke1);
+  outline: 2px dashed var(--select-ring);
   outline-offset: 3px;
 }
 
@@ -651,6 +660,15 @@ body {
 .entity-node-shell--lod {
   display: flex;
   justify-content: center;
+}
+
+/* A chip or a dot of the zoomed-out levels carries no shadow: at that size it would only be noise. */
+.entity-node--pill,
+.entity-node--dot,
+.entity-node--speck,
+.cause-node--pill {
+  --card-shadow: 0 0 0 0 currentColor;
+  --card-shadow-lift: 0 0 0 0 currentColor;
 }
 
 .entity-node--pill {

@@ -6,9 +6,11 @@ export type StateShape = "check" | "triangle" | "square" | "ring" | "diamond";
 
 export interface StateTokens {
   readonly border: string;
-  /** Neutral for Healthy: only the states that need attention are tinted. */
+  /** Every state tints its card: Healthy green, Degraded amber, Unhealthy red, Unknown grey, Standby violet. */
   readonly fill: string;
   readonly dot: string;
+  /** The colour of the line from a parent to a child in this state: the health that flows up. */
+  readonly line: string;
   /** The mark drawn on the dot: white on a light theme's dots, dark on a dark theme's. */
   readonly on: string;
   readonly label: string;
@@ -22,6 +24,7 @@ export const stateTokens: Record<HealthState, StateTokens> = {
     border: "var(--healthy-border)",
     fill: "var(--healthy-fill)",
     dot: "var(--healthy-dot)",
+    line: "var(--healthy-line)",
     on: "var(--healthy-on)",
     label: "var(--healthy-label)",
     word: "Healthy",
@@ -32,6 +35,7 @@ export const stateTokens: Record<HealthState, StateTokens> = {
     border: "var(--degraded-border)",
     fill: "var(--degraded-fill)",
     dot: "var(--degraded-dot)",
+    line: "var(--degraded-line)",
     on: "var(--degraded-on)",
     label: "var(--degraded-label)",
     word: "Degraded",
@@ -42,6 +46,7 @@ export const stateTokens: Record<HealthState, StateTokens> = {
     border: "var(--unhealthy-border)",
     fill: "var(--unhealthy-fill)",
     dot: "var(--unhealthy-dot)",
+    line: "var(--unhealthy-line)",
     on: "var(--unhealthy-on)",
     label: "var(--unhealthy-label)",
     word: "Unhealthy",
@@ -52,6 +57,7 @@ export const stateTokens: Record<HealthState, StateTokens> = {
     border: "var(--unknown-border)",
     fill: "var(--unknown-fill)",
     dot: "var(--unknown-dot)",
+    line: "var(--unknown-line)",
     on: "var(--unknown-on)",
     label: "var(--unknown-label)",
     word: "Unknown",
@@ -62,6 +68,7 @@ export const stateTokens: Record<HealthState, StateTokens> = {
     border: "var(--deleted-border)",
     fill: "var(--deleted-fill)",
     dot: "var(--deleted-border)",
+    line: "var(--deleted-line)",
     on: "var(--deleted-on)",
     label: "var(--deleted-label)",
     word: "Standby",
@@ -93,29 +100,75 @@ export const cardTokens = {
   ink: "var(--colorNeutralForeground1)",
   muted: "var(--colorNeutralForeground2)",
   hair: "var(--colorNeutralStroke2)",
-  pillFill: "var(--colorNeutralBackground1)",
-  pillStroke: "var(--colorNeutralStroke1)",
+  pillFill: "var(--pill-fill)",
+  pillStroke: "var(--pill-stroke)",
+  /** The ground the graph views are drawn on, and the dots of its grid. */
+  canvas: "var(--canvas-bg)",
+  grid: "var(--canvas-grid)",
+  /** The ring of the selected card, the stronger ring of the one the pointer or a search points at, and a changed card's mark. */
+  select: "var(--select-ring)",
+  highlight: "var(--highlight-ring)",
+  marked: "var(--mark-ring)",
+  minimapMask: "var(--minimap-mask)",
+  /** A card's shadow at rest, and lifted under the pointer or when selected. */
+  shadow: "var(--card-shadow)",
+  shadowLift: "var(--card-shadow-lift)",
   metricBars: ["var(--deleted-border)", "var(--colorBrandForeground1)", "var(--healthy-dot)"],
 } as const;
 
-type StatePart = "border" | "fill" | "dot" | "on" | "label" | "action-bg" | "action-ink";
+type StatePart = "border" | "fill" | "dot" | "line" | "on" | "label" | "action-bg" | "action-ink";
 type StateName = "healthy" | "degraded" | "unhealthy" | "unknown" | "deleted";
 type StateColors = Readonly<Partial<Record<StatePart, string>>>;
 
-const HEALTH_COLORS: Readonly<Record<ThemeName, Readonly<Record<StateName, StateColors>>>> = {
+/**
+ * One palette per theme, each designed on its own rather than derived from the other: the dark one
+ * is a night canvas with deep tinted cards and light lines, the light one a calm grey-blue canvas
+ * with pale tinted cards and saturated lines. A colour of eight digits carries alpha.
+ */
+interface Palette {
+  /** The ground the graphs are drawn on, and the dots of their grid. */
+  readonly canvas: { readonly bg: string; readonly grid: string };
+  /** What lies on the canvas and over a line: the label pill, the card's shadow at rest and lifted, the mini-map's mask. */
+  readonly surface: {
+    readonly pillFill: string;
+    readonly pillStroke: string;
+    readonly shadow: string;
+    readonly shadowLift: string;
+    readonly minimapMask: string;
+  };
+  /** The rings of a selected card, a highlighted card and a changed card. */
+  readonly ring: { readonly select: string; readonly highlight: string; readonly marked: string };
+  /** The line of a relationship that carries nothing to the parent. */
+  readonly edge: string;
+  readonly states: Readonly<Record<StateName, StateColors>>;
+}
+
+export const PALETTES: Readonly<Record<ThemeName, Palette>> = {
   light: {
-    healthy: { border: "#d1d1d1", fill: "#ffffff", dot: "#4c9a2a", on: "#ffffff", label: "#2f7a1f", "action-bg": "#2f7a1f", "action-ink": "#ffffff" },
-    degraded: { border: "#db7500", fill: "#fbf2e7", dot: "#c26a00", on: "#ffffff", label: "#8a4b00", "action-bg": "#8a4b00", "action-ink": "#ffffff" },
-    unhealthy: { border: "#ba0d16", fill: "#faeceb", dot: "#c50f18", on: "#ffffff", label: "#9b111e", "action-bg": "#9b111e", "action-ink": "#ffffff" },
-    unknown: { border: "#c8c6c4", fill: "#f6f6f5", dot: "#8a8886", on: "#ffffff", label: "#5f5d5b", "action-bg": "#5f5d5b", "action-ink": "#ffffff" },
-    deleted: { border: "#8661c5", fill: "#f4f0fb", on: "#ffffff", label: "#5b3a8f" },
+    canvas: { bg: "#e7ebf0", grid: "#c3cad4" },
+    surface: { pillFill: "#ffffff", pillStroke: "#b7c0cc", shadow: "0 1px 2px #1b2a3d1f, 0 3px 8px #1b2a3d1f", shadowLift: "0 2px 4px #1b2a3d26, 0 10px 22px #1b2a3d40", minimapMask: "#6b778833" },
+    ring: { select: "#0f6cbd", highlight: "#0a4a86", marked: "#a35f00" },
+    edge: "#6b6967",
+    states: {
+      healthy: { border: "#3b8a35", fill: "#e4f5e0", dot: "#3b8a1f", line: "#3b8a35", on: "#ffffff", label: "#2a6e1c", "action-bg": "#2f7a1f", "action-ink": "#ffffff" },
+      degraded: { border: "#b86a00", fill: "#fdf0d5", dot: "#b86300", line: "#b86a00", on: "#ffffff", label: "#7a4200", "action-bg": "#8a4b00", "action-ink": "#ffffff" },
+      unhealthy: { border: "#c4262e", fill: "#fbe1df", dot: "#c50f18", line: "#c4262e", on: "#ffffff", label: "#8f0f1b", "action-bg": "#9b111e", "action-ink": "#ffffff" },
+      unknown: { border: "#707b8b", fill: "#f1f3f6", dot: "#6b6967", line: "#707b8b", on: "#ffffff", label: "#4f5560", "action-bg": "#5f5d5b", "action-ink": "#ffffff" },
+      deleted: { border: "#7c56bf", fill: "#efe8fa", line: "#7c56bf", on: "#ffffff", label: "#58389a" },
+    },
   },
   dark: {
-    healthy: { border: "#666666", fill: "#292929", dot: "#86efac", on: "#0f1f0f", label: "#bbf7d0", "action-bg": "#166534", "action-ink": "#ffffff" },
-    degraded: { border: "#d97706", fill: "#451a03", dot: "#fdba74", on: "#2a1200", label: "#fed7aa", "action-bg": "#9a3412", "action-ink": "#ffffff" },
-    unhealthy: { border: "#dc2626", fill: "#450a0a", dot: "#fca5a5", on: "#2e0509", label: "#fecaca", "action-bg": "#991b1b", "action-ink": "#ffffff" },
-    unknown: { border: "#64748b", fill: "#0f172a", dot: "#cbd5e1", on: "#1f1f1f", label: "#e2e8f0", "action-bg": "#334155", "action-ink": "#ffffff" },
-    deleted: { border: "#a78bfa", fill: "#2e1065", on: "#1f1f1f", label: "#ddd6fe" },
+    canvas: { bg: "#12151a", grid: "#2a303a" },
+    surface: { pillFill: "#1d2128", pillStroke: "#3d4552", shadow: "0 1px 2px #00000080, 0 3px 8px #00000066", shadowLift: "0 2px 4px #00000099, 0 10px 22px #000000b3", minimapMask: "#0000008c" },
+    ring: { select: "#5aa9f5", highlight: "#a8d2ff", marked: "#f2c94c" },
+    edge: "#8995a6",
+    states: {
+      healthy: { border: "#3f9d5f", fill: "#163a24", dot: "#86efac", line: "#46b36b", on: "#0f1f0f", label: "#bbf7d0", "action-bg": "#166534", "action-ink": "#ffffff" },
+      degraded: { border: "#d9901e", fill: "#3d2b0b", dot: "#fcc34d", line: "#e8a62e", on: "#2a1200", label: "#fde8b0", "action-bg": "#9a3412", "action-ink": "#ffffff" },
+      unhealthy: { border: "#e5484d", fill: "#461619", dot: "#fca5a5", line: "#f0585d", on: "#2e0509", label: "#fecaca", "action-bg": "#991b1b", "action-ink": "#ffffff" },
+      unknown: { border: "#6f7b8c", fill: "#242a33", dot: "#b4bdca", line: "#8995a6", on: "#1f1f1f", label: "#dfe4ea", "action-bg": "#334155", "action-ink": "#ffffff" },
+      deleted: { border: "#a78bfa", fill: "#2c2150", line: "#a78bfa", on: "#1f1f1f", label: "#ddd6fe" },
+    },
   },
 };
 
@@ -151,11 +204,12 @@ const DIFF_COLORS: Readonly<Record<ThemeName, Readonly<Record<DiffMark, { tint: 
   },
 };
 
-/** The one source of the `--<state>-<part>` custom properties that `stateTokens` refers to. */
+/** The one source of the `--<state>-<part>` and the canvas, shadow and ring custom properties that the tokens refer to. */
 export function healthVariables(theme: ThemeName): Readonly<Record<string, string>> {
+  const palette = PALETTES[theme];
   return {
     ...Object.fromEntries(
-      Object.entries(HEALTH_COLORS[theme]).flatMap(([state, colors]) =>
+      Object.entries(palette.states).flatMap(([state, colors]) =>
         Object.entries(colors).map(([part, value]) => [`${state}-${part}`, value] as const),
       ),
     ),
@@ -164,8 +218,17 @@ export function healthVariables(theme: ThemeName): Readonly<Record<string, strin
         Object.entries(colors).map(([part, value]) => [`${mark}-${part}`, value] as const),
       ),
     ),
-    // The line a relationship takes when its child needs no attention.
-    edge: HEALTH_COLORS[theme].unknown.dot as string,
+    "canvas-bg": palette.canvas.bg,
+    "canvas-grid": palette.canvas.grid,
+    "pill-fill": palette.surface.pillFill,
+    "pill-stroke": palette.surface.pillStroke,
+    "card-shadow": palette.surface.shadow,
+    "card-shadow-lift": palette.surface.shadowLift,
+    "minimap-mask": palette.surface.minimapMask,
+    "select-ring": palette.ring.select,
+    "highlight-ring": palette.ring.highlight,
+    "mark-ring": palette.ring.marked,
+    edge: palette.edge,
   };
 }
 
@@ -188,22 +251,26 @@ export interface EdgeAppearance {
   readonly cap: "butt" | "round";
 }
 
+/** How heavy the line of a child in this state is drawn: the louder the state, the heavier. */
+const LINE_WIDTH: Record<HealthState, number> = { Healthy: 1.6, Degraded: 2, Unhealthy: 2.4, Unknown: 1.4, Deleted: 1.6 };
+
 /**
- * The line from a parent to its child: neutral unless the child needs attention, coloured by what
- * the child contributes (Limited caps Unhealthy at Degraded), dashed for Limited and dotted for
- * Suppressed, and in the diff's colour when the relationship is part of a diff.
+ * The line from a parent to its child, in the colour of the health it carries up: the child's state,
+ * where Limited caps Unhealthy at Degraded. A Suppressed child carries nothing up, so its line is
+ * neutral. Dashed for Limited and dotted for Suppressed, and in the diff's colour when the
+ * relationship is part of a diff.
  */
 export function edgeAppearance(childState: string, childImpact: string, mark: DiffMark | null): EdgeAppearance {
   if (mark === "added") return { stroke: diffTokens.added.line, width: 2.6, dash: undefined, cap: "butt" };
   if (mark === "removed") return { stroke: diffTokens.removed.line, width: 1.8, dash: "3 3", cap: "butt" };
   const impact = impactOf(childImpact);
   const state = impact === "Limited" && childState === "Unhealthy" ? "Degraded" : childState;
-  const loud = impact !== "Suppressed" && (state === "Degraded" || state === "Unhealthy");
+  const known = state in stateTokens ? (state as HealthState) : "Unknown";
   const style = impact === "Standard" ? null : impactStyle[impact];
   return {
-    stroke: loud ? stateTokens[state as HealthState].dot : "var(--edge)",
-    width: loud ? (state === "Unhealthy" ? 2.4 : 2) : 1.4,
-    dash: style?.dash ?? (state === "Unknown" ? "4 3" : undefined),
+    stroke: impact === "Suppressed" ? "var(--edge)" : stateTokens[known].line,
+    width: impact === "Suppressed" ? 1.4 : LINE_WIDTH[known],
+    dash: style?.dash ?? (known === "Unknown" ? "4 3" : undefined),
     cap: style?.cap ?? "butt",
   };
 }

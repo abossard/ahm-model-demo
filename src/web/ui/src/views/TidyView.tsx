@@ -27,7 +27,7 @@ const FOCUS_MARGIN = 24;
 
 const useStyles = makeStyles({
   root: { flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" },
-  canvas: { flex: 1, minHeight: 0, position: "relative", overflow: "hidden", "@media (max-width: 720px)": { flex: "1 0 320px" } },
+  canvas: { flex: 1, minHeight: 0, position: "relative", overflow: "hidden", backgroundColor: cardTokens.canvas, "@media (max-width: 720px)": { flex: "1 0 320px" } },
   panel: {
     display: "flex",
     alignItems: "center",
@@ -333,7 +333,7 @@ function TidyCanvas({ entities, relationships, selectedName, highlightedName, ch
           elementsSelectable={false}
           proOptions={{ hideAttribution: false }}
         >
-          <Background id={side ? `tidy-${side.side}` : "tidy"} variant={BackgroundVariant.Dots} gap={24} size={2.4} color="var(--colorNeutralStroke1)" />
+          <Background id={side ? `tidy-${side.side}` : "tidy"} variant={BackgroundVariant.Dots} gap={24} size={2.4} color={cardTokens.grid} />
           <ViewportPortal>
             {layout.shelves.map((shelf, index) => (
               <div

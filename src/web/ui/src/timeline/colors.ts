@@ -1,3 +1,4 @@
+import { healthVariables } from "../model/palette";
 import type { StateCode } from "../model/timeline";
 
 export interface TimelineColors {
@@ -13,16 +14,18 @@ export interface TimelineColors {
   readonly label: Readonly<Record<StateCode, string>>;
 }
 
+/** The bright palette, for a property that is not set: the timeline then still matches the graphs. */
+const BRIGHT = healthVariables("light");
 const FALLBACK: TimelineColors = {
   ink: "#242424",
   muted: "#616161",
-  hair: "#e0e0e0",
-  panel: "#ffffff",
-  lane: "#f5f5f5",
+  hair: BRIGHT["pill-stroke"] as string,
+  panel: BRIGHT["canvas-bg"] as string,
+  lane: BRIGHT["pill-fill"] as string,
   accent: "#0f6cbd",
   cursor: "#424242",
-  state: { 0: "#8a8886", 1: "#4c9a2a", 2: "#c26a00", 3: "#c50f18", 4: "#8661c5" },
-  label: { 0: "#5f5d5b", 1: "#2f7a1f", 2: "#8a4b00", 3: "#9b111e", 4: "#5b3a8f" },
+  state: { 0: BRIGHT["unknown-dot"] as string, 1: BRIGHT["healthy-dot"] as string, 2: BRIGHT["degraded-dot"] as string, 3: BRIGHT["unhealthy-dot"] as string, 4: BRIGHT["deleted-border"] as string },
+  label: { 0: BRIGHT["unknown-label"] as string, 1: BRIGHT["healthy-label"] as string, 2: BRIGHT["degraded-label"] as string, 3: BRIGHT["unhealthy-label"] as string, 4: BRIGHT["deleted-label"] as string },
 };
 
 /**
@@ -35,9 +38,9 @@ export function readColors(element: Element): TimelineColors {
   return {
     ink: read("--colorNeutralForeground1", FALLBACK.ink),
     muted: read("--colorNeutralForeground2", FALLBACK.muted),
-    hair: read("--colorNeutralStroke2", FALLBACK.hair),
-    panel: read("--colorNeutralBackground1", FALLBACK.panel),
-    lane: read("--colorNeutralBackground3", FALLBACK.lane),
+    hair: read("--pill-stroke", FALLBACK.hair),
+    panel: read("--canvas-bg", FALLBACK.panel),
+    lane: read("--pill-fill", FALLBACK.lane),
     accent: read("--colorBrandForeground1", FALLBACK.accent),
     cursor: read("--colorNeutralForeground2", FALLBACK.cursor),
     state: {

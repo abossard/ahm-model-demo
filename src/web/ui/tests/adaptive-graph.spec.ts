@@ -416,7 +416,7 @@ test("health checkbox labels keep theme colors and exclude Standby", async ({ pa
   const degradedSwatchLight = await page
     .getByTestId("health-swatch-Degraded")
     .evaluate((item) => getComputedStyle(item).backgroundColor);
-  expect(degradedSwatchLight).toBe("rgb(194, 106, 0)");
+  expect(degradedSwatchLight).toBe("rgb(184, 99, 0)");
   await closeHealthFilter(page);
 
   await page.getByTestId("theme-toggle").click();
@@ -424,7 +424,7 @@ test("health checkbox labels keep theme colors and exclude Standby", async ({ pa
   const degradedSwatchDark = await page
     .getByTestId("health-swatch-Degraded")
     .evaluate((item) => getComputedStyle(item).backgroundColor);
-  expect(degradedSwatchDark).toBe("rgb(253, 186, 116)");
+  expect(degradedSwatchDark).toBe("rgb(252, 195, 77)");
 });
 
 test("hide mode removes deselected-state nodes and edges", async ({ page }) => {
@@ -465,7 +465,7 @@ test("dot mode keeps deselected-state nodes as gray dots with muted edges", asyn
 
   const dot = page.locator('.react-flow__node[data-id="svc-b"] .entity-node[data-role="dot"]');
   await expect(dot).toBeVisible();
-  await expect(dot).toHaveCSS("background-color", "rgb(138, 136, 134)");
+  await expect(dot).toHaveCSS("background-color", "rgb(107, 105, 103)");
 
   const edgeStrokes = await page
     .locator(".react-flow__edge .react-flow__edge-path")

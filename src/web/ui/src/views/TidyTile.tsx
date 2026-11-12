@@ -4,7 +4,7 @@ import { makeStyles, mergeClasses, tokens } from "@fluentui/react-components";
 import { Handle, Position } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
 import type { ChangeBadge } from "../model/changes";
-import { diffTokens, impactOf, impactStyle, tokensFor } from "../model/palette";
+import { cardTokens, diffTokens, impactOf, impactStyle, tokensFor } from "../model/palette";
 import { tileSignals, SIGNAL_GLYPHS, type Fold } from "../model/tidy";
 import type { Entity } from "../model/types";
 import { ICONS, pickIcon } from "../components/EntityNode";
@@ -32,12 +32,14 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground1,
     pointerEvents: "all",
     outlineStyle: "none",
+    boxShadow: cardTokens.shadow,
+    ":hover": { boxShadow: cardTokens.shadowLift },
     ":focus-visible": { boxShadow: `0 0 0 2px ${tokens.colorStrokeFocus1}, 0 0 0 4px ${tokens.colorStrokeFocus2}` },
   },
-  selected: { boxShadow: `0 0 0 2px ${tokens.colorBrandStroke1}` },
-  highlighted: { boxShadow: `0 0 0 3px ${tokens.colorBrandStroke1}` },
-  marked: { boxShadow: `0 0 0 3px ${tokens.colorPaletteMarigoldBorderActive}` },
-  chain: { outlineStyle: "dashed", outlineWidth: "2px", outlineColor: tokens.colorBrandStroke1, outlineOffset: "3px" },
+  selected: { boxShadow: `0 0 0 2px ${cardTokens.select}, ${cardTokens.shadowLift}`, ":hover": { boxShadow: `0 0 0 2px ${cardTokens.select}, ${cardTokens.shadowLift}` } },
+  highlighted: { boxShadow: `0 0 0 3px ${cardTokens.highlight}, ${cardTokens.shadowLift}`, ":hover": { boxShadow: `0 0 0 3px ${cardTokens.highlight}, ${cardTokens.shadowLift}` } },
+  marked: { boxShadow: `0 0 0 3px ${cardTokens.marked}, ${cardTokens.shadowLift}`, ":hover": { boxShadow: `0 0 0 3px ${cardTokens.marked}, ${cardTokens.shadowLift}` } },
+  chain: { outlineStyle: "dashed", outlineWidth: "2px", outlineColor: cardTokens.select, outlineOffset: "3px" },
   dimmed: { opacity: 0.5 },
   bar: { position: "absolute", left: "4px", top: "8px", bottom: "8px", width: "3px", borderRadius: "2px" },
   top: { display: "flex", alignItems: "flex-start", columnGap: tokens.spacingHorizontalS, minWidth: 0 },

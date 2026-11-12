@@ -1,4 +1,5 @@
 import { makeStyles, tokens } from "@fluentui/react-components";
+import { cardTokens } from "../model/palette";
 import { ROW_HEIGHT } from "../model/timelineRows";
 import { AXIS_HEIGHT, INCIDENT_BAND } from "./draw";
 
@@ -12,7 +13,7 @@ export const useStyles = makeStyles({
     flexDirection: "column",
     minHeight: 0,
     flexShrink: 0,
-    backgroundColor: tokens.colorNeutralBackground1,
+    backgroundColor: cardTokens.canvas,
     borderTop: `1px solid ${tokens.colorNeutralStroke1}`,
     // The graph keeps half of the column, however the timeline was dragged.
     maxHeight: "50%",
@@ -100,7 +101,7 @@ export const useStyles = makeStyles({
     width: `${LABEL_WIDTH}px`,
     overflow: "hidden",
     borderRight: `1px solid ${tokens.colorNeutralStroke2}`,
-    backgroundColor: tokens.colorNeutralBackground1,
+    backgroundColor: cardTokens.canvas,
     "@media (max-width: 720px)": { width: `${LABEL_WIDTH_NARROW}px` },
   },
   labelsHead: {

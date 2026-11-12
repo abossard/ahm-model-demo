@@ -6,7 +6,7 @@ import { visibleGraph } from "../model/collapse";
 import { noEntitiesText } from "../model/compare";
 import { coverage, neighbour, type Direction } from "../model/coverage";
 import { layoutCoverage, type LaidCell } from "../model/coverageLayout";
-import { diffTokens, impactOf, impactStyle, tokensFor } from "../model/palette";
+import { cardTokens, diffTokens, impactOf, impactStyle, tokensFor } from "../model/palette";
 import type { ReorderWorld } from "../model/reorder";
 import type { Entity } from "../model/types";
 import { StateGlyph } from "../components/StateGlyph";
@@ -26,7 +26,7 @@ const KEYS: Readonly<Record<string, Direction>> = {
 };
 
 const useStyles = makeStyles({
-  root: { flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", backgroundColor: tokens.colorNeutralBackground2 },
+  root: { flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", backgroundColor: cardTokens.canvas },
   bar: {
     flex: "0 0 auto",
     display: "flex",
@@ -138,7 +138,7 @@ function Cell({ cell, entity, parts, step, badge, marked, selected, highlighted,
         height={cell.height + 6}
         rx={8}
         fill="none"
-        stroke={marked ? "var(--colorPaletteMarigoldBorderActive)" : "var(--colorBrandStroke1)"}
+        stroke={marked ? cardTokens.marked : cardTokens.select}
         strokeWidth={highlighted || marked ? 3.5 : 2.5}
         style={{ opacity: selected || highlighted || marked || step !== null ? 1 : undefined }}
         strokeDasharray={step !== null && !selected ? "5 3" : undefined}
@@ -148,7 +148,7 @@ function Cell({ cell, entity, parts, step, badge, marked, selected, highlighted,
         height={cell.height}
         rx={cell.width < 8 ? 1 : 5}
         fill={fill}
-        stroke={diff ? diff.line : entity.healthState === "Healthy" ? "var(--colorNeutralStroke1)" : token.border}
+        stroke={diff ? diff.line : token.border}
         strokeWidth={entity.healthState === "Unhealthy" || (diff && !strips) ? 2 : strips ? 0.5 : 1.2}
         strokeDasharray={strips ? undefined : dash}
         strokeLinecap="round"
@@ -447,7 +447,7 @@ export function CoverageView({ entities, relationships, selectedName, highlighte
             })()}
             <g aria-hidden="true" pointerEvents="none">
               {arcs.map((arc) => (
-                <path key={arc.parent} data-testid="coverage-arc" data-parent={arc.parent} d={arc.d} fill="none" stroke="var(--colorBrandStroke1)" strokeWidth={2.4} strokeDasharray="6 4" />
+                <path key={arc.parent} data-testid="coverage-arc" data-parent={arc.parent} d={arc.d} fill="none" stroke={cardTokens.select} strokeWidth={2.4} strokeDasharray="6 4" />
               ))}
             </g>
           </svg>

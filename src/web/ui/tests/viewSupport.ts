@@ -83,7 +83,13 @@ export async function contrastOf(locator: Locator): Promise<number> {
     };
     return { color: getComputedStyle(element).color, background: behind(element) };
   });
-  const channels = (text: string): number[] => (/\(([^)]+)\)/.exec(text)?.[1] ?? "").split(",").slice(0, 3).map((part) => Number(part));
+  // A mixed colour reads back as `color(srgb 0.1 0.2 0.3)`, with channels from 0 to 1.
+  const channels = (text: string): number[] => {
+    const inner = /\(([^)]+)\)/.exec(text)?.[1] ?? "";
+    return text.startsWith("color(srgb")
+      ? inner.replace("srgb", "").split("/")[0]!.trim().split(/\s+/).map((part) => Number(part) * 255)
+      : inner.split(",").slice(0, 3).map((part) => Number(part));
+  };
   const luminance = (rgb: number[]): number => {
     const [r, g, b] = rgb.map((value) => {
       const unit = value / 255;
