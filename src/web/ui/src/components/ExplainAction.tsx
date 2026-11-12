@@ -3,13 +3,18 @@ import { Button, Link, Spinner, Text, makeStyles, tokens } from "@fluentui/react
 import { Lightbulb20Regular } from "@fluentui/react-icons";
 import { sameModel } from "../model/selection";
 import { isUnfinished } from "../model/tasks";
-import { whyQuestion } from "../model/wording";
-import { actions, useStore } from "../store/store";
+import type { HealthState } from "../model/types";
+import { momentWords, whyQuestion } from "../model/wording";
+import { actions, useStore, type Store } from "../store/store";
+import { selectEntityAt, selectMomentMinute } from "../store/timelineSlice";
+import { useAtMoment } from "../timeline/useAtMoment";
 
 const useStyles = makeStyles({
   root: { display: "flex", flexWrap: "wrap", alignItems: "center", columnGap: tokens.spacingHorizontalM, rowGap: tokens.spacingVerticalXS },
   hint: { fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground2 },
 });
+
+const selectState = (state: Store): HealthState | null => selectEntityAt(state)?.healthState ?? null;
 
 /**
  * The action area of the selected entity: one click asks why the entity has its state. While that question starts or runs
@@ -29,11 +34,10 @@ export function ExplainAction(): JSX.Element {
     );
   });
   const running = runningSeq !== null;
-  // The question names the state the entity has now, because that is what the user is looking at.
-  const question = useStore((state) => {
-    const entity = state.model.kind === "success" ? state.model.value.entities.find((item) => item.name === state.selectedName) : undefined;
-    return whyQuestion(entity?.healthState ?? null);
-  });
+  // The question names the state the entity has on screen, now or at the selected moment, because that is what the user is looking at.
+  const state = useAtMoment(selectState);
+  const minute = useAtMoment(selectMomentMinute);
+  const question = whyQuestion(state, null, minute === null ? null : momentWords(minute, Date.now()));
 
   return (
     <div className={styles.root} data-testid="entity-actions">

@@ -25,8 +25,10 @@ import {
   Sparkle20Regular,
 } from "@fluentui/react-icons";
 import { launchFailure } from "../model/errors";
-import { whyQuestion } from "../model/wording";
+import { ABOUT_NOW, NOW_NOTE, momentWords, whyQuestion } from "../model/wording";
 import { actions, useStore } from "../store/store";
+import { selectEntityAt, selectMomentMinute } from "../store/timelineSlice";
+import { useAtMoment } from "../timeline/useAtMoment";
 
 const TOAST_MS = 12_000;
 
@@ -47,22 +49,30 @@ const useStyles = makeStyles({
   },
 });
 
-function useLaunchState(): { readonly starting: boolean; readonly model: boolean; readonly question: string | null } {
+interface LaunchState {
+  readonly starting: boolean;
+  readonly model: boolean;
+  readonly question: string | null;
+  /** The page shows a past moment: a question about an entity is about then, a check and a design about now. */
+  readonly past: boolean;
+}
+
+function useLaunchState(): LaunchState {
   const starting = useStore((state) => state.launch.kind === "starting");
   const model = useStore((state) => state.selected !== null);
-  // The question about the selected entity, in the state it has now.
-  const question = useStore((state) => {
-    if (state.selectedName === null) return null;
-    const entity = state.model.kind === "success" ? state.model.value.entities.find((item) => item.name === state.selectedName) : undefined;
-    return whyQuestion(entity?.healthState ?? null, entity?.displayName ?? state.selectedName);
-  });
-  return { starting, model, question };
+  const selectedName = useStore((state) => state.selectedName);
+  // The question about the selected entity, in the state it has on screen: now, or at the selected moment.
+  const entity = useAtMoment(selectEntityAt);
+  const minute = useAtMoment(selectMomentMinute);
+  const at = minute === null ? null : momentWords(minute, Date.now());
+  const question = selectedName === null ? null : whyQuestion(entity?.healthState ?? null, entity?.displayName ?? selectedName, at);
+  return { starting, model, question, past: minute !== null };
 }
 
 /** "Ask" in the top bar: the question about an entity and the model check start at once; Design opens its form, because it asks about the workload. */
 export function TaskMenu(): JSX.Element {
   const styles = useStyles();
-  const { starting, model, question } = useLaunchState();
+  const { starting, model, question, past } = useLaunchState();
   return (
     <Menu>
       <MenuTrigger disableButtonEnhancement>
@@ -83,6 +93,7 @@ export function TaskMenu(): JSX.Element {
           <MenuItem
             icon={<DocumentSearch20Regular />}
             disabled={!model}
+            {...(past ? { secondaryContent: ABOUT_NOW } : {})}
             onClick={() => void actions.startTask({ type: "review" })}
             data-testid="menu-review"
           >
@@ -97,7 +108,7 @@ export function TaskMenu(): JSX.Element {
           >
             {question ?? "Why is an entity in its state?"}
           </MenuItem>
-          <MenuItem icon={<Sparkle20Regular />} onClick={() => actions.prefillTask("design")} data-testid="menu-design">
+          <MenuItem icon={<Sparkle20Regular />} {...(past ? { secondaryContent: ABOUT_NOW } : {})} onClick={() => actions.prefillTask("design")} data-testid="menu-design">
             Design a model for my workload…
           </MenuItem>
         </MenuList>
@@ -109,7 +120,7 @@ export function TaskMenu(): JSX.Element {
 /** The two starts that need no entity, for the places that have nothing else to show yet. */
 export function StartButtons(): JSX.Element {
   const styles = useStyles();
-  const { starting, model } = useLaunchState();
+  const { starting, model, past } = useLaunchState();
   return (
     <div className={styles.row}>
       <Button
@@ -117,6 +128,7 @@ export function StartButtons(): JSX.Element {
         icon={starting ? <Spinner size="tiny" /> : <DocumentSearch20Regular />}
         disabled={!model}
         disabledFocusable={starting}
+        title={past ? NOW_NOTE : undefined}
         onClick={() => void actions.startTask({ type: "review" })}
         data-task-launcher=""
         data-testid="start-review"

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { EntityInfo, TimelineResponse } from "./timeline";
 import { heldFrom } from "./timelineFixture";
 import type { Band } from "./timelineBands";
-import { coveredSpan, detectIncidents, entityBands, incidentText, modelAt } from "./timelineIncidents";
+import { coveredSpan, detectIncidents, incidentText } from "./timelineIncidents";
 
 const band = (a: number, b: number, state: 0 | 1 | 2 | 3): Band => ({ a, b, state });
 
@@ -70,26 +70,8 @@ describe("incidentText", () => {
   });
 });
 
-describe("the model at an instant", () => {
+describe("the span a history covers", () => {
   const { data } = heldFrom(overview({}));
-  const bandsOf = (info: EntityInfo) => entityBands(data, info);
-
-  it.each([
-    { t: 100, a: "Healthy", b: "Healthy" },
-    { t: 399, a: "Healthy", b: "Healthy" },
-    { t: 400, a: "Unhealthy", b: "Healthy" },
-    { t: 900, a: "Unhealthy", b: "Healthy" },
-    { t: -5, a: "Unknown", b: "Unknown" },
-  ])("at $t a is $a and b is $b", ({ t, a, b }) => {
-    const rows = modelAt(data, t, bandsOf);
-
-    expect(rows.map((row) => row.state)).toEqual([a, b]);
-    expect(rows.map((row) => row.entity)).toEqual(["a", "b"]);
-  });
-
-  it("an entity with no held history is unknown", () => {
-    expect(modelAt({ ...data, entities: [entity("c")] }, 100, bandsOf)[0]?.state).toBe("Unknown");
-  });
 
   it("covers the whole held range", () => {
     expect(coveredSpan(data.states.a?.covered ?? [], { from: 5, to: 6 })).toEqual({ from: 0, to: 1000 });

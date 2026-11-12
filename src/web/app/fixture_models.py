@@ -222,6 +222,10 @@ class FixtureHealthModels:
                     signal["status"] = {"healthState": judge(value, rules), "value": value, "reportedAt": iso_time(datetime.fromtimestamp(evaluated / 1000, tz=timezone.utc))}
         return resource
 
+    def state_at(self, entity, moment):
+        """The state an entity of the default model had at a moment, from the same history the timeline is read from."""
+        return self.history.entity_state(entity, int(moment.timestamp() * 1000))
+
     @property
     def history_entities(self):
         return {name for name, _ in SPECS} | {self.history._root, "payments", "web-frontend"}

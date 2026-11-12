@@ -75,6 +75,8 @@ RESOURCE_GROUP_NAME = re.compile(r"[A-Za-z0-9_.()-]{1,90}")
 ARM_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{1,258}[A-Za-z0-9]")
 CLOUDHEALTH_API_VERSION = "2026-11-01"
 TIMELINE_RETENTION_DAYS = 30
+# The moment an Explain is about (`asOf`) may be this far ahead of the app's clock: a browser's clock is never quite the app's.
+AS_OF_SKEW_SECONDS = 120
 TIMELINE_MIN_SPAN_SECONDS = 60
 TIMELINE_DEFAULT_SPAN_HOURS = 24
 TIMELINE_MAX_SERIES = 120

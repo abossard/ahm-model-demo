@@ -125,9 +125,57 @@ export function historyAt(levels: Levels | undefined, t: number): SeriesHistory 
   return undefined;
 }
 
+/**
+ * When an entity last changed its state at or before t, null when the history held has no change that early. With a
+ * null t it is the last change held: the one of now. O(log n).
+ */
+export function lastChangeAt(track: Track<Transition> | undefined, t: number | null): number | null {
+  if (!track) return null;
+  const row = t === null ? track.rows[track.rows.length - 1] : track.rows[upperBound(track.rows, t, (item) => item.t) - 1];
+  return row?.t ?? null;
+}
+
+/**
+ * The entity whose state is the model's own: the one named like the model, as the service names its root, else the
+ * first that has dependencies and no parent.
+ */
+export function rootOf(model: HealthModel): Entity | undefined {
+  return model.entities.find((entity) => entity.name === model.model.name) ?? model.entities.find((entity) => entity.parents.length === 0 && entity.children.length > 0);
+}
+
+const byName = new WeakMap<HealthModel, ReadonlyMap<string, Entity>>();
+
+/** An entity of a model by its name. The index is made once per model object, so a selector may ask on every change of the store. */
+export function entityOf(model: HealthModel | null, name: string | null): Entity | undefined {
+  if (model === null || name === null) return undefined;
+  let index = byName.get(model);
+  if (!index) {
+    index = new Map(model.entities.map((entity) => [entity.name, entity]));
+    byName.set(model, index);
+  }
+  return index.get(name);
+}
+
 /** The state of every entity at t, by name: Unknown (0) where the history held does not say. O(entities · log n). */
 export function statesAt(store: TimeStore, t: number): ReadonlyMap<string, StateCode> {
   return new Map(store.entities.map((entity) => [entity.name, stateAt(store.states[entity.name], t, store.now, entity.state) ?? 0]));
+}
+
+/** An entity that was Degraded or Unhealthy at a moment. */
+export interface Troubled {
+  readonly entity: string;
+  readonly displayName: string;
+  readonly state: 2 | 3;
+}
+
+/** The entities that were Degraded or Unhealthy at t, in the order of the model. */
+export function troubledAt(store: TimeStore, t: number): readonly Troubled[] {
+  const out: Troubled[] = [];
+  for (const entity of store.entities) {
+    const state = stateAt(store.states[entity.name], t, store.now, entity.state);
+    if (state === 2 || state === 3) out.push({ entity: entity.name, displayName: entity.displayName, state });
+  }
+  return out;
 }
 
 interface Memo {
@@ -144,11 +192,19 @@ function sameSignals(a: readonly EntitySignal[], b: readonly EntitySignal[]): bo
   return a.length === b.length && a.every((signal, index) => signal === b[index] || (signal.value === b[index]?.value && signal.healthState === b[index]?.healthState && signal.reportedAt === b[index]?.reportedAt));
 }
 
+/** When the newest of some signals was evaluated, as the app says it for an entity of now. */
+function latestEvaluation(signals: readonly EntitySignal[]): string | null {
+  let latest: string | null = null;
+  for (const signal of signals) if (signal.reportedAt !== null && (latest === null || signal.reportedAt > latest)) latest = signal.reportedAt;
+  return latest;
+}
+
 /**
  * Makes a `modelAt`: the health model the graph views take, as it was at a moment. The entities and relationships are
- * the ones the model has now (the service keeps no history of the structure); the state of every entity, the value and
- * state of every signal and the model's own state (that of its root entity) are those of the moment. A signal whose
- * history at the moment is not held reads as Unknown with no value, never as its value of now.
+ * the ones the model has now (the browser holds the history of states and values, not of the structure); the state of
+ * every entity, the value and state of every signal, when each was last evaluated and the model's own state (that of
+ * its root entity, `rootOf`) are those of the moment. A signal whose history at the moment is not held reads as Unknown
+ * with no value, never as its value of now.
  *
  * It remembers its last answer: a null moment gives the live model itself, a moment that crosses no transition and no
  * evaluation gives the same object again (without looking anything up), and after any other move every entity that
@@ -172,6 +228,7 @@ export function createModelAt(): (model: HealthModel, store: TimeStore, t: numbe
       memo.model.reportOptions !== model.reportOptions ||
       memo.model.model !== model.model;
     let rootState: StateCode = 0;
+    const root = rootOf(model);
     const entities = model.entities.map((entity, index) => {
       const known = info.get(entity.name);
       const state = stateHeld(store.states[entity.name], t, store.now, known?.state ?? 0);
@@ -185,10 +242,10 @@ export function createModelAt(): (model: HealthModel, store: TimeStore, t: numbe
         return { ...signal, value: shown?.value ?? null, healthState: stateName(shown?.state ?? 0), reportedAt: shown ? new Date(shown.t).toISOString() : null };
       });
       const healthState = stateName(state.value ?? 0);
-      if (entity.name === model.model.name) rootState = state.value ?? 0;
+      if (entity === root) rootState = state.value ?? 0;
       const last = before?.get(entity);
       const same = last !== undefined && last.healthState === healthState && sameSignals(last.signals, signals);
-      const out = same ? last : { ...entity, healthState, signals };
+      const out = same ? last : { ...entity, healthState, signals, latestEvaluationAt: latestEvaluation(signals) };
       if (memo?.result.entities[index] !== out) changed = true;
       made.set(entity, out);
       return out;

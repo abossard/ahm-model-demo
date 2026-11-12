@@ -86,6 +86,7 @@ describe("sessionTitle", () => {
     { name: "an Explain of an Unknown entity", input: explain, label: "Session Storage", state: "Unknown" as const, expected: "Why is the state of Session Storage unknown? (11 Nov 14:05)" },
     { name: "an Explain without a state", input: explain, label: "Session Storage", state: null, expected: "Why is Session Storage in this state? (11 Nov 14:05)" },
     { name: "an Explain without a display name", input: explain, label: null, state: "Degraded" as const, expected: "Why is svc-storage Degraded? (11 Nov 14:05)" },
+    { name: "an Explain about a past moment", input: { ...explain, asOf: "2026-11-10T23:40:00Z" }, label: "Session Storage", state: "Unhealthy" as const, expected: "Why was Session Storage Unhealthy at 10 Nov 23:40? (11 Nov 14:05)" },
     { name: "a Review", input: review, label: null, state: null, expected: "Check hm-demo (11 Nov 14:05)" },
     { name: "a Design by the resource group", input: design(), label: null, state: null, expected: "Design for rg-demo (11 Nov 14:05)" },
     { name: "a Design by the repository", input: design("https://github.com/contoso/orders.git"), label: null, state: null, expected: "Design for contoso/orders (11 Nov 14:05)" },

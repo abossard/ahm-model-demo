@@ -7,7 +7,8 @@ import { sameModel } from "../model/selection";
 import { formatSignalValue } from "../model/signalValue";
 import type { ExplainResult as ExplainResultData, Task } from "../model/types";
 import { actions, useStore } from "../store/store";
-import { lookedAt } from "../model/wording";
+import { askedMoment } from "../model/tasks";
+import { lookedAt, stateHeading } from "../model/wording";
 import { AgentText } from "./AgentText";
 import { HealthBadge } from "./HealthBadge";
 import { HowSure } from "./HowSure";
@@ -76,6 +77,7 @@ export function ExplainResult({
   const names = useMemo(() => chainEntities(result), [result]);
   const { evidence } = useMemo(() => splitAnswer(result.summary), [result.summary]);
   const looked = result.window ? lookedAt(result.window) : null;
+  const asked = askedMoment(task);
   const display = useMemo(
     () => new Map(model.kind === "success" ? model.value.entities.map((entity) => [entity.name, entity.displayName] as const) : []),
     [model],
@@ -91,11 +93,16 @@ export function ExplainResult({
   return (
     <div className={styles.root} data-testid="explain-result">
       <div className={styles.headline}>
-        <Text>Current state</Text>
+        <Text data-testid="explain-state-label">{stateHeading(asked)}</Text>
         <span data-testid="explain-state">
           <HealthBadge state={result.state} />
         </span>
       </div>
+      {asked !== null ? (
+        <Text data-testid="explain-moment">
+          This answer is about {asked}. The state now may differ.
+        </Text>
+      ) : null}
       <HowSure confidence={result.confidence} testId="explain-confidence" />
       {looked !== null ? (
         <Text data-testid="explain-window">

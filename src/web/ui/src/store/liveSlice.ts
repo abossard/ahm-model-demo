@@ -63,7 +63,8 @@ export const liveSlice: StateCreator<Store, [], [], LiveState & LiveActions> = (
       refreshError: null,
       liveEventAt: observed,
       liveSkew: clockSkew(observed, Date.now()),
-      ...(changes.length === 0
+      // While the page shows a past moment a change of now is not what it shows: it is kept, and neither told nor flashed.
+      ...(changes.length === 0 || state.timelinePinned !== null
         ? {}
         : {
             liveAnnouncement: announcement(changes),
@@ -72,7 +73,7 @@ export const liveSlice: StateCreator<Store, [], [], LiveState & LiveActions> = (
       // The timeline's store takes the new rows; a read of the timeline that is on its way gets them applied to its answer.
       ...liveTimeline(state, delta?.timeline, observed, current, TIMELINE_HOLD_MS),
     }));
-    if (changes.length > 0) flashEntities(changes.map((change) => change.name));
+    if (changes.length > 0 && get().timelinePinned === null) flashEntities(changes.map((change) => change.name));
   };
 
   const onEvent = (event: LiveEvent): void => {

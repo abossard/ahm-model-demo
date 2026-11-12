@@ -304,6 +304,8 @@ export interface Task {
   readonly target: TaskTarget;
   readonly workload?: TaskWorkload;
   readonly instruction: string;
+  /** The past moment an Explain is about, as an ISO instant; absent for a question about now. */
+  readonly asOf?: string;
   readonly status: TaskStatus;
   readonly base?: TaskBase;
   readonly result?: TaskResult;
@@ -368,4 +370,6 @@ export interface TaskInput {
   readonly target: TaskTarget;
   readonly workload?: TaskWorkload;
   readonly instruction: string;
+  /** The past moment an Explain asks about, as an ISO instant. A Review and a Design are about now and never have one. */
+  readonly asOf?: string;
 }

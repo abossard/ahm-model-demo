@@ -106,19 +106,23 @@ def group_resource_list(resource_group: str = "rg") -> str:
 RELATIONSHIPS = [{"name": "r-root-checkout", "parent": "hm", "child": "checkout"}]
 
 
-def envelope(task_id, task_type="design", entity=None, model="hm", instruction=""):
+def envelope(task_id, task_type="design", entity=None, model="hm", instruction="", as_of=None):
     task = {
         "id": task_id,
         "type": task_type,
         "target": {"subscriptionId": "s", "resourceGroup": "rg", "name": model, **({"entity": entity} if entity else {})},
         "workload": None,
         "instruction": instruction,
+        **({"asOf": as_of} if as_of else {}),
     }
     body = {"task": task} if task_type == "explain" else {"task": task, "relationships": RELATIONSHIPS}
     return f"Run this task.\n{json.dumps(body)}"
 
 
-AZURE_ARGUMENTS = ("subscription", "resource-group", "health-model", "entity", "include", "walk", "start-at", "end-at", "workspace", "resource")
+AZURE_ARGUMENTS = (
+    "subscription", "resource-group", "health-model", "entity", "include", "walk", "start-at", "end-at", "timestamp", "workspace", "resource",
+    "metric-names", "interval", "start-time", "end-time", "table", "query", "hours", "resource-name",
+)
 NOW = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
 INSPECTED = json.dumps({"results": {"entities": [{"entity": {"name": "checkout", "properties": {"healthState": "Healthy"}}}]}})
 
@@ -786,6 +790,71 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn(refusal, result.result)
                 else:
                     self.assertEqual(seen[0]["start-at"], start)
+
+    async def test_a_task_about_a_past_moment_reads_the_model_its_history_and_its_evidence_for_that_moment(self):
+        moment, day_before = "2026-11-10T10:00:00Z", "2026-11-09T10:00:00Z"
+        seen = {name: [] for name in ("monitor_healthmodels_inspect", "monitor_metrics_query", "monitor_workspace_log_query", "monitor_activitylog_list")}
+        window = {"from": day_before, "to": moment}
+        steps = [
+            [
+                call("monitor_healthmodels_inspect", subscription="s", entity="checkout", walk="Causes", include=["Signals"]),
+                call("monitor_healthmodels_inspect", subscription="s", entity="checkout", include=["History", "SignalHistory"], **{"start-at": "2026-11-11T00:00:00Z"}),
+                call("monitor_metrics_query", subscription="s", resource="db", interval="PT5M", **{"metric-names": "cpu"}),
+                call("monitor_workspace_log_query", subscription="s", workspace="w", table="AppRequests", query="AppRequests | where TimeGenerated > ago(5m) | count"),
+                call("monitor_workspace_log_query", subscription="s", workspace="w", table="AppRequests", query="AppRequests | count"),
+                call("monitor_activitylog_list", subscription="s", **{"resource-name": "db"}),
+            ],
+            [call("submit_result", result=explained(window={"from": "2026-11-10T12:00:00Z", "to": "2026-11-11T12:00:00Z"}))],
+            [call("submit_result", result=explained(window=window))],
+        ]
+
+        client, response = await self.run_agent(
+            [envelope("t-7", "explain", "checkout", as_of=moment)], steps, tools=[azure_tool(name, calls, INSPECTED) for name, calls in seen.items()], clock=lambda: NOW
+        )
+
+        self.assertEqual(
+            seen["monitor_healthmodels_inspect"],
+            [
+                {"subscription": "s", "entity": "checkout", "walk": "Causes", "include": ["Signals"], "timestamp": moment},
+                {"subscription": "s", "entity": "checkout", "include": ["History", "SignalHistory"], "start-at": day_before, "end-at": moment, "timestamp": moment},
+            ],
+        )
+        self.assertEqual(seen["monitor_metrics_query"], [{"subscription": "s", "resource": "db", "interval": "PT5M", "metric-names": "cpu", "start-time": day_before, "end-time": moment}])
+        self.assertEqual(
+            seen["monitor_workspace_log_query"],
+            [{"subscription": "s", "workspace": "w", "table": "AppRequests", "hours": 50, "query": f"AppRequests | where TimeGenerated between ((datetime({moment}) - 5m) .. datetime({moment})) | count"}],
+        )
+        self.assertEqual(seen["monitor_activitylog_list"], [{"subscription": "s", "resource-name": "db", "hours": 50}])
+        refused = [result for result in results_of(response.messages) if isinstance(result, str) and result.startswith("Error: refused. ")]
+        self.assertEqual(len(refused), 1)
+        self.assertIn(f"datetime({day_before}) .. datetime({moment})", refused[0])
+        answers = submissions(response.messages)
+        self.assertEqual([answer["status"] for answer in answers], ["rejected", "accepted"])
+        self.assertEqual(answers[0]["problems"], [f"window: history was read for this period: set `window` to {day_before} and {moment} as `from` and `to`"])
+        self.assertIn("The Task has `asOf`", client.instructions)
+        self.assertNotIn("History is not part of the default answer", client.instructions)
+
+    async def test_only_an_explain_with_a_moment_reads_the_past(self):
+        cases = [
+            ("an explain about now", "explain", "checkout", None),
+            ("a review that names a moment", "review", None, "2026-11-10T10:00:00Z"),
+            ("an explain with no time for a moment", "explain", "checkout", "yesterday"),
+        ]
+        for label, task_type, entity, as_of in cases:
+            with self.subTest(label):
+                seen = {name: [] for name in ("monitor_healthmodels_inspect", "monitor_metrics_query")}
+                steps = [
+                    [call("monitor_healthmodels_inspect", subscription="s", include=["Signals"], **({"entity": entity} if entity else {})), call("monitor_metrics_query", subscription="s", resource="db")],
+                    [Content.from_text("Done.")],
+                ]
+
+                client, _ = await self.run_agent(
+                    [envelope("t-7", task_type, entity, as_of=as_of)], steps, tools=[azure_tool(name, calls, INSPECTED) for name, calls in seen.items()], clock=lambda: NOW
+                )
+
+                self.assertNotIn("timestamp", seen["monitor_healthmodels_inspect"][0])
+                self.assertEqual(seen["monitor_metrics_query"], [{"subscription": "s", "resource": "db"}])
+                self.assertNotIn("The Task has `asOf`", client.instructions)
 
     async def test_an_azure_call_outside_the_task_is_refused_and_never_reaches_the_tool(self):
         resource = "/subscriptions/s/resourceGroups/other-rg/providers/Microsoft.Web/sites/w"

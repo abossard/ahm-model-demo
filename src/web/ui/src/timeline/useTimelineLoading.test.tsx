@@ -231,6 +231,19 @@ describe("useTimelineLoading", () => {
     expect(signalCalls().map((call) => [call[1].from, call[1].to])).toEqual([[(tileOf(NOW, DAY) - 1) * DAY, (tileOf(NOW, DAY) + 1) * DAY]]);
   });
 
+  it("the moment a link named stays when the timeline is set up, and another model begins at now", async () => {
+    const moment = NOW - 3 * DAY;
+    useStore.setState({ timelinePinned: moment });
+
+    await show([0, 0]);
+    await advance(300);
+    expect(useStore.getState().timelinePinned).toBe(moment);
+
+    await act(async () => useStore.setState({ selected: { ...MODEL, name: "hm-b" } }));
+    await advance(10);
+    expect(useStore.getState().timelinePinned).toBeNull();
+  });
+
   it("another model starts from nothing", async () => {
     await show(showing(FIRST));
     await advance(3000);

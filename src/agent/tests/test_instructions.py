@@ -57,6 +57,8 @@ class InstructionsTests(unittest.TestCase):
             with self.subTest(task_type):
                 words = len(full_instructions(task_type).split())
                 self.assertLessEqual(words, limit, f"the {task_type} prompt has {words} words")
+        words = len(full_instructions("explain", moment=True).split())
+        self.assertLessEqual(words, WORD_LIMITS["explain"], f"the explain prompt for a past moment has {words} words")
 
     def test_the_tools_a_prompt_names_are_tools_its_type_is_offered(self):
         for task_type in TYPES:
@@ -167,6 +169,38 @@ class InstructionsTests(unittest.TestCase):
             with self.subTest(expected):
                 self.assertIn(expected, instructions_for("explain"))
         self.assertNotIn("window", instructions_for("review") + instructions_for("design"))
+
+    def test_an_explain_about_a_past_moment_reads_that_moment_in_place_of_the_rule_for_history(self):
+        at_moment, now = instructions_for("explain", moment=True), instructions_for("explain")
+        for expected in [
+            "The Task has `asOf`: the question is about that instant, and the state now may differ",
+            "The tool sets `timestamp` on every `monitor_healthmodels_inspect`",
+            "`include` `History`, `entity` the asked entity, no `walk`",
+            "the tool reads the 24 hours that end at `asOf`, or the period the instruction names",
+            "`monitor_metrics_query` is set to that window",
+            "a log query counts `now()` and `ago()` from `asOf` and must bound `TimeGenerated` above",
+            "what `monitor_activitylog_list` lists after `asOf` does not count",
+            "`window` is `{\"from\", \"to\"}` of the period read",
+            "`state` its state at `asOf`",
+            "Write in the past tense, without a clock time",
+        ]:
+            with self.subTest(expected):
+                self.assertIn(expected, at_moment)
+        self.assertNotIn("asOf", now)
+        for left_out in ["History is not part of the default answer", "you have no clock", "its current state"]:
+            with self.subTest(left_out):
+                self.assertNotIn(left_out, at_moment)
+                self.assertIn(left_out, now)
+        self.assertEqual(at_moment.split("\n2. ")[0], now.split("\n2. ")[0])
+        for task_type in DIFF_TYPES:
+            with self.subTest(task_type):
+                self.assertEqual(instructions_for(task_type, moment=True), instructions_for(task_type))
+        for name in sorted(set(TOOL_NAME.findall(at_moment))):
+            with self.subTest(name):
+                self.assertIn(name, visible_tools("explain"))
+        for word in result_words("explain", "cause", "healthState", "confidence", "window"):
+            with self.subTest(word):
+                self.assertTrue(named(full_instructions("explain", moment=True), word), f"{word} is not in the instructions for a past moment")
 
     def test_the_answers_are_written_for_the_person_who_runs_the_application(self):
         for expected in [

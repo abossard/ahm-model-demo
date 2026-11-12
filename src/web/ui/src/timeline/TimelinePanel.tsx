@@ -1,17 +1,17 @@
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Button, MenuButton, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarActions, MessageBarBody, Spinner, ToggleButton, mergeClasses } from "@fluentui/react-components";
 import { Dismiss20Regular, FullScreenMaximize20Regular, FullScreenMinimize20Regular } from "@fluentui/react-icons";
 import { formatDuration } from "../model/duration";
-import { seriesKey, type EntityInfo, type StateCode } from "../model/timeline";
-import { bandAt, holdOf, parseDuration, type Band } from "../model/timelineBands";
+import { seriesKey, stateName, type EntityInfo, type StateCode } from "../model/timeline";
+import { holdOf, parseDuration } from "../model/timelineBands";
 import { signalFacts } from "../model/timelineTree";
-import { historyAt } from "../model/timeTravel";
-import { detectIncidents, entityBands, incidentText, modelAt, type Incident } from "../model/timelineIncidents";
+import { historyAt, stateAt, troubledAt } from "../model/timeTravel";
+import { detectIncidents, entityBands, incidentText, type Incident } from "../model/timelineIncidents";
 import { allKeys, buildRows, heldRows, moveFocus, revealKeys, rootEntity, scrollToShow, type Row } from "../model/timelineRows";
 import { PRESETS, formatClock, formatDay, formatInstant, padView, presetOf, presetView } from "../model/timelineScale";
 import { actions, useStore } from "../store/store";
-import { TIMELINE_MAX_HEIGHT, TIMELINE_MIN_HEIGHT, timelineBounds } from "../store/timelineSlice";
+import { TIMELINE_MAX_HEIGHT, TIMELINE_MIN_HEIGHT, selectedMoment, timelineBounds } from "../store/timelineSlice";
 import { readColors, type TimelineColors } from "./colors";
 import { AXIS_HEIGHT } from "./draw";
 import { Plot, type PlotModel } from "./plot";
@@ -19,6 +19,7 @@ import { renderTip } from "./tooltip";
 import { TimelineEntity } from "./TimelineEntity";
 import { TimelineLabels, type TreeFacts } from "./TimelineLabels";
 import { TimelineLegend } from "./TimelineLegend";
+import { useAtMoment } from "./useAtMoment";
 import { useInertElsewhere } from "./useInertElsewhere";
 import { useTimelineLoading } from "./useTimelineLoading";
 import { useStyles } from "./styles";
@@ -60,13 +61,7 @@ export function TimelinePanel(): JSX.Element {
   const rangeRef = useRef(range);
   // The selected moment moves once per frame while it is dragged. The plot draws it from the store by itself; what this
   // panel derives from it (the tree as of then) follows as a transition, so a drag never waits for React.
-  const [pinned, setPinned] = useState(() => useStore.getState().timelinePinned);
-  useEffect(() => {
-    setPinned(useStore.getState().timelinePinned);
-    return useStore.subscribe((state, before) => {
-      if (state.timelinePinned !== before.timelinePinned) startTransition(() => setPinned(state.timelinePinned));
-    });
-  }, []);
+  const pinned = useAtMoment(selectedMoment);
   const [colors, setColors] = useState<TimelineColors | null>(null);
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const [live, setLive] = useState("");
@@ -93,27 +88,20 @@ export function TimelinePanel(): JSX.Element {
   const view = useMemo(() => (storedView !== null && follow ? { t0: data.now - (storedView.t1 - storedView.t0), t1: data.now } : storedView), [storedView, follow, data.now]);
   const entities = useMemo(() => new Map(data.entities.map((entity) => [entity.name, entity])), [data.entities]);
   const bounds = useMemo(() => timelineBounds(data, Date.now()), [data]);
-  const bandCache = useMemo(() => new Map<string, readonly Band[]>(), [data]);
-  const bandsOf = useCallback(
-    (entity: EntityInfo): readonly Band[] => {
-      const held = bandCache.get(entity.name);
-      if (held) return held;
-      const made = entityBands(data, entity);
-      bandCache.set(entity.name, made);
-      return made;
-    },
-    [data, bandCache],
-  );
   const graphModel = useStore((state) => state.model);
   const impacts = useMemo(() => new Map(graphModel.kind === "success" ? graphModel.value.entities.map((entity) => [entity.name, entity.impact]) : []), [graphModel]);
   const asOf = pinned ?? data.now;
+  // The state of an entity as the tree shows it: now, or at the selected moment, read as the graph reads it (`stateAt`).
+  const stateOf = useCallback(
+    (entity: EntityInfo): StateCode => (pinned === null ? entity.state : (stateAt(seriesStore.states[entity.name], pinned, seriesStore.now, entity.state) ?? 0)),
+    [pinned, seriesStore],
+  );
   const facts = useMemo<TreeFacts>(
     () => ({
       entity: (name) => {
         const entity = entities.get(name);
         if (!entity) return { state: 0, impact: "Standard" };
-        const state: StateCode = pinned === null ? entity.state : (bandAt(bandsOf(entity), pinned) ?? 0);
-        return { state, impact: impacts.get(name) ?? "Standard" };
+        return { state: stateOf(entity), impact: impacts.get(name) ?? "Standard" };
       },
       signal: (entity, signal) => {
         const info = entities.get(entity)?.signals.find((item) => item.name === signal);
@@ -122,7 +110,7 @@ export function TimelinePanel(): JSX.Element {
         return signalFacts(info, held, asOf, held ? holdOf(held.points, parseDuration(info?.refreshInterval ?? null)) : 300_000);
       },
     }),
-    [entities, bandsOf, pinned, impacts, data, seriesStore, asOf],
+    [entities, stateOf, pinned, impacts, data, seriesStore, asOf],
   );
 
   // Only the worst-first order looks at states: in the order of the model the rows stay as they are while data arrives.
@@ -132,10 +120,9 @@ export function TimelinePanel(): JSX.Element {
         ? null
         : (name: string): StateCode => {
             const entity = entities.get(name);
-            if (!entity) return 0;
-            return pinned === null ? entity.state : (bandAt(bandsOf(entity), pinned) ?? 0);
+            return entity ? stateOf(entity) : 0;
           },
-    [order, entities, bandsOf, pinned],
+    [order, entities, stateOf],
   );
   const rowModel = useMemo(() => buildRows({ entities: data.entities, order, open: new Set(expanded), rank: rank ?? (() => 1) }), [data.entities, order, expanded, rank]);
   const rowsRef = useRef(rowModel);
@@ -155,10 +142,10 @@ export function TimelinePanel(): JSX.Element {
 
   const summaryAt = useCallback(
     (t: number): string => {
-      const rows = modelAt(data, t, bandsOf).filter((row) => row.code === 2 || row.code === 3);
-      return `${formatInstant(t, OFFSET_MIN)}: ${rows.length === 0 ? "nothing degraded or unhealthy" : rows.map((row) => `${row.displayName} ${row.state}`).join(", ")}`;
+      const rows = troubledAt(seriesStore, t);
+      return `${formatInstant(t, OFFSET_MIN)}: ${rows.length === 0 ? "nothing degraded or unhealthy" : rows.map((row) => `${row.displayName} ${stateName(row.state)}`).join(", ")}`;
     },
-    [data, bandsOf],
+    [seriesStore],
   );
   const summaryRef = useRef(summaryAt);
   summaryRef.current = summaryAt;
@@ -379,8 +366,7 @@ export function TimelinePanel(): JSX.Element {
   resetRef.current = reset;
   const busy = status === "loading" || loading.length > 0;
   const partial = Object.values(data.series).some((held) => held.error !== null);
-  const modelRows = useMemo(() => (pinned === null ? [] : modelAt(data, pinned, bandsOf)), [data, pinned, bandsOf]);
-  const troubledNames = modelRows.filter((row) => row.code === 2 || row.code === 3).sort((a, b) => b.code - a.code);
+  const troubledNames = useMemo(() => (pinned === null ? [] : [...troubledAt(seriesStore, pinned)].sort((a, b) => b.state - a.state)), [seriesStore, pinned]);
   const zoomToIncident = (incident: Incident): void => {
     actions.setTimelineView(padView(incident.from, incident.to ?? data.now, bounds));
     actions.pinTimeline(incident.from);
@@ -473,7 +459,7 @@ export function TimelinePanel(): JSX.Element {
           </Menu>
         ) : null}
         {pinned !== null ? (
-          <div className={styles.pinned} role="group" aria-label="Pinned moment" data-testid="tl-model-at">
+          <div className={styles.pinned} role="group" aria-label="Selected moment" data-testid="tl-model-at">
             <span>The model at {formatInstant(pinned, OFFSET_MIN)}</span>
             <Button
               size="small"
@@ -488,7 +474,7 @@ export function TimelinePanel(): JSX.Element {
               Show on graph
             </Button>
             <Button size="small" onClick={() => actions.pinTimeline(null)} data-testid="tl-unpin">
-              Unpin
+              Back to now
             </Button>
           </div>
         ) : null}

@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+from datetime import datetime, timedelta, timezone
 
 from fixture_models import fixture_model, metric_definition, scope_of
 from foundry_agent import StreamEvent
@@ -37,7 +38,44 @@ def watching(properties, signal, definition, scope):
     return {**properties, "signalGroups": {**properties["signalGroups"], "azureResource": group}}
 
 
-def explain_result(task):
+HISTORY_WINDOW = timedelta(hours=24)
+
+
+def instant(text):
+    return datetime.fromisoformat(text).astimezone(timezone.utc)
+
+
+def iso(value):
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def moment_window(task):
+    """What an Explain about a moment reads, as the hosted agent does: the day of history that ends at the moment."""
+    end = instant(task["asOf"])
+    return {"from": iso(end - HISTORY_WINDOW), "to": iso(end)}
+
+
+def explain_at(task, state_at):
+    """The answer for a Task with `asOf`: the state the entity had then, which `state_at` knows for the fixture models."""
+    entity = task["target"].get("entity") or task["target"]["name"]
+    state = (state_at(entity, instant(task["asOf"])) if state_at else None) or "Degraded"
+    quiet = state == "Healthy"
+    why = "every signal it depends on was inside its thresholds" if quiet else "a signal it depends on was outside its thresholds"
+    return {
+        "kind": "explain",
+        "entity": entity,
+        "state": state,
+        "summary": f"{entity} was {state.lower()} at that moment because {why}.",
+        "window": moment_window(task),
+        "causes": []
+        if quiet
+        else [{"entity": entity, "signal": None, "state": state, "threshold": None, "value": None, "rollup": "WorstOf", "note": "Took the worst state of its dependencies at that moment."}],
+    }
+
+
+def explain_result(task, state_at=None):
+    if task.get("asOf"):
+        return explain_at(task, state_at)
     entity = task["target"].get("entity") or task["target"]["name"]
     return {
         "kind": "explain",
@@ -98,11 +136,28 @@ def design_result(task):
     }
 
 
-def script(envelope):
+def inspect_arguments(task):
+    """What the read of the model asks for. A Task about a moment reads the entity as it was then and the history that ends
+    there: the arguments the hosted agent sends (`InspectWindow`, src/agent/src/history.py)."""
+    model = task["target"]["name"]
+    if not task.get("asOf"):
+        return {"health-model": model, "include": "Signals"}
+    window = moment_window(task)
+    return {
+        "health-model": model,
+        "entity": task["target"].get("entity") or model,
+        "include": "Signals,History",
+        "timestamp": window["to"],
+        "start-at": window["from"],
+        "end-at": window["to"],
+    }
+
+
+def script(envelope, state_at=None):
     task = envelope["task"]
     model = task["target"]["name"]
     results = {
-        "explain": lambda: explain_result(task),
+        "explain": lambda: explain_result(task, state_at),
         "review": lambda: review_result(task, envelope.get("relationships") or []),
         "design": lambda: design_result(task),
     }
@@ -111,7 +166,7 @@ def script(envelope):
         ("response.created", {"response": {"id": "resp_fake"}}),
         *message(1, f"I will start with the model {model}."),
         *call(1, "load_skill", {"name": "healthmodel-analyze"}, "Skill loaded."),
-        *call(2, "monitor_healthmodels_inspect", {"health-model": model, "include": "Signals"}, json.dumps({"entities": 5})),
+        *call(2, "monitor_healthmodels_inspect", inspect_arguments(task), json.dumps({"entities": 5})),
         *message(2, "I have what I need and will submit the result."),
         *call(3, "submit_result", {"result": result}, json.dumps({"status": "accepted"})),
         *message(3, "Done."),
@@ -120,8 +175,10 @@ def script(envelope):
 
 
 class FakeAgent:
-    def __init__(self, delay=0.05):
+    def __init__(self, delay=0.05, state_at=None):
+        """`state_at(entity, moment)` is the state an entity had at a moment: what an Explain about a past moment answers."""
         self._delay = delay
+        self._state_at = state_at
         self._conversations = 0
 
     async def create_conversation(self):
@@ -129,6 +186,6 @@ class FakeAgent:
         return f"conv_fake_{self._conversations}"
 
     async def stream_response(self, conversation_id, text):
-        for name, data in script(json.loads(text.split("\n", 1)[1])):
+        for name, data in script(json.loads(text.split("\n", 1)[1]), self._state_at):
             await asyncio.sleep(self._delay)
             yield StreamEvent(name, data)

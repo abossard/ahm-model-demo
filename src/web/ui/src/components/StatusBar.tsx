@@ -25,6 +25,8 @@ import { accessMessage } from "../model/errors";
 import { formatUpdated } from "../model/wording";
 import { hasRunningTask } from "../model/tasks";
 import { actions, useStore } from "../store/store";
+import { selectModelState, selectedMoment } from "../store/timelineSlice";
+import { useAtMoment } from "../timeline/useAtMoment";
 import { HealthBadge } from "./HealthBadge";
 import { ModelPicker } from "./ModelPicker";
 import { LiveControl } from "../live/LiveControl";
@@ -170,6 +172,23 @@ function ThemeControl(): JSX.Element {
   );
 }
 
+/** The state of the model, at the moment the page shows. */
+function ModelState(): JSX.Element | null {
+  const state = useAtMoment(selectModelState);
+  return state === null ? null : <HealthBadge state={state} />;
+}
+
+/** When what is on screen is from: the last read of the live model, or the selected moment. */
+function ModelTime({ observedAt }: { readonly observedAt: string }): JSX.Element {
+  const moment = useAtMoment(selectedMoment);
+  const shown = moment === null ? observedAt : new Date(moment).toISOString();
+  return (
+    <Text size={200} title={shown} data-testid="model-observed" data-moment={moment === null ? "now" : "past"}>
+      {moment === null ? "Updated" : "As of"} {formatUpdated(shown)}
+    </Text>
+  );
+}
+
 export function StatusBar(): JSX.Element {
   const styles = useStyles();
   const model = useStore((state) => state.model);
@@ -189,17 +208,13 @@ export function StatusBar(): JSX.Element {
               <Text as="strong" size={500} weight="bold" className={styles.name} data-testid="model-name">
                 {model.kind === "success" ? model.value.model.name : "Health Pulse"}
               </Text>
-              {model.kind === "success" ? <HealthBadge state={model.value.model.healthState} /> : null}
+              {model.kind === "success" ? <ModelState /> : null}
             </div>
             <div className={styles.caption}>
               {model.kind === "loading" ? (
                 <Spinner size="tiny" label="Loading…" labelPosition="after" />
               ) : null}
-              {model.kind === "success" ? (
-                <Text size={200} title={lastObservedAt ?? model.value.observedAt} data-testid="model-observed">
-                  Updated {formatUpdated(lastObservedAt ?? model.value.observedAt)}
-                </Text>
-              ) : null}
+              {model.kind === "success" ? <ModelTime observedAt={lastObservedAt ?? model.value.observedAt} /> : null}
               <RefreshIndicator />
             </div>
           </div>

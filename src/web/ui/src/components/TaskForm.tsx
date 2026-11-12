@@ -25,7 +25,10 @@ import {
   targetLabel,
 } from "../model/tasks";
 import type { TaskType } from "../model/types";
+import { NOW_NOTE, momentWords } from "../model/wording";
 import { actions, useStore } from "../store/store";
+import { selectMomentMinute } from "../store/timelineSlice";
+import { useAtMoment } from "../timeline/useAtMoment";
 
 const useStyles = makeStyles({
   // A grid never squeezes its rows, so a long form scrolls instead of overlapping.
@@ -66,10 +69,12 @@ export function TaskForm(): JSX.Element {
   );
   const running = runningSeq !== null;
   const catalogValue = catalog.kind === "success" ? catalog.value : null;
+  // The past moment the page shows, to the minute: an Explain asks about it, which the form says.
+  const moment = useAtMoment(selectMomentMinute);
 
   const ready = useMemo(
-    () => buildTaskInput(draft, { selected, entity, catalog: catalogValue }),
-    [draft, selected, entity, catalogValue],
+    () => buildTaskInput(draft, { selected, entity, catalog: catalogValue, moment }),
+    [draft, selected, entity, catalogValue, moment],
   );
   const entityLabel = useMemo(
     () =>
@@ -127,6 +132,11 @@ export function TaskForm(): JSX.Element {
       <Text id={descriptionId} className={styles.description} data-testid="task-type-description">
         {typeInfo.description}
       </Text>
+      {moment !== null && draft.type !== "explain" ? (
+        <Text className={styles.description} data-testid="task-about-now">
+          {NOW_NOTE}
+        </Text>
+      ) : null}
 
       {draft.type === "design" ? (
         <>
@@ -180,6 +190,11 @@ export function TaskForm(): JSX.Element {
               hint={explainNeedsEntity ? null : "The entity selected in the graph."}
             >
               <Input readOnly value={entityLabel ?? ""} data-testid="task-entity" />
+            </Field>
+          ) : null}
+          {draft.type === "explain" && moment !== null ? (
+            <Field label="Moment" hint="The past moment the page shows. The assistant explains the state the entity had then.">
+              <Input readOnly value={momentWords(moment, null)} data-testid="task-moment" />
             </Field>
           ) : null}
         </>

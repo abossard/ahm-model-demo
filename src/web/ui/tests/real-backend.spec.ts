@@ -167,6 +167,69 @@ test("one click on Explain this entity makes the Session, runs the Task and mark
   await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
 });
 
+test("a question about a past moment reaches the app and the assistant with that moment, and a model check started then is about now", async ({ page }) => {
+  await boot(page);
+  await node(page, "topology", "orders-db").click();
+  await expect(page.getByTestId("entity-details")).toBeVisible();
+  await expect(page.getByTestId("tl-label-entity").first()).toBeVisible();
+  await expect(page.getByTestId("tl-busy")).toHaveCount(0);
+  // Now the database is Unhealthy. Twelve hours ago, in the history of the fixture model, it was Healthy.
+  await expect(page.getByTestId("explain-entity")).toHaveText("Why is this Unhealthy?");
+  const plot = await page.getByTestId("tl-canvas").boundingBox();
+  if (!plot) throw new Error("no plot");
+  await page.mouse.click(plot.x + plot.width / 2, plot.y + 110);
+  await expect(page.getByTestId("moment-bar")).toBeVisible();
+  await expect(page.getByTestId("moment-shown")).toHaveText(/^Showing .*, (11|12) h( \d{1,2} min)? ago$/);
+  await expect(node(page, "topology", "orders-db")).toHaveAttribute("aria-label", /\(Healthy/);
+  await expect(page.getByTestId("explain-entity")).toHaveText(/^Why was this Healthy at (\d{1,2} \w{3} )?\d{2}:\d{2}\?$/);
+  await expect.poll(() => new URL(page.url()).searchParams.get("at")).not.toBeNull();
+  const at = Date.parse(new URL(page.url()).searchParams.get("at") ?? "");
+
+  await page.getByTestId("explain-entity").click();
+
+  await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
+  await expect(page.getByTestId("task-title")).toHaveText(/^Why was Orders database Healthy at \d{1,2} \w{3} \d{2}:\d{2}\?$/);
+  await expect(page.getByTestId("session-title-heading")).toHaveText(/^Why was Orders database Healthy at .+\? \(\d{1,2} \w{3} \d{2}:\d{2}\)$/);
+  await expect(page.getByTestId("explain-state-label")).toHaveText(/^State at \d{1,2} \w{3} \d{2}:\d{2}$/);
+  await expect(page.getByTestId("explain-state")).toContainText("Healthy");
+  await expect(page.getByTestId("explain-moment")).toContainText("The state now may differ.");
+  await expect(page.getByTestId("explain-window")).toContainText("the last 24 hours (until");
+
+  // The app keeps the moment with the question, and the scripted assistant read the model as it was then.
+  const { session, task } = openTaskIds(page);
+  const stored = await (await page.request.get(`/api/sessions/${session}/tasks/${task}`)).json();
+  expect(Math.abs(Date.parse(stored.asOf) - at)).toBeLessThan(1000);
+  expect(stored.result).toMatchObject({ state: "Healthy", causes: [], window: { to: stored.asOf } });
+  const stream = await (await page.request.get(`/api/sessions/${session}/tasks/${task}/events`)).text();
+  const read = stream
+    .split("\n")
+    .filter((line) => line.startsWith("data: {"))
+    .map((line) => JSON.parse(line.slice(6)) as { kind?: string; payload?: { name?: string; arguments?: string } })
+    .find((event) => event.kind === "tool_call" && event.payload?.name === "monitor_healthmodels_inspect");
+  expect(JSON.parse(read?.payload?.arguments ?? "{}")).toMatchObject({ entity: "orders-db", timestamp: stored.asOf, "end-at": stored.asOf, "start-at": stored.result.window.from });
+
+  // A reload shows the same moment and the same answer.
+  await page.reload();
+  await expect(page.getByTestId("moment-bar")).toBeVisible();
+  await expect(page.getByTestId("explain-moment")).toBeVisible();
+  await expect(node(page, "topology", "orders-db")).toHaveAttribute("aria-label", /\(Healthy/);
+
+  // A model check is about now: the menu says so, the Task names no moment, and the app takes none for one.
+  await page.getByTestId("task-menu").click();
+  await expect(page.getByTestId("menu-review")).toContainText("as it is now");
+  await page.getByTestId("menu-review").click();
+  await expect(page.getByTestId("task-title")).toHaveText("Check hm-local");
+  await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "done");
+  const check = openTaskIds(page);
+  expect(await (await page.request.get(`/api/sessions/${check.session}/tasks/${check.task}`)).json()).not.toHaveProperty("asOf");
+  const refused = await page.request.post(`/api/sessions/${check.session}/tasks`, { data: { type: "review", target: stored.target, asOf: stored.asOf } });
+  expect([refused.status(), (await refused.json()).error.code]).toEqual([400, "invalid_as_of"]);
+
+  await page.getByTestId("moment-now").click();
+  await expect(page.getByTestId("moment-bar")).toHaveCount(0);
+  await expect(node(page, "topology", "orders-db")).toHaveAttribute("aria-label", /\(Unhealthy/);
+});
+
 test("a Design targets the design model and proposes its entities as a diff", async ({ page }) => {
   await boot(page);
   await newSession(page, "Real backend design");

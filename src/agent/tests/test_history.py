@@ -7,11 +7,16 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from history import (
     HistoryRefused,
+    activity_arguments,
     asks_about_past,
     bounded_arguments,
     history_window,
     iso,
+    log_arguments,
+    metric_arguments,
+    moment_window,
     period_named,
+    query_at,
     widened,
     window_problems,
 )
@@ -155,6 +160,120 @@ class BoundedArgumentsTests(unittest.TestCase):
                     bounded_arguments(arguments, task_type=task_type, asked=asked, instruction="", now=NOW)
 
                 self.assertIn(expected, str(refused.exception))
+
+
+class MomentTests(unittest.TestCase):
+    """A Task about a past moment (`asOf`): every read is made for that moment, not for now."""
+
+    AT = NOW - 26 * HOUR
+    MOMENT = "2026-11-10T10:00:00Z"
+    DAY_BEFORE = "2026-11-09T10:00:00Z"
+
+    def test_the_window_ends_at_the_moment_and_never_begins_before_what_the_service_keeps(self):
+        old = NOW - 30 * DAY + HOUR
+        cases = [
+            ("the day before the moment", self.AT, "", None, None, (self.AT - DAY, self.AT)),
+            ("the period the instruction names", self.AT, "What changed last week?", None, None, (self.AT - 7 * DAY, self.AT)),
+            ("a start inside", self.AT, "", self.AT - 2 * HOUR, None, (self.AT - 2 * HOUR, self.AT)),
+            ("an end after the moment", self.AT, "", None, NOW, (self.AT - DAY, self.AT)),
+            ("a moment a clock ahead of now", NOW + HOUR, "", None, None, (NOW - DAY, NOW)),
+            ("a moment at the edge of what is kept", old, "", None, None, (NOW - 30 * DAY + timedelta(minutes=5), old)),
+        ]
+        for label, moment, instruction, start, end, expected in cases:
+            with self.subTest(label):
+                self.assertEqual(moment_window(NOW, moment, instruction, start, end), expected)
+
+    def test_the_model_is_read_as_it_was_at_the_moment(self):
+        cases = [
+            ("the entity and its causes", {"entity": "checkout", "walk": "Causes", "include": ["Signals"]}, {"entity": "checkout", "walk": "Causes", "include": ["Signals"], "timestamp": self.MOMENT}),
+            ("no include", {"entity": "checkout"}, {"entity": "checkout", "timestamp": self.MOMENT}),
+            ("a timestamp of the model's own", {"entity": "orders-db", "timestamp": "2026-11-11T11:59:00Z"}, {"entity": "orders-db", "timestamp": self.MOMENT}),
+        ]
+        for label, arguments, expected in cases:
+            with self.subTest(label):
+                bounded, window = bounded_arguments(arguments, task_type="explain", asked="checkout", instruction="", now=NOW, as_of=self.AT)
+
+                self.assertEqual((bounded, window), (expected, None))
+
+    def test_history_is_read_for_the_window_that_ends_at_the_moment(self):
+        cases = [
+            ("history", {"entity": "checkout", "include": ["History"], "walk": "Causes"}, "", self.DAY_BEFORE),
+            ("signal history needs no words about the past", {"entity": "checkout", "include": ["SignalHistory"]}, "", self.DAY_BEFORE),
+            ("annotations", {"entity": "checkout", "include": "Annotations", "end-at": "2026-11-11T12:00:00Z"}, "", self.DAY_BEFORE),
+            ("the period the instruction names", {"entity": "checkout", "include": ["History"]}, "the 3 days before", "2026-11-07T10:00:00Z"),
+        ]
+        for label, arguments, instruction, start in cases:
+            with self.subTest(label):
+                bounded, window = bounded_arguments(arguments, task_type="explain", asked="checkout", instruction=instruction, now=NOW, as_of=self.AT)
+
+                self.assertEqual((bounded["start-at"], bounded["end-at"], bounded["timestamp"]), (start, self.MOMENT, self.MOMENT))
+                self.assertEqual(window[1], self.AT)
+                self.assertNotIn("walk", bounded)
+
+    def test_history_of_another_entity_is_refused_at_a_moment_too(self):
+        with self.assertRaises(HistoryRefused):
+            bounded_arguments({"entity": "orders-db", "include": ["History"]}, task_type="explain", asked="checkout", instruction="", now=NOW, as_of=self.AT)
+
+    def test_metrics_are_read_for_the_window_that_ends_at_the_moment(self):
+        cases = [
+            ("no times", {"resource": "db", "metric-names": "cpu", "interval": "PT1H"}, "", (self.DAY_BEFORE, self.MOMENT)),
+            ("times of now", {"resource": "db", "start-time": "2026-11-11T00:00:00Z", "end-time": "2026-11-11T12:00:00Z"}, "", (self.DAY_BEFORE, self.MOMENT)),
+            ("a start inside the window", {"resource": "db", "start_time": "2026-11-10T09:00:00Z"}, "", ("2026-11-10T09:00:00Z", self.MOMENT)),
+            ("the period the instruction names", {"resource": "db"}, "the 7 days before", ("2026-11-03T10:00:00Z", self.MOMENT)),
+        ]
+        for label, arguments, instruction, expected in cases:
+            with self.subTest(label):
+                bounded = metric_arguments(arguments, as_of=self.AT, instruction=instruction, now=NOW)
+
+                self.assertEqual((bounded["start-time"], bounded["end-time"]), expected)
+                self.assertEqual(bounded["resource"], "db")
+                self.assertNotIn("start_time", bounded)
+
+    def test_a_query_runs_as_it_would_have_at_the_moment(self):
+        at = f"datetime({self.MOMENT})"
+        cases = [
+            ("everything since an ago", "AppRequests | where TimeGenerated > ago(5m) | summarize count()", f"AppRequests | where TimeGenerated between (({at} - 5m) .. {at}) | summarize count()"),
+            ("since an ago, inclusive", "T | where TimeGenerated >= ago( 1h )", f"T | where TimeGenerated between (({at} - 1h) .. {at})"),
+            ("a range to now", "T | where TimeGenerated between (ago(1h) .. now())", f"T | where TimeGenerated between (({at} - 1h) .. {at})"),
+            ("now with an offset", "T | where TimeGenerated < now(-1h)", f"T | where TimeGenerated < ({at} + -1h)"),
+            ("an ago elsewhere", "T | extend old = Created < ago(7d)", f"T | extend old = Created < ({at} - 7d)"),
+            ("its own times", "T | where TimeGenerated between (datetime(2026-11-10T09:00:00Z) .. datetime(2026-11-10T10:00:00Z))", None),
+            ("no time at all", "T | getschema", None),
+            ("a word that ends in ago", "T | extend lumbago(1)", None),
+        ]
+        for label, query, expected in cases:
+            with self.subTest(label):
+                self.assertEqual(query_at(query, self.AT), expected or query)
+
+    def test_a_log_query_reaches_back_to_the_window_and_stops_at_the_moment(self):
+        at = f"datetime({self.MOMENT})"
+        cases = [
+            ("since an ago", "T | where TimeGenerated > ago(5m) | count", "", f"T | where TimeGenerated between (({at} - 5m) .. {at}) | count", 50),
+            ("bounded by the query", f"T | where TimeGenerated <= {at} | count", "", f"T | where TimeGenerated <= {at} | count", 50),
+            ("the columns of a table", "T | getschema", "", "T | getschema", 50),
+            ("a longer period", f"T | where TimeGenerated < {at}", "the 3 days before", f"T | where TimeGenerated < {at}", 98),
+        ]
+        for label, query, instruction, expected, hours in cases:
+            with self.subTest(label):
+                bounded = log_arguments({"workspace": "w", "table": "T", "query": query, "hours": 1}, as_of=self.AT, instruction=instruction, now=NOW)
+
+                self.assertEqual(bounded, {"workspace": "w", "table": "T", "query": expected, "hours": hours})
+
+    def test_a_log_query_that_would_read_up_to_now_is_refused_and_says_what_to_add(self):
+        for label, query in [("no time", "T | summarize count()"), ("only a start", "T | where TimeGenerated > datetime(2026-11-10T09:00:00Z)"), ("a named query", "recent")]:
+            with self.subTest(label):
+                with self.assertRaises(HistoryRefused) as refused:
+                    log_arguments({"table": "T", "query": query}, as_of=self.AT, instruction="", now=NOW)
+
+                self.assertIn(f"| where TimeGenerated between (datetime({self.DAY_BEFORE}) .. datetime({self.MOMENT}))", str(refused.exception))
+
+    def test_the_activity_log_reaches_back_to_the_window(self):
+        cases = [("the day before the moment", "", 50), ("a week before", "the 7 days before", 194)]
+        for label, instruction, hours in cases:
+            with self.subTest(label):
+                bounded = activity_arguments({"resource-name": "db", "hours": 2, "top": 20}, as_of=self.AT, instruction=instruction, now=NOW)
+
+                self.assertEqual(bounded, {"resource-name": "db", "top": 20, "hours": hours})
 
 
 class WindowProblemsTests(unittest.TestCase):

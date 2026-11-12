@@ -41,6 +41,7 @@ from auth import (
     signing_keys,
 )
 from config import (
+    AS_OF_SKEW_SECONDS,
     CANONICAL_SIGNAL_NAME,
     FAKE_AGENT_ENDPOINT,
     GITHUB_REPOSITORY,
@@ -54,6 +55,7 @@ from config import (
     SESSION_TITLE_MAX_CHARS,
     SSE_KEEP_ALIVE_SECONDS,
     TASK_TYPES,
+    TIMELINE_RETENTION_DAYS,
     UI_DIST_DIR,
     require_runtime_config,
 )
@@ -128,12 +130,12 @@ if RUNTIME_SCOPE["sessions_container_url"] == MEMORY_STORE_URL:
 else:
     store = BlobSessionsStore(RUNTIME_SCOPE["sessions_container_url"], credential)
 if RUNTIME_SCOPE["foundry_project_endpoint"] == FAKE_AGENT_ENDPOINT:
-    agent = FakeAgent()
     health = FixtureHealthModels(
         DEFAULT_MODEL,
         DESIGN_MODEL,
         live_seconds=int(os.environ["FIXTURE_LIVE_SECONDS"]) if os.environ.get("FIXTURE_LIVE_SECONDS", "").isdigit() else None,
     )
+    agent = FakeAgent(state_at=health.state_at)
 else:
     agent = FoundryAgent(
         credential,
@@ -827,6 +829,35 @@ def _design_fields(body):
     }, None
 
 
+def as_of_moment(value, now):
+    """The moment an Explain is about, as the app keeps it: an ISO 8601 instant that is not after now (beyond a small
+    clock skew, and then it is now) and not older than what the service keeps. None for anything else."""
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        return None
+    if moment > now + timedelta(seconds=AS_OF_SKEW_SECONDS) or moment < now - timedelta(days=TIMELINE_RETENTION_DAYS):
+        return None
+    return min(moment, now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _as_of_field(body, task_type):
+    if body.get("asOf") is None:
+        return {}, None
+    if task_type != "explain":
+        return None, validation_error("invalid_as_of", "asOf is for an explain task: a review and a design are about the model now.")
+    moment = as_of_moment(body["asOf"], datetime.now(timezone.utc))
+    if moment is None:
+        return None, validation_error(
+            "invalid_as_of", f"asOf must be an ISO 8601 time with an offset, in the last {TIMELINE_RETENTION_DAYS} days."
+        )
+    return {"asOf": moment}, None
+
+
 async def _task_fields(body, user, caller):
     task_type = body.get("type")
     if task_type not in TASK_TYPES:
@@ -843,7 +874,10 @@ async def _task_fields(body, user, caller):
             "invalid_instruction",
             f"instruction must be text of at most {INSTRUCTION_MAX_CHARS} characters.",
         )
-    fields = {"type": task_type, "instruction": instruction, "createdAt": utc_now()}
+    moment, rejected = _as_of_field(body, task_type)
+    if rejected:
+        return None, rejected
+    fields = {"type": task_type, "instruction": instruction, **moment, "createdAt": utc_now()}
     if task_type == "design":
         design, rejected = _design_fields(body)
     else:

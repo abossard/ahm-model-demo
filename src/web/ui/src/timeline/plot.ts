@@ -772,8 +772,11 @@ export class Plot {
       if (incident) this.hooks.incident(incident);
       return;
     }
+    // Before any history is read there is no window on screen, and so no moment under a click.
+    if (this.model.data.now === 0) return;
     const row = this.rowAt(y);
-    this.moment = t;
+    const { lo, hi } = this.bounds();
+    this.moment = Math.min(hi, Math.max(lo, t));
     if (row) this.hooks.focus(row);
   }
 

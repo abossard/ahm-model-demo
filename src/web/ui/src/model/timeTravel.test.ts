@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { seriesKey, type EntityInfo, type Point, type SignalInfo, type Transition } from "./timeline";
 import { EMPTY_STORE, type Levels, type TimeStore, type Track } from "./timeStore";
-import { createModelAt, signalAt, stateAt, statesAt } from "./timeTravel";
+import { createModelAt, entityOf, lastChangeAt, rootOf, signalAt, stateAt, statesAt, troubledAt } from "./timeTravel";
 import type { Entity, HealthModel } from "./types";
 
 const NOW = 10_000;
@@ -40,6 +40,22 @@ describe("stateAt", () => {
     stateAt({ rows: counted, covered: [{ from: 0, to: 2_000_000 }], error: null }, 777_777, 2_000_000, 1);
 
     expect(reads).toBeLessThan(40);
+  });
+});
+
+describe("lastChangeAt", () => {
+  const history = track([change(2000, 1, 2), change(4000, 2, 3), change(6000, 3, 1)], [1000, NOW]);
+
+  it.each([
+    { name: "the change before the moment", history, t: 4500, expected: 4000 },
+    { name: "a change at the moment itself", history, t: 6000, expected: 6000 },
+    { name: "the newest change after them all", history, t: 9000, expected: 6000 },
+    { name: "nothing before the first change held", history, t: 1500, expected: null },
+    { name: "the newest change held for now", history, t: null, expected: 6000 },
+    { name: "nothing in a quiet history", history: track<Transition>([], [1000, NOW]), t: 5000, expected: null },
+    { name: "nothing without a history", history: undefined, t: 5000, expected: null },
+  ])("is $name", ({ history: held, t, expected }) => {
+    expect(lastChangeAt(held, t)).toBe(expected);
   });
 });
 
@@ -179,6 +195,50 @@ describe("modelAt", () => {
 
   it("gives the state of every entity at a moment by name", () => {
     expect([...statesAt(store, 5500)]).toEqual([["shop", 2], ["api", 3], ["db", 1]]);
+  });
+
+  it.each([
+    { t: 1000, expected: [] },
+    { t: 3500, expected: [{ entity: "api", displayName: "api", state: 3 }] },
+    { t: 5500, expected: [{ entity: "shop", displayName: "shop", state: 2 }, { entity: "api", displayName: "api", state: 3 }] },
+    { t: 8000, expected: [{ entity: "shop", displayName: "shop", state: 2 }] },
+    { t: NOW + 1, expected: [] },
+  ])("names what was degraded or unhealthy at $t, in the order of the model", ({ t, expected }) => {
+    expect(troubledAt(store, t)).toEqual(expected);
+  });
+
+  it.each([
+    { t: 1000, expected: null },
+    { t: 3500, expected: new Date(2000).toISOString() },
+    { t: 5500, expected: new Date(5000).toISOString() },
+  ])("an entity was last evaluated at $t when the newest of its signals was, as of then", ({ t, expected }) => {
+    expect(createModelAt()(model, store, t).entities[1]?.latestEvaluationAt).toBe(expected);
+  });
+
+  const parented = (name: string, parents: readonly string[], children: readonly string[]): Entity => ({ ...entity(name), parents, children });
+  it.each([
+    { name: "the entity named like the model", entities: [entity("api"), entity("shop")], expected: "shop" },
+    { name: "else the first that has dependencies and no parent", entities: [entity("alone"), parented("edge", [], ["api"]), parented("api", ["edge"], [])], expected: "edge" },
+    { name: "none in a model of entities that relate to nothing", entities: [entity("a"), entity("b")], expected: undefined },
+    { name: "none in an empty model", entities: [], expected: undefined },
+  ])("the root is $name", ({ entities, expected }) => {
+    expect(rootOf({ ...model, entities })?.name).toBe(expected);
+  });
+
+  it("the state of a model whose root is not named like it is that of its root at the moment", () => {
+    const unnamed: HealthModel = { ...model, model: { ...model.model, name: "A display name" }, entities: [parented("shop", [], ["api"]), parented("api", ["shop"], []), entity("db")] };
+
+    expect(createModelAt()(unnamed, store, 5500).model.healthState).toBe("Degraded");
+    expect(createModelAt()(unnamed, store, 1000).model.healthState).toBe("Healthy");
+  });
+
+  it.each([
+    { name: "an entity of the model", wanted: "api", expected: "api" },
+    { name: "nothing for a name the model does not have", wanted: "ghost", expected: undefined },
+    { name: "nothing without a name", wanted: null, expected: undefined },
+  ])("finds $name by its name", ({ wanted, expected }) => {
+    expect(entityOf(model, wanted)?.name).toBe(expected);
+    expect(entityOf(null, wanted)).toBeUndefined();
   });
 
   it("answers 2000 moments over 60 entities with 300 signals in well under a frame each", () => {

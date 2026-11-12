@@ -127,6 +127,18 @@ describe("events", () => {
     expect(vi.mocked(flash.flashEntities)).toHaveBeenCalledWith(["ss"]);
   });
 
+  it("while the page shows a past moment a change of now is kept, and neither told nor flashed", () => {
+    useStore.setState({ timelinePinned: Date.parse("2026-11-11T08:00:00Z") });
+
+    emit({ kind: "delta", id: "e-1", delta: { observedAt: "2026-11-11T10:00:30.000Z", entities: { upsert: [entity("ss", "Unhealthy")] } } });
+
+    const state = useStore.getState();
+    expect(state.model.kind === "success" && state.model.value.entities[1]?.healthState).toBe("Unhealthy");
+    expect(state.liveAnnouncement).toBe("");
+    expect(state.liveChanged).toEqual({});
+    expect(vi.mocked(flash.flashEntities)).not.toHaveBeenCalled();
+  });
+
   it("a delta that changes nothing a view draws keeps the model object", () => {
     const before = useStore.getState().model;
 

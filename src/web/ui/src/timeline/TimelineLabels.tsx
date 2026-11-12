@@ -9,7 +9,7 @@ import type { Row, RowModel } from "../model/timelineRows";
 import type { SignalFacts } from "../model/timelineTree";
 import { useStyles } from "./styles";
 
-/** What the tree says about the rows, as of the instant it shows: now, or the pinned moment. */
+/** What the tree says about the rows, as of the instant it shows: now, or the selected moment. */
 export interface TreeFacts {
   readonly entity: (name: string) => { readonly state: StateCode; readonly impact: string };
   readonly signal: (entity: string, signal: string) => SignalFacts;

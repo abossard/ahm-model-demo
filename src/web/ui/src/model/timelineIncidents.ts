@@ -1,7 +1,6 @@
 import { formatDuration } from "./duration";
-import { bandAt, bandsFromTransitions, type Band } from "./timelineBands";
+import { bandsFromTransitions, type Band } from "./timelineBands";
 import { stateName, type EntityInfo, type Span, type StateCode, type TimelineData } from "./timeline";
-import type { HealthState } from "./types";
 
 export interface Incident {
   readonly id: string;
@@ -53,19 +52,4 @@ export function entityBands(data: TimelineData, entity: EntityInfo): readonly Ba
   // The last state holds up to now: a quiet entity has no newer transition to say otherwise.
   const span = { from: covered.from, to: Math.max(covered.to, data.now) };
   return bandsFromTransitions(history.transitions, span, entity.state);
-}
-
-export interface ModelRow {
-  readonly entity: string;
-  readonly displayName: string;
-  readonly state: HealthState;
-  readonly code: StateCode;
-}
-
-/** The model as it was at t: the state of every entity then, in model order. Unknown where nothing is held. */
-export function modelAt(data: TimelineData, t: number, bandsOf: (entity: EntityInfo) => readonly Band[]): readonly ModelRow[] {
-  return data.entities.map((entity) => {
-    const code = bandAt(bandsOf(entity), t) ?? 0;
-    return { entity: entity.name, displayName: entity.displayName, state: stateName(code), code };
-  });
 }

@@ -1,21 +1,28 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { SUBSCRIPTION_A } from "./fixture";
+import { HOUR, MINUTE } from "../src/model/timelineScale";
+import { SUBSCRIPTION_A, installStubs } from "./fixture";
+import { installTimeline, stubbedHistory } from "./timelineStub";
+import { openView } from "./views";
 import { MODEL_QUERY, SESSION_WITH_TASK, boot, node, openWorkspace } from "./workspaceHelpers";
 import {
   OTHER_USERS_TASK,
   REFUSALS,
   SESSION_ID,
   activity,
+  catalogWithDesign,
   defaultScript,
   explainEvents,
   explainResult,
+  installWorkspace,
   reviewEvents,
   sessionSummary,
   taskOf,
   type StubScript,
   type WorkspaceOptions,
 } from "./workspaceStub";
+
+const NOW = Math.floor(Date.now() / MINUTE) * MINUTE;
 
 // The interface speaks in the user's questions and answers. These words belong to the code, the API and the docs
 // (GLOSSARY.md); a person using the app should never read them. The check reads what a person reads on the main
@@ -35,7 +42,8 @@ const JARGON: readonly { readonly word: string; readonly pattern: RegExp }[] = [
   { word: "Workload", pattern: /\bWorkload\b/ },
   { word: "Observed", pattern: /\bobserved\b/i },
   { word: "tool names", pattern: /tool_call|tool_result|submit_result|load_skill|monitor_healthmodels/ },
-  { word: "error codes", pattern: /\b(task_running|agents_busy|task_limit|session_limit|payload_too_large|too_many_subscribers|invalid_last_event_id|task_not_found|session_not_found|sessions_unavailable|base_changed|agent_failed|network_error|http_error|diff_unavailable)\b/ },
+  { word: "error codes", pattern: /\b(task_running|agents_busy|task_limit|session_limit|payload_too_large|too_many_subscribers|invalid_last_event_id|task_not_found|session_not_found|sessions_unavailable|base_changed|agent_failed|network_error|http_error|diff_unavailable|invalid_as_of)\b/ },
+  { word: "the selected moment in code", pattern: /\b(asOf|as-of|timelinePinned|pinned time)\b/i },
   { word: "an identifier with underscores", pattern: /\b[a-z]+_[a-z]+(_[a-z]+)*\b/ },
 ];
 
@@ -227,6 +235,26 @@ test.describe("the interface speaks in questions and answers", () => {
     found.push(...(await offenders(page, "the question form")));
     await page.getByTestId("task-type-review").click();
     found.push(...(await offenders(page, "the model check form")));
+    expect(found, "words of the code on screen").toEqual([]);
+  });
+
+  test("a past moment, the question about it and its answer", async ({ page }) => {
+    const at = new Date(NOW - 12 * HOUR).toISOString();
+    await installStubs(page, { healthModelFails: false, catalog: catalogWithDesign });
+    await installWorkspace(page);
+    await installTimeline(page, stubbedHistory(NOW));
+    await openView(page, "zoom", `/?${MODEL_QUERY}&timeline=1&at=${at}`);
+    await expect(page.getByTestId("moment-bar")).toBeVisible();
+    await pick(page);
+    await expect(page.getByTestId("explain-entity")).toHaveText(/^Why was /);
+    const found = await offenders(page, "a past moment");
+    await page.getByTestId("task-menu").click();
+    await expect(page.getByTestId("menu-review")).toContainText("as it is now");
+    found.push(...(await offenders(page, "the Ask menu at a past moment")));
+    await page.keyboard.press("Escape");
+    await page.getByTestId("explain-entity").click();
+    await expect(page.getByTestId("explain-moment")).toBeVisible();
+    found.push(...(await offenders(page, "an answer about a past moment")));
     expect(found, "words of the code on screen").toEqual([]);
   });
 

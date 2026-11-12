@@ -36,7 +36,7 @@ export function sessionTitle(
   timeZone?: string,
 ): string {
   const suffix = ` (${formatSessionTime(when, timeZone)})`;
-  const subject = taskTitle(input, entityLabel, state);
+  const subject = taskTitle(input, entityLabel, state, timeZone);
   const room = SESSION_TITLE_MAX - suffix.length;
   return `${subject.length <= room ? subject : `${subject.slice(0, room - 3)}...`}${suffix}`;
 }

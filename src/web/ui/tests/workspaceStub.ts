@@ -702,6 +702,7 @@ export class WorkspaceStub {
           target: body.target,
           ...(body.workload ? { workload: body.workload } : {}),
           instruction: body.instruction,
+          ...(body.asOf ? { asOf: body.asOf } : {}),
           status: "running",
           createdAt: new Date().toISOString(),
         },

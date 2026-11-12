@@ -271,6 +271,30 @@ describe("starting a Task with one click", () => {
     expect(useStore.getState().sessionDetail).toMatchObject({ kind: "success", value: { tasks: [{ seq: 1 }] } });
   });
 
+  it.each([
+    { name: "a question about an entity asks about that moment and says so in its title", type: "explain" as const, asked: { type: "explain", target: { ...BASE, entity: "svc-a" }, instruction: "", asOf: "2026-11-09T08:00:00.000Z" }, title: /^Why was the state of Service A unknown at 9 Nov \d{2}:\d{2}\? \(/ },
+    { name: "a model check is about now", type: "review" as const, asked: { type: "review", target: BASE, instruction: "" }, title: /^Check hm-a \(/ },
+  ])("while the page shows a past moment, $name", async ({ type, asked, title }) => {
+    const entity = { name: "svc-a", displayName: "Service A", healthState: "Unhealthy", impact: "Standard", parents: [], children: [], signals: [] };
+    onScreen({ model: { kind: "success", value: { model: { name: "hm-a", healthState: "Unhealthy" }, entities: [entity], relationships: [] } as never }, timelinePinned: Date.parse("2026-11-09T08:00:00Z") });
+    vi.mocked(api.createSession).mockImplementation(async (name) => ({ ...SESSION, title: name ?? "" }));
+    vi.mocked(api.postTask).mockResolvedValue(task(1));
+
+    await actions.startTask({ type });
+
+    expect(vi.mocked(api.createSession).mock.calls[0]?.[0]).toMatch(title);
+    expect(api.postTask).toHaveBeenCalledWith("s1", asked);
+  });
+
+  it("a question that is asked again is about the moment it was asked about, not the one on screen", async () => {
+    await openSessionWith();
+    vi.mocked(api.postTask).mockResolvedValue(task(1));
+
+    await actions.rerunTask({ type: "explain", target: { ...BASE, entity: "svc-a" }, instruction: "", asOf: "2026-11-09T08:00:00Z" });
+
+    expect(vi.mocked(api.postTask).mock.calls[0]?.[1]).toEqual({ type: "explain", target: { ...BASE, entity: "svc-a" }, instruction: "", asOf: "2026-11-09T08:00:00Z" });
+  });
+
   it("starts on the model on screen, not on the catalog default", async () => {
     await openSessionWith();
     vi.mocked(api.postTask).mockResolvedValue(task(1));

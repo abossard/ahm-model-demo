@@ -210,6 +210,21 @@ class SuccessTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(envelope["relationships"], model_diff.relationship_summaries(BASE))
                     self.assertEqual(set(envelope["relationships"][0]), {"name", "parent", "child"})
 
+    async def test_only_a_task_about_a_moment_names_it_to_the_agent(self):
+        explain = {"id": "3", "type": "explain", "target": {**TARGET, "entity": "api"}, "workload": None, "instruction": "", "status": "running"}
+        cases = [
+            ("an explain about now", explain, None),
+            ("an explain about a moment", {**explain, "asOf": "2026-11-11T23:40:00Z"}, "2026-11-11T23:40:00Z"),
+            ("a review", {**explain, "type": "review", "target": TARGET}, None),
+        ]
+        for label, current, moment in cases:
+            with self.subTest(label=label):
+                headline, body = task_runner.agent_message(current, None, NONCE).split("\n", 1)
+
+                self.assertEqual(json.loads(body)["task"].get("asOf"), moment)
+                self.assertEqual("2026-11-11T23:40:00Z" in headline, moment is not None)
+                self.assertIn("submit_result", headline)
+
     async def test_later_tasks_reuse_the_sessions_conversation(self):
         env = Env(script(REVIEW), script(EXPLAIN))
         sid = await env.session()

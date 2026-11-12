@@ -35,6 +35,7 @@ HEADLINES = {
     "explain": "Explain why this entity has its health state and submit the result with submit_result.",
     "design": "Design a health model for this workload and submit the result with submit_result.",
 }
+EXPLAIN_AT = "Explain why this entity had its health state at {asOf} and submit the result with submit_result."
 INTERRUPTED_MESSAGE = "The task was interrupted before it finished."
 SIGN_IN_AGAIN = "Your sign-in no longer allows this task to reach Azure. Sign in again and start the task again."
 CONSENT_MISSING = "The app has not been approved to reach Azure for you yet. An administrator of your directory has to approve it for the organization."
@@ -95,12 +96,15 @@ def agent_message(task, base, nonce):
     envelope = {
         "task": {
             **{name: task.get(name) for name in ("id", "type", "target", "workload", "instruction")},
+            # The moment an Explain is about: only a Task that has one names it, so every other Task is about now.
+            **({"asOf": task["asOf"]} if task.get("asOf") else {}),
             "nonce": nonce,
         }
     }
     if base is not None:
         envelope["relationships"] = model_diff.relationship_summaries(base)
-    return f"{HEADLINES[task['type']]}\n{json.dumps(envelope, ensure_ascii=False)}"
+    headline = EXPLAIN_AT.format(asOf=task["asOf"]) if task.get("asOf") else HEADLINES[task["type"]]
+    return f"{headline}\n{json.dumps(envelope, ensure_ascii=False)}"
 
 
 def hold_failures(state, held, drafts):

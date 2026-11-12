@@ -30,8 +30,14 @@ A **Task** that inspects an existing health model and returns findings and a **H
 _In the UI_: "Check this model" (button and menu), "Model check" in a sentence, and "Check <model>" as its title.
 
 **Explain task**:
-A **Task** that traces why an entity shows its current health state, back to signals, thresholds and rollup.
-_In the UI_: the question in the state the entity has: "Why is this Healthy?", "Why is this Degraded?", "Why is this Unhealthy?", "Why is the state unknown?". Its answer is "Answer"; its chain is "What is behind it".
+A **Task** that traces why an entity shows its current health state, back to signals, thresholds and rollup. Started at a **Selected moment**, it traces the state the entity had then and carries the moment as `asOf`.
+_In the UI_: the question in the state the entity has: "Why is this Healthy?", "Why is this Degraded?", "Why is this Unhealthy?", "Why is the state unknown?". At a past moment: "Why was this Unhealthy at 23:40?". Its answer is "Answer"; its chain is "What is behind it".
+
+**Selected moment**:
+The one instant the whole page shows: now, which is live, or a past instant selected in the timeline. Every view, the question and an **Explain task** started then follow it.
+_In code_: `timelinePinned`, `selectedMoment`, `asOf` on a **Task**
+_Avoid in code_: Pinned time, cursor, as-of date
+_In the UI_: "Showing 11 Nov 23:40:00, 2 h 10 min ago" in the bar under the top bar, "As of" in the top bar and the timeline, "Back to now" to leave it.
 
 **Design task**:
 A **Task** that derives a new health model for a workload and returns it as a **Health model diff** against an empty model.
@@ -89,6 +95,8 @@ _In the UI_: "directory".
 - A **Session** holds many **Tasks**; a **Task** can build on the results of earlier **Tasks** in its **Session**.
 - A **Review task** and a **Design task** each produce one **Health model diff**.
 - An **Explain task** produces no **Health model diff**.
+- The page has one **Selected moment**. An **Explain task** is about it; a **Review task** and a **Design task** are always about now.
+- A **Base model** and a **Proposed model** are compared at now: a comparison and a past **Selected moment** exclude each other.
 - A **Health model diff** gets one **Verification** before the user approves it.
 - The user approves some or all changes of a **Health model diff**; an entity's signals and relationships are approved with it. Only approved changes are **Applied**.
 - An **Apply** cannot be undone from the app.

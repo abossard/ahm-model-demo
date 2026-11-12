@@ -21,8 +21,9 @@ import {
 } from "../model/outline";
 import { diffTokens, impactOf, impactStyle, tokensFor } from "../model/palette";
 import type { ReorderWorld } from "../model/reorder";
-import type { AsyncState, EntityDetail } from "../model/types";
 import { actions, useStore } from "../store/store";
+import { selectLastChange } from "../store/timelineSlice";
+import { useAtMoment } from "../timeline/useAtMoment";
 import { useWindowedRows } from "../components/useWindowedRows";
 import { HealthBadge } from "../components/HealthBadge";
 import { StateGlyph } from "../components/StateGlyph";
@@ -280,22 +281,14 @@ const Item = memo(function Item({ row, top, active, selected, highlighted, marke
   );
 });
 
-/** The newest of an entity's transitions, as a date for the selected row. */
-function latestChange(detail: AsyncState<EntityDetail>): { readonly name: string; readonly when: string } | null {
-  if (detail.kind !== "success") return null;
-  const times = detail.value.transitions.map((transition) => transition.occurredAt).filter((time): time is string => time !== null && !Number.isNaN(Date.parse(time)));
-  if (times.length === 0) return null;
-  const newest = times.reduce((latest, time) => (Date.parse(time) > Date.parse(latest) ? time : latest));
-  return { name: detail.value.entity.name, when: formatWhen(newest) };
-}
-
 export function OutlineView({ entities, relationships, selectedName, highlightedName, chainNames, badges, marked, compare, onActivate }: ViewProps): JSX.Element {
   const styles = useStyles();
   const selectedHealth = useStore((state) => state.selectedHealth);
   const excludedEntityMode = useStore((state) => state.excludedEntityMode);
   const focusNames = useStore((state) => state.focusNames);
   const focusSeq = useStore((state) => state.focusSeq);
-  const detail = useStore((state) => state.detail);
+  // When the selected entity last changed its state: as of the moment the page shows.
+  const changed = useAtMoment(selectLastChange);
   const overrides = useOutlineState((state) => state.overrides);
   const setOpen = useOutlineState((state) => state.setOpen);
 
@@ -479,7 +472,7 @@ export function OutlineView({ entities, relationships, selectedName, highlighted
     [scrollTo],
   );
 
-  const change = useMemo(() => latestChange(detail), [detail]);
+  const lastChange = useMemo(() => (changed === null ? null : formatWhen(changed)), [changed]);
   const labelOf = (name: string | null): string | null => (name === null ? null : (byName.get(name)?.displayName || name));
 
   return (
@@ -525,7 +518,7 @@ export function OutlineView({ entities, relationships, selectedName, highlighted
                   step={steps.get(name) ?? null}
                   badge={badges?.get(lower) ?? null}
                   shownUnder={row.kind === "also" ? labelOf(row.shownUnder) : null}
-                  lastChange={name === selectedName && change?.name === name ? change.when : null}
+                  lastChange={name === selectedName ? lastChange : null}
                   reorderable={world !== null}
                   dragging={moving?.id === row.key}
                   onActivateRow={onActivateRow}

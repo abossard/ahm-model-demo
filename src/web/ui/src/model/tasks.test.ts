@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  askedMoment,
   buildTaskInput,
   designModelOf,
   expectedDuration,
@@ -10,12 +11,13 @@ import {
   NO_DESIGN_MODEL,
   repositoryProblem,
   resultHeading,
+  stateSentence,
   targetLabel,
   taskLabel,
   taskTitle,
-  waitingHint,
   type TaskContext,
   type TaskDraft,
+  waitingHint,
 } from "./tasks";
 import type { ExplainResult, ModelCatalog, ModelRef, Task, TaskSummary } from "./types";
 
@@ -100,6 +102,20 @@ describe("buildTaskInput", () => {
     });
   });
 
+  const MOMENT = Date.parse("2026-11-11T23:40:00.250Z");
+  it.each([
+    { name: "an Explain asks about the past moment the page shows", type: "explain" as const, moment: MOMENT, asOf: "2026-11-11T23:40:00.250Z" },
+    { name: "an Explain at now names no moment", type: "explain" as const, moment: null, asOf: undefined },
+    { name: "a Review is about now, whatever the page shows", type: "review" as const, moment: MOMENT, asOf: undefined },
+    { name: "a Design is about now, whatever the page shows", type: "design" as const, moment: MOMENT, asOf: undefined },
+  ])("$name", ({ type, moment, asOf }) => {
+    const { input } = buildTaskInput(draft({ type }), { ...CONTEXT, moment });
+
+    expect(input?.type).toBe(type);
+    expect(input?.asOf).toBe(asOf);
+    expect(input !== null && "asOf" in input).toBe(asOf !== undefined);
+  });
+
   it("designs against the design model with the default resource group as Workload", () => {
     expect(
       buildTaskInput(draft({ type: "design", repositoryUrl: " https://github.com/octo/repo " }), CONTEXT).input,
@@ -163,6 +179,7 @@ describe("inputOfTask", () => {
     { name: "an Explain", task: { type: "explain" as const, target: { ...target, entity: "db" }, instruction: "why" }, expected: { type: "explain", target: { ...target, entity: "db" }, instruction: "why" } },
     { name: "a Design with its repository", task: { type: "design" as const, target, workload: { resourceGroup: "rg-z", repositoryUrl: "https://github.com/o/r" }, instruction: "" }, expected: { type: "design", target, workload: { resourceGroup: "rg-z", repositoryUrl: "https://github.com/o/r" }, instruction: "" } },
     { name: "a Review without a workload", task: { type: "review" as const, target, instruction: "" }, expected: { type: "review", target, instruction: "" } },
+    { name: "an Explain about a past moment, about that moment", task: { type: "explain" as const, target: { ...target, entity: "db" }, instruction: "", asOf: "2026-11-11T23:40:00Z" }, expected: { type: "explain", target: { ...target, entity: "db" }, instruction: "", asOf: "2026-11-11T23:40:00Z" } },
   ])("asks for $name again as it was asked", ({ task, expected }) => {
     expect(inputOfTask(task)).toEqual(expected);
   });
@@ -231,6 +248,21 @@ describe("finishedAnnouncement and resultHeading", () => {
   });
 
   it.each([
+    { name: "a question about a past moment by its answer", task: { ...explained, asOf: "2026-11-11T23:40:00Z" }, label: "Service C", expected: "Answer ready. The queue is past its threshold." },
+    { name: "a question about a past moment with no summary, by the state it had then", task: { ...withSummary(""), asOf: "2026-11-11T23:40:00Z" }, label: "Service C", expected: `Answer ready. Service C was Unhealthy at ${askedMoment({ asOf: "2026-11-11T23:40:00Z" })}.` },
+  ])("announces $name", ({ task, label, expected }) => {
+    expect(finishedAnnouncement(task, label)).toBe(expected);
+    expect(resultHeading(task, label)).toBe(expected.replace("Answer ready. ", ""));
+  });
+
+  it.each([
+    { name: "now", at: null, expected: "Service C is Unhealthy." },
+    { name: "a past moment", at: "11 Nov 23:40", expected: "Service C was Unhealthy at 11 Nov 23:40." },
+  ])("says the state an explanation found for $name", ({ at, expected }) => {
+    expect(stateSentence("Service C", "Unhealthy", at)).toBe(expected);
+  });
+
+  it.each([
     { name: "an Explain by its answer", task: explained, label: "Service C", expected: "The queue is past its threshold." },
     { name: "an Explain whose summary has evidence", task: withSummary("Service C is Unhealthy. More."), label: null, expected: "Service C is Unhealthy." },
     { name: "an Explain with no summary", task: withSummary(""), label: "Service C", expected: "Service C is Unhealthy." },
@@ -255,5 +287,25 @@ describe("taskTitle", () => {
     { name: "a Design by the repository", task: { type: "design" as const, target, workload: { resourceGroup: "rg-app", repositoryUrl: "https://github.com/octo/repo.git" } }, label: null, state: null, expected: "Design for octo/repo" },
   ])("titles $name", ({ task, label, state, expected }) => {
     expect(taskTitle(task, label, state)).toBe(expected);
+  });
+
+  const past = { type: "explain" as const, target: { ...target, entity: "svc-a" }, asOf: "2026-11-11T23:40:00Z" };
+  it.each([
+    { name: "an Unhealthy entity", task: past, label: "Service A", state: "Unhealthy" as const, zone: "UTC", expected: "Why was Service A Unhealthy at 11 Nov 23:40?" },
+    { name: "an entity whose state is not known", task: past, label: "Service A", state: null, zone: "UTC", expected: "Why was Service A in this state at 11 Nov 23:40?" },
+    { name: "an Unknown entity", task: past, label: null, state: "Unknown" as const, zone: "UTC", expected: "Why was the state of svc-a unknown at 11 Nov 23:40?" },
+    { name: "the viewer's own day and clock", task: past, label: "Service A", state: "Degraded" as const, zone: "Europe/Zurich", expected: "Why was Service A Degraded at 12 Nov 00:40?" },
+    { name: "a moment that is no time, as a question about now", task: { ...past, asOf: "then" }, label: "Service A", state: "Healthy" as const, zone: "UTC", expected: "Why is Service A Healthy?" },
+    { name: "a model check, which is never about a moment", task: { type: "review" as const, target, asOf: "2026-11-11T23:40:00Z" }, label: null, state: null, zone: "UTC", expected: "Check hm-demo" },
+  ])("titles a question about a past moment of $name with the moment", ({ task, label, state, zone, expected }) => {
+    expect(taskTitle(task, label, state, zone)).toBe(expected);
+  });
+
+  it.each([
+    { name: "a past moment with its day", asOf: "2026-11-11T23:40:00Z", expected: "11 Nov 23:40" },
+    { name: "no moment", asOf: undefined, expected: null },
+    { name: "a moment that is no time", asOf: "then", expected: null },
+  ])("says $name", ({ asOf, expected }) => {
+    expect(askedMoment(asOf === undefined ? {} : { asOf }, "UTC")).toBe(expected);
   });
 });

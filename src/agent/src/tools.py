@@ -20,7 +20,7 @@ from pydantic import Field
 from contracts import validate_task_result
 from grounding import MetricRun, RepoScan, grounded_problems, letters, removed_names, scan_repository, scan_signature, squash, words_of
 from clone import CLONE_TOOL, clone_tool
-from history import window_problems
+from history import instant, window_problems
 from instructions import instructions_for
 from plain import plain_problems
 from reduction import decision_lines, reduce_result, reduction_notice
@@ -95,7 +95,8 @@ class RunRecord:
     repository address), the `repository` the Task names and whether a clone was tried, the log queries that ran
     (`log_runs`: query to status and columns) and the metrics queries that returned. `scope` is the Task target's
     subscription and resource group, `groups` the resource groups the Task names. The counters (`rejections`, `repeats`,
-    `idle`, `model_calls`, `started`) decide when the agent submits a reduced result itself."""
+    `idle`, `model_calls`, `started`) decide when the agent submits a reduced result itself. `as_of` is the past moment an
+    explain is about, None for now: its reads are made for that moment (`history.py`)."""
 
     queries: list[bool] = field(default_factory=list)
     entities: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -129,6 +130,7 @@ class RunRecord:
     model_calls: int = 0
     started: float | None = None
     history_window: tuple[datetime, datetime] | None = None
+    as_of: datetime | None = None
 
     def read_entities(self, text: str, requested: str | None = None) -> None:
         """An entity is named by itself, else by the last segment of its walk `path` (a `fields` filter can leave the
@@ -392,6 +394,12 @@ def asked_entity(envelope: dict[str, Any] | None) -> str:
     target = envelope["task"].get("target") if envelope else None
     entity = target.get("entity") if isinstance(target, dict) else None
     return entity.lower() if isinstance(entity, str) and envelope["task"].get("type") == "explain" else ""
+
+
+def asked_moment(envelope: dict[str, Any] | None) -> datetime | None:
+    """The past moment an explain Task asks about (`asOf`): None for a question about now, and for every other Task."""
+    task = envelope["task"] if envelope else {}
+    return instant(task.get("asOf")) if task.get("type") == "explain" else None
 
 
 def target_name(envelope: dict[str, Any] | None) -> str:
@@ -815,6 +823,7 @@ class TaskTools(ContextProvider):
             instruction=instruction if isinstance(instruction, str) else "",
             scope=scope,
             groups=groups,
+            as_of=asked_moment(envelope),
         )
         CURRENT_RUN.set(record)
         if self._tokens is not None:
@@ -823,6 +832,6 @@ class TaskTools(ContextProvider):
             except AzureUnavailable as error:
                 record.blocked = str(error)
                 context.extend_instructions(self.source_id, f"Azure cannot be read for this Task: {error}")
-        if text := instructions_for(record.task_type):
+        if text := instructions_for(record.task_type, moment=record.as_of is not None):
             context.extend_instructions(self.source_id, text)
         context.extend_tools(self.source_id, task_tools(folder, record, TYPE_TOOLS.get(record.task_type, tuple(TYPE_TOOLS["design"]))))

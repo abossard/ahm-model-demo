@@ -29,7 +29,7 @@ from agent_framework import (
 )
 
 from azure_mcp import ACTIVITY_LOG_TOOL, AZURE_MCP_TOOLS
-from history import HistoryRefused, bounded_arguments, widened
+from history import HistoryRefused, activity_arguments, bounded_arguments, log_arguments, metric_arguments, widened
 from instructions import COMMON
 from scope import scope_refusal, used_groups
 from skillset import skills_provider
@@ -38,7 +38,9 @@ from tools import (
     CURRENT_RUN,
     INSPECT_TOOL,
     LIST_TOOL,
+    LOG_QUERY_TOOL,
     MAX_IDLE,
+    METRICS_TOOL,
     QUERY_TOOLS,
     SHELL_TOOL,
     SUBMIT_TOOL,
@@ -216,7 +218,8 @@ def utc_now() -> datetime:
 
 class InspectWindow(FunctionMiddleware):
     """History is read for a bounded window only: the model has no clock, and the server's own default is open-ended. See
-    `history.py` for the rule. A read of history that the rule does not allow is answered with a refusal."""
+    `history.py` for the rule. A read of history that the rule does not allow is answered with a refusal. For a Task about a
+    past moment (`asOf`) every read is of the model as it was then, and the window ends there."""
 
     def __init__(self, clock: Callable[[], datetime] = utc_now) -> None:
         self._clock = clock
@@ -226,14 +229,43 @@ class InspectWindow(FunctionMiddleware):
         if record is not None and context.function.name == INSPECT_TOOL:
             try:
                 arguments, window = bounded_arguments(
-                    as_mapping(context.arguments), task_type=record.task_type, asked=record.asked, instruction=record.instruction, now=self._clock()
+                    as_mapping(context.arguments),
+                    task_type=record.task_type,
+                    asked=record.asked,
+                    instruction=record.instruction,
+                    now=self._clock(),
+                    as_of=record.as_of,
                 )
             except HistoryRefused as refusal:
                 context.result = f"Error: refused. {refusal}"
                 return
-            if window is not None:
+            if window is not None or record.as_of is not None:
                 context.arguments = arguments
+            if window is not None:
                 record.history_window = widened(record.history_window, window)
+        await call_next()
+
+
+EVIDENCE_AT = {METRICS_TOOL: metric_arguments, LOG_QUERY_TOOL: log_arguments, ACTIVITY_LOG_TOOL: activity_arguments}
+
+
+class EvidenceWindow(FunctionMiddleware):
+    """A Task about a past moment (`asOf`) reads its evidence for that moment too: metrics for the window that ends there, a
+    log query as it would have run then, the activity log far enough back. See `history.py`. A log query that would read up
+    to now is answered with a refusal that says what to add."""
+
+    def __init__(self, clock: Callable[[], datetime] = utc_now) -> None:
+        self._clock = clock
+
+    async def process(self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        record = CURRENT_RUN.get()
+        at_moment = EVIDENCE_AT.get(context.function.name)
+        if record is not None and record.as_of is not None and at_moment is not None:
+            try:
+                context.arguments = at_moment(as_mapping(context.arguments), as_of=record.as_of, instruction=record.instruction, now=self._clock())
+            except HistoryRefused as refusal:
+                context.result = f"Error: refused. {refusal}"
+                return
         await call_next()
 
 
@@ -450,6 +482,7 @@ def build_agent(
             ArgumentsOnce(),
             AzureScope(),
             InspectWindow(clock),
+            EvidenceWindow(clock),
             RecordCalls(),
             *refresh,
             EndAtAcceptedResult(),

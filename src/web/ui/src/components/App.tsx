@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { JSX } from "react";
 import {
   FluentProvider,
@@ -19,6 +19,7 @@ import { timelineParams } from "../model/timelineUrl";
 import { applyTheme, persistTheme, type ThemeName } from "../model/theme";
 import { actions, useStore } from "../store/store";
 import { GraphView } from "./GraphView";
+import { MomentBar } from "./MomentBar";
 import { SessionWorkspace } from "./SessionWorkspace";
 import { TimelinePanel } from "../timeline/TimelinePanel";
 import { StatusBar } from "./StatusBar";
@@ -55,6 +56,29 @@ const useStyles = makeStyles({
 });
 
 const PLACEHOLDER_ROWS: readonly number[] = [1, 3, 4];
+/** How long the selected moment has to rest before the address names it: a drag moves it every frame. */
+const ADDRESS_REST_MS = 250;
+
+/** The selected moment once it rests, which is when the address is written. */
+function useRestingMoment(): number | null {
+  const [resting, setResting] = useState(() => useStore.getState().timelinePinned);
+  useEffect(() => {
+    let timer = 0;
+    setResting(useStore.getState().timelinePinned);
+    const unsubscribe = useStore.subscribe((state, before) => {
+      if (state.timelinePinned === before.timelinePinned) return;
+      window.clearTimeout(timer);
+      // Selecting a moment and returning to now are named at once: only a moment that moves waits until it rests.
+      if (state.timelinePinned === null || before.timelinePinned === null) setResting(state.timelinePinned);
+      else timer = window.setTimeout(() => setResting(state.timelinePinned), ADDRESS_REST_MS);
+    });
+    return () => {
+      window.clearTimeout(timer);
+      unsubscribe();
+    };
+  }, []);
+  return resting;
+}
 
 /** The user is signed in and can read no health model in their directory: say what decides that, not that something broke. */
 function NoModels(): JSX.Element {
@@ -104,7 +128,9 @@ export function App(): JSX.Element {
   const timelineOpen = useStore((state) => state.timelineOpen);
   const timelineView = useStore((state) => state.timelineView);
   const timelineFollow = useStore((state) => state.timelineFollow);
+  const timelineFollowPaused = useStore((state) => state.timelineFollowPaused);
   const timelineFullscreen = useStore((state) => state.timelineFullscreen);
+  const moment = useRestingMoment();
 
   useEffect(() => {
     // A link's view wins over the one this viewer chose last.
@@ -114,12 +140,13 @@ export function App(): JSX.Element {
     void actions.restoreWorkspace(window.location.search);
   }, []);
 
-  // The address names the model, view, Session and Task on screen, so a link opens all four.
+  // The address names the model, view, Session and Task on screen, and the moment the page shows, so a link opens all of it.
   useEffect(() => {
     if (selected) {
-      window.history.replaceState(null, "", searchFromLocation(selected, { session: sessionId, task: taskSeq }, view, timelineParams(timelineOpen, timelineView, timelineFollow, timelineFullscreen)));
+      const timeline = timelineParams(timelineOpen, timelineView, timelineFollow || (moment !== null && timelineFollowPaused), timelineFullscreen, moment);
+      window.history.replaceState(null, "", searchFromLocation(selected, { session: sessionId, task: taskSeq }, view, timeline));
     }
-  }, [selected, sessionId, taskSeq, view, timelineOpen, timelineView, timelineFollow, timelineFullscreen]);
+  }, [selected, sessionId, taskSeq, view, timelineOpen, timelineView, timelineFollow, timelineFollowPaused, timelineFullscreen, moment]);
 
   useEffect(() => {
     applyTheme(theme, document);
@@ -131,12 +158,13 @@ export function App(): JSX.Element {
     <FluentProvider theme={FLUENT_THEMES[theme]} data-testid="app-shell">
       <div className={styles.shell}>
         <StatusBar />
+        <MomentBar />
         <div className={styles.body}>
           <SessionWorkspace />
           <main className={styles.main}>
             {model.kind === "success" ? (
               <>
-                <GraphView model={model.value} />
+                <GraphView />
                 {timelineOpen ? <TimelinePanel /> : null}
               </>
             ) : catalog.kind === "success" && catalog.value.models.length === 0 ? (

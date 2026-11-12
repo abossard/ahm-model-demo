@@ -538,6 +538,99 @@ class TaskValidationTests(ApiCase):
         self.assertEqual(retry.status_code, 202)
 
 
+class MomentTaskTests(ApiCase):
+    """An Explain about a past moment: `asOf` is checked, stored, shown and sent to the agent, which answers for that moment."""
+
+    NOW = datetime(2026, 11, 12, 10, 0, 0, tzinfo=timezone.utc)
+    ENTITY = {**TARGET, "entity": "orders-db"}
+
+    def test_the_moment_is_an_instant_of_the_last_30_days_kept_in_utc(self):
+        cases = [
+            ("a utc instant", "2026-11-11T23:40:00Z", "2026-11-11T23:40:00Z"),
+            ("an instant with milliseconds", "2026-11-11T23:40:00.250Z", "2026-11-11T23:40:00Z"),
+            ("an instant with an offset", "2026-11-12T00:40:00+01:00", "2026-11-11T23:40:00Z"),
+            ("now", "2026-11-12T10:00:00Z", "2026-11-12T10:00:00Z"),
+            ("a clock a little ahead is now", "2026-11-12T10:01:30Z", "2026-11-12T10:00:00Z"),
+            ("30 days back", "2026-10-13T10:00:00Z", "2026-10-13T10:00:00Z"),
+            ("the future", "2026-11-12T10:02:01Z", None),
+            ("older than the service keeps", "2026-10-13T09:59:59Z", None),
+            ("no offset", "2026-11-11T23:40:00", None),
+            ("a date", "2026-11-11", None),
+            ("not a time", "yesterday", None),
+            ("empty", "", None),
+            ("a number", 1762904400000, None),
+            ("an object", {"at": "2026-11-11T23:40:00Z"}, None),
+        ]
+        for label, value, expected in cases:
+            with self.subTest(label=label):
+                self.assertEqual(self.module.as_of_moment(value, self.NOW), expected)
+
+    def test_only_an_explain_takes_a_moment(self):
+        recent = self.dto.iso(datetime.now(timezone.utc) - timedelta(hours=2))
+        cases = [
+            ("explain at a moment", {"type": "explain", "target": self.ENTITY, "asOf": recent}, 202, None),
+            ("explain with a null moment", {"type": "explain", "target": self.ENTITY, "asOf": None}, 202, None),
+            ("explain in the future", {"type": "explain", "target": self.ENTITY, "asOf": "2999-01-01T00:00:00Z"}, 400, "invalid_as_of"),
+            ("explain before the retention", {"type": "explain", "target": self.ENTITY, "asOf": "2020-01-01T00:00:00Z"}, 400, "invalid_as_of"),
+            ("explain at no time", {"type": "explain", "target": self.ENTITY, "asOf": "then"}, 400, "invalid_as_of"),
+            ("review at a moment", {"type": "review", "target": TARGET, "asOf": recent}, 400, "invalid_as_of"),
+            ("design at a moment", {"type": "design", "asOf": recent}, 400, "invalid_as_of"),
+        ]
+        for label, body, status, code in cases:
+            with self.subTest(label=label):
+                self.install(self.fake_agent.FakeAgent(delay=0))
+                with TestClient(self.module.app) as client:
+                    sid = self.new_session(client)
+                    response = self.start(client, sid, **body)
+                    tasks = client.get(f"/api/sessions/{sid}").json()["tasks"]
+
+                self.assertEqual(response.status_code, status, response.text)
+                self.assertEqual(response.json().get("error", {}).get("code"), code)
+                self.assertEqual(len(tasks), 1 if status == 202 else 0)
+                if status == 202:
+                    self.assertEqual(response.json().get("asOf"), body["asOf"] and body["asOf"][:19] + "Z")
+
+    def test_the_agent_is_asked_about_the_moment_and_answers_for_it(self):
+        self.install(self.fake_agent.FakeAgent(delay=0))
+        anchor = datetime.fromtimestamp(self.health.history.anchor_ms / 1000, tz=timezone.utc)
+        cases = [
+            ("a quiet hour", anchor - timedelta(hours=12), "Healthy", 0),
+            ("the failover three days back", anchor - timedelta(hours=71.15), "Unhealthy", 1),
+        ]
+        for label, moment, state, causes in cases:
+            with self.subTest(label=label):
+                self.install(self.fake_agent.FakeAgent(delay=0))
+                self.agent = self.fake_agent.FakeAgent(delay=0, state_at=self.health.state_at)
+                self.module.agent = self.agent
+                self.module.runner = self.task_runner.TaskRunner(self.store, self.agent, self.health)
+                asked = self.dto.iso(moment.replace(microsecond=0))
+                with TestClient(self.module.app) as client:
+                    sid = self.new_session(client)
+                    self.assertEqual(self.start(client, sid, type="explain", target=self.ENTITY, asOf=asked).status_code, 202)
+                    task = self.finish(client, sid)
+                    listed = client.get(f"/api/sessions/{sid}").json()["tasks"][0]
+                    events = asyncio.run(self.store.read_events(OWNER, sid, 1))
+
+                self.assertEqual(task["status"], "done", task.get("error"))
+                self.assertEqual((task["asOf"], listed["asOf"]), (asked, asked))
+                self.assertEqual((task["result"]["state"], len(task["result"]["causes"])), (state, causes))
+                self.assertEqual(task["result"]["window"], {"from": self.dto.iso(moment.replace(microsecond=0) - timedelta(hours=24)), "to": asked})
+                read = next(event for event in events if event["kind"] == "tool_call" and event["payload"].get("name") == "monitor_healthmodels_inspect")
+                arguments = json.loads(read["payload"]["arguments"])
+                self.assertEqual((arguments["timestamp"], arguments["end-at"], arguments["start-at"]), (asked, asked, task["result"]["window"]["from"]))
+
+    def test_a_question_about_now_names_no_moment_anywhere(self):
+        with TestClient(self.module.app) as client:
+            sid = self.new_session(client)
+            self.start(client, sid, type="explain", target=self.ENTITY)
+            task = self.finish(client, sid)
+            events = asyncio.run(self.store.read_events(OWNER, sid, 1))
+
+        self.assertNotIn("asOf", task)
+        self.assertNotIn("window", task["result"])
+        self.assertNotIn("timestamp", json.dumps([event["payload"] for event in events]))
+
+
 class EventStreamTests(ApiCase):
     def test_a_finished_task_replays_every_event_then_done(self):
         with TestClient(self.module.app) as client:

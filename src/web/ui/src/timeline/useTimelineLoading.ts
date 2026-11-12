@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import type { RowModel } from "../model/timelineRows";
 import { DAY, type Bounds, type View } from "../model/timelineScale";
 import { actions, useStore } from "../store/store";
-import { cancelTimelineSignals } from "../store/timelineSlice";
+import { cancelTimelineSignals, selectedMoment } from "../store/timelineSlice";
+import { useAtMoment } from "./useAtMoment";
 
 const SETTLE_MS = 220;
 const REFRESH_MS = 60_000;
@@ -44,16 +45,21 @@ export function useTimelineLoading(rows: RowModel, range: readonly [number, numb
   const owner = useStore((state) => (state.account ? `${state.account.tenantId}/${state.account.username}` : ""));
   const liveStatus = useStore((state) => state.liveStatus);
   const follow = useStore((state) => state.timelineFollow);
-  const moment = useStore((state) => state.timelinePinned);
+  // With everything else that follows the moment: a drag moves it every frame, and what is read is told once it rests.
+  const moment = useAtMoment(selectedMoment);
   const watched = useStore((state) => state.timelineWatched);
   const selectedName = useStore((state) => state.selectedName);
   const latest = useRef({ view });
   latest.current = { view };
   const stream = useRef<"never" | "live" | "lost">("never");
+  const opened = useRef<string | null>(null);
 
   useEffect(() => {
     if (selectedKey === "") return;
-    actions.resetTimeline();
+    const key = `${selectedKey} ${owner}`;
+    // The first set-up keeps the moment a link named: another model, or another user, begins at now.
+    actions.resetTimeline(opened.current === null || opened.current === key);
+    opened.current = key;
     return () => cancelTimelineSignals();
   }, [selectedKey, owner]);
 

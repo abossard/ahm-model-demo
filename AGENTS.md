@@ -39,6 +39,9 @@ Terms follow [GLOSSARY.md](GLOSSARY.md).
 - Keep the two copies of `task-result.schema.json` (`src/agent/src/contracts/`, `src/web/app/contracts/`) byte-identical.
   A change to the Task result also changes `src/agent/src/instructions.py` and the contract in `docs/redesign/plan.md`.
 - The agent signals of `hm-<env>` query the web app's `foundry.agent.*` spans. Rename a span and its signal together.
+- The page has one selected moment, `timelinePinned` ([ADR 0010](docs/adr/0010-one-clock.md)). A component that shows health reads it
+  with `useAtMoment` and a selector of `src/web/ui/src/store/timelineSlice.ts`, never `state.model` on its own. Only an Explain
+  carries the moment (`asOf`): a change to it touches `as_of_moment` in the web app, `src/agent/src/history.py` and the contract.
 - The timeline is read in tiles ([ADR 0009](docs/adr/0009-timeline-in-tiles.md)). `decimate` in `src/web/app/timeline.py` and in `src/web/ui/src/model/timelineTiles.ts` are the same rule with the same test table, and the tile sizes of `timelineTiles.ts` are the bucket sizes of `history_store.py`: change both. Timeline data reaches the browser only through `timeline/timelineLoader.ts` and lives only in `timelineSeries`.
 - The limits of the public app live in `src/web/app/config.py`.
   [docs/demo.md](docs/demo.md#limits-of-the-public-app) lists their values: change both.

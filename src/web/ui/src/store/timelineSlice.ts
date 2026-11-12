@@ -1,5 +1,5 @@
 import type { StateCreator } from "zustand";
-import type { ApiError, HealthModel } from "../model/types";
+import type { ApiError, Entity, HealthModel, HealthState } from "../model/types";
 import { EMPTY_TIMELINE, type TimelineData } from "../model/timeline";
 import type { LiveTimeline } from "../model/live";
 import { applyLive, stateCode } from "../model/timelineLive";
@@ -7,7 +7,7 @@ import { REPORT_SIGNAL, type Demand, type EntityHint, type TileRequest } from ".
 import { rootKeys, type RowOrder } from "../model/timelineRows";
 import { DAY, MINUTE, clampView, presetView, type Bounds, type View } from "../model/timelineScale";
 import { LEVELS, RAW, levelFor, type Level } from "../model/timelineTiles";
-import { modelAt } from "../model/timeTravel";
+import { entityOf, lastChangeAt, modelAt } from "../model/timeTravel";
 import { EMPTY_STORE, clearErrors, markFailed, toTimelineData, type Shown, type TimeStore } from "../model/timeStore";
 import { timelineFromSearch } from "../model/timelineUrl";
 import { createTileCache, indexedDbStorage, type CacheScope, type TileCache } from "../timeline/tileCache";
@@ -86,7 +86,11 @@ export interface TimelineActions {
   readonly initializeTimeline: (search: string) => void;
   readonly setTimelineHeight: (height: number) => void;
   readonly setTimelineView: (view: View) => void;
-  readonly resetTimeline: () => void;
+  /**
+   * Forgets what is held and begins again for the selected model and user. The selected moment goes with it, unless
+   * `keepMoment`: the first set-up of a page keeps the moment its link named.
+   */
+  readonly resetTimeline: (keepMoment?: boolean) => void;
   /** What the timeline shows now: the loader reads what is missing of it. */
   readonly wantTimeline: (demand: Demand) => void;
   /** Asks again for everything that failed. Resolves when nothing is being read. */
@@ -153,6 +157,36 @@ export const selectedMoment = (state: Pick<State, "timelinePinned">): number | n
  */
 export function selectModelAt(state: Pick<State, "model" | "timelineSeries" | "timelinePinned">): HealthModel | null {
   return state.model.kind === "success" ? modelAt(state.model.value, state.timelineSeries, state.timelinePinned) : null;
+}
+
+/** The minute the selected moment is in, null for now: what a sentence that names the moment needs, and no more often than it changes. */
+export const selectMomentMinute = (state: Pick<State, "timelinePinned">): number | null => (state.timelinePinned === null ? null : Math.floor(state.timelinePinned / MINUTE) * MINUTE);
+
+/** The state the model had at the selected moment: its own while none is selected, null until it is loaded. */
+export const selectModelState = (state: Pick<State, "model" | "timelineSeries" | "timelinePinned">): HealthState | null => selectModelAt(state)?.model.healthState ?? null;
+
+/** The selected entity as it was at the selected moment, undefined while none is selected or the model does not have it. */
+export function selectEntityAt(state: Pick<State, "model" | "timelineSeries" | "timelinePinned" | "selectedName">): Entity | undefined {
+  return entityOf(selectModelAt(state), state.selectedName);
+}
+
+/**
+ * When the selected entity last changed its state, as an ISO time, null when nothing says. Now it is the newest change
+ * its detail lists; at a selected moment it is the last change at or before the moment that the history held has.
+ */
+export function selectLastChange(state: Pick<State, "selectedName" | "detail" | "timelineSeries" | "timelinePinned">): string | null {
+  const { selectedName, detail, timelinePinned } = state;
+  if (selectedName === null) return null;
+  if (timelinePinned !== null) {
+    const at = lastChangeAt(state.timelineSeries.states[selectedName], timelinePinned);
+    return at === null ? null : new Date(at).toISOString();
+  }
+  if (detail.kind !== "success" || detail.value.entity.name !== selectedName) return null;
+  let newest: string | null = null;
+  for (const { occurredAt } of detail.value.transitions) {
+    if (occurredAt !== null && !Number.isNaN(Date.parse(occurredAt)) && (newest === null || Date.parse(occurredAt) > Date.parse(newest))) newest = occurredAt;
+  }
+  return newest;
 }
 
 /** The oldest instant any entity's history starts at: the real beginning of "all". */
@@ -304,14 +338,18 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
   showInTimeline: (name, key = null) => set((state) => ({ timelineOpen: true, timelineFocus: { name, key, seq: (state.timelineFocus?.seq ?? 0) + 1 } })),
 
   initializeTimeline: (search) => {
-    const link = timelineFromSearch(search);
-    if (!link.open) return;
     const now = Date.now();
+    const link = timelineFromSearch(search, now);
+    if (!link.open) return;
+    const following = link.follow || link.view === null;
     set({
       timelineOpen: true,
       timelineFullscreen: link.fullscreen,
-      timelineFollow: link.follow || link.view === null,
+      // A link at a past moment does not follow now: it will again, if it did, once the page returns to now.
+      timelineFollow: following && link.at === null,
+      timelineFollowPaused: following && link.at !== null,
       timelineView: link.follow && link.span !== null ? { t0: now - link.span, t1: now } : link.view,
+      timelinePinned: link.at,
     });
   },
 
@@ -328,20 +366,20 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
     set((state) => ({ timelineView: next, timelineFollow: state.timelineFollow && atNow, timelineFollowPaused: state.timelineFollowPaused && atNow }));
   },
 
-  resetTimeline: () => {
+  resetTimeline: (keepMoment = false) => {
     hydratedView = null;
-    set({
+    set((state) => ({
       timelineSeries: EMPTY_STORE,
       timelineData: EMPTY_TIMELINE,
       timelineStatus: "idle",
       timelineError: null,
       timelineLoading: [],
       timelineExpanded: [],
-      timelinePinned: null,
-      timelineFollowPaused: false,
+      timelinePinned: keepMoment ? state.timelinePinned : null,
+      timelineFollowPaused: keepMoment && state.timelinePinned !== null && state.timelineFollowPaused,
       timelineStale: false,
       timelineHeld: [],
-    });
+    }));
     loaderOf().open(cacheScope(get()));
   },
 
@@ -386,6 +424,11 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
   selectMoment: (t) => {
     const { timelinePinned, timelineFollow, timelineView, timelineData } = get();
     if (t === timelinePinned) return;
+    // A comparison is of a proposal against the model now: the page leaves it when it leaves now.
+    if (t !== null && get().compare) {
+      get().setCompare(false);
+      get().announce("The comparison is closed: it is about the model now, and the page shows a past moment.");
+    }
     if (t === null) {
       const resume = get().timelineFollowPaused;
       set({ timelinePinned: null, timelineFollowPaused: false });

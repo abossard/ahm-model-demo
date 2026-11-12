@@ -47,7 +47,7 @@ export function TimelineLegend({ standby }: { readonly standby: boolean }): JSX.
       </li>
       <li className={styles.legendItem} data-testid="tl-legend-pinned">
         <span className="tl-pin" aria-hidden="true" />
-        Pinned moment
+        Selected moment
       </li>
     </ul>
   );

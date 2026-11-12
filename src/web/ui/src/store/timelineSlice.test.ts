@@ -8,7 +8,21 @@ import { RETENTION, WEEK, tileOf } from "../model/timelineTiles";
 import type { Demand } from "../model/timelinePlan";
 import { createTileCache, memoryStorage } from "../timeline/tileCache";
 import * as api from "./api";
-import { TIMELINE_MAX_HEIGHT, TIMELINE_MIN_HEIGHT, cacheScope, cancelTimelineSignals, historyStart, selectModelAt, selectedMoment, setTimelineCache, timelineIdle } from "./timelineSlice";
+import {
+  TIMELINE_MAX_HEIGHT,
+  TIMELINE_MIN_HEIGHT,
+  cacheScope,
+  cancelTimelineSignals,
+  historyStart,
+  selectEntityAt,
+  selectLastChange,
+  selectModelAt,
+  selectModelState,
+  selectMomentMinute,
+  selectedMoment,
+  setTimelineCache,
+  timelineIdle,
+} from "./timelineSlice";
 import { actions, useStore } from "./store";
 
 vi.mock("./api");
@@ -507,6 +521,100 @@ describe("the selected moment", () => {
     actions.closeTimeline();
 
     expect(selectedMoment(useStore.getState())).toBeNull();
+  });
+
+  const AT = NOW - 2 * HOUR - 10 * MINUTE;
+  it.each([
+    { name: "a link at a past moment", search: `?timeline=1&from=2026-11-10T10:00:00Z&to=2026-11-11T10:00:00Z&at=${new Date(AT).toISOString()}`, expected: { timelineOpen: true, timelinePinned: AT, timelineFollow: false, timelineFollowPaused: false } },
+    { name: "a link at a past moment of a window that followed now", search: `?timeline=1&live=1&span=${DAY}&at=${new Date(AT).toISOString()}`, expected: { timelineOpen: true, timelinePinned: AT, timelineFollow: false, timelineFollowPaused: true, timelineView: { t0: NOW - DAY, t1: NOW } } },
+    { name: "a link that names only a moment", search: `?at=${new Date(AT).toISOString()}`, expected: { timelineOpen: true, timelinePinned: AT, timelineFollow: false, timelineFollowPaused: true } },
+    { name: "a link at a moment the page cannot show", search: "?timeline=1&at=2020-01-01T00:00:00Z", expected: { timelineOpen: true, timelinePinned: null, timelineFollow: true, timelineFollowPaused: false } },
+    { name: "a link at now", search: "?timeline=1", expected: { timelineOpen: true, timelinePinned: null, timelineFollow: true } },
+  ])("$name opens the page at it", ({ search, expected }) => {
+    actions.initializeTimeline(search);
+
+    expect(useStore.getState()).toMatchObject(expected);
+  });
+
+  it("the moment of a link stays through the first set-up of its timeline, returns to live with Back to now, and another model begins at now", async () => {
+    serve();
+    actions.initializeTimeline(`?timeline=1&live=1&span=${DAY}&at=${new Date(AT).toISOString()}`);
+
+    actions.resetTimeline(true);
+    await show({});
+    expect(useStore.getState()).toMatchObject({ timelinePinned: AT, timelineFollow: false, timelineFollowPaused: true });
+
+    actions.selectMoment(null);
+    expect(useStore.getState()).toMatchObject({ timelinePinned: null, timelineFollow: true, timelineFollowPaused: false });
+
+    actions.selectMoment(AT);
+    actions.resetTimeline();
+    expect(useStore.getState()).toMatchObject({ timelinePinned: null, timelineFollowPaused: false });
+  });
+
+  it("a comparison is about now: selecting a moment closes it, and opening one returns to now", () => {
+    useStore.setState({ compare: true });
+
+    actions.selectMoment(AT);
+    expect(useStore.getState()).toMatchObject({ compare: false, timelinePinned: AT });
+    expect(useStore.getState().announcement).toContain("comparison is closed");
+
+    actions.setCompare(true);
+    expect(useStore.getState()).toMatchObject({ compare: true, timelinePinned: null });
+    expect(useStore.getState().announcement).toContain("Back to now");
+
+    actions.setCompare(false);
+    actions.setCompare(true);
+    expect(useStore.getState().timelinePinned).toBeNull();
+  });
+
+  it("the selected entity, the state of the model and the minute are read at the moment", async () => {
+    serve(TROUBLED);
+    useStore.setState({ model: { kind: "success", value: graph }, selectedName: "root" });
+    await open();
+
+    expect(selectEntityAt(useStore.getState())).toBe(graph.entities.find((item) => item.name === "root"));
+    expect(selectModelState(useStore.getState())).toBe("Healthy");
+    expect(selectMomentMinute(useStore.getState())).toBeNull();
+
+    actions.selectMoment(incident[0] + 10 * MINUTE + 12_345);
+    expect(selectEntityAt(useStore.getState())?.healthState).not.toBe("Healthy");
+    expect(selectModelState(useStore.getState())).toBe(selectEntityAt(useStore.getState())?.healthState);
+    expect(selectMomentMinute(useStore.getState())).toBe(incident[0] + 10 * MINUTE);
+
+    useStore.setState({ selectedName: "ghost" });
+    expect(selectEntityAt(useStore.getState())).toBeUndefined();
+  });
+
+  it.each([
+    { name: "now: the newest change its detail lists", moment: null, selected: "root", detailOf: "root", expected: "2026-11-11T09:00:00Z" },
+    { name: "now, while the detail is of another entity: nothing", moment: null, selected: "root", detailOf: "other", expected: null },
+    { name: "nothing without a selected entity", moment: null, selected: null, detailOf: "root", expected: null },
+    { name: "at a moment: the last change before it that the history holds, whatever the detail of now says", moment: incident[1] + 30 * MINUTE, selected: "root", detailOf: "root", expected: "history" },
+  ])("the selected entity last changed, $name", async ({ moment, selected, detailOf, expected }) => {
+    serve(TROUBLED);
+    const transitions = [
+      { previousState: "Healthy" as const, healthState: "Degraded" as const, occurredAt: "2026-11-11T07:00:00Z" },
+      { previousState: "Degraded" as const, healthState: "Healthy" as const, occurredAt: "2026-11-11T09:00:00Z" },
+      { previousState: null, healthState: null, occurredAt: null },
+    ];
+    useStore.setState({
+      model: { kind: "success", value: graph },
+      selectedName: selected,
+      detail: { kind: "success", value: { entity: entityOf(detailOf), observedAt: "", transitions, canonicalSignal: { name: "x", current: null, history: [] } } },
+    });
+    await open();
+    if (moment !== null) actions.selectMoment(moment);
+
+    const changed = selectLastChange(useStore.getState());
+
+    if (expected !== "history") expect(changed).toBe(expected);
+    else {
+      const rows = useStore.getState().timelineSeries.states.root?.rows ?? [];
+      const last = [...rows].reverse().find((row) => row.t <= (moment as number));
+      expect(last).toBeDefined();
+      expect(changed).toBe(new Date(last?.t ?? 0).toISOString());
+    }
   });
 
   it("is null until a model is loaded", () => {

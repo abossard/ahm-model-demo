@@ -12,8 +12,9 @@ import {
   type OpenSession,
   type RunningRef,
 } from "../model/sessions";
-import { buildTaskInput, inputOfTask, isUnfinished, taskTitle, type TaskDraft } from "../model/tasks";
+import { askedMoment, buildTaskInput, inputOfTask, isUnfinished, stateSentence, taskTitle, type TaskDraft } from "../model/tasks";
 import { TASK_KIND, proposedCount } from "../model/wording";
+import { entityOf } from "../model/timeTravel";
 import type { LaunchStep } from "../model/errors";
 import type {
   ActivityEvent,
@@ -29,6 +30,7 @@ import type {
 import * as api from "./api";
 import { IDLE, LOADING, settle } from "./asyncState";
 import type { Store } from "./store";
+import { selectModelAt } from "./timelineSlice";
 
 export type StreamStatus = "idle" | "live" | "ended" | "error";
 
@@ -118,7 +120,7 @@ export interface TasksActions {
    */
   readonly startTask: (draft: Pick<TaskDraft, "type"> & Partial<TaskDraft>) => Promise<void>;
   /** Starts the Task again with what it asked for, not with what is on screen now. */
-  readonly rerunTask: (task: Pick<Task, "type" | "target" | "workload" | "instruction">) => Promise<void>;
+  readonly rerunTask: (task: Pick<Task, "type" | "target" | "workload" | "instruction" | "asOf">) => Promise<void>;
   /** Asks again for the start that was refused. */
   readonly retryStart: () => Promise<void>;
   readonly dismissLaunch: () => void;
@@ -254,11 +256,12 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
       : (model.value.entities.find((entity) => entity.name === name)?.displayName ?? name);
   };
 
-  // The state the entity has now, which is the one the user asks about.
-  const stateOf = (name: string | undefined): HealthState | null => {
-    const { model } = get();
-    if (name === undefined || model.kind !== "success") return null;
-    return model.value.entities.find((entity) => entity.name === name)?.healthState ?? null;
+  // The state the entity has on screen, now or at the selected moment, which is the one the user asks about. A question
+  // that is asked again (it names its own moment, or none) is not about what is on screen: it names no state.
+  const stateOf = (input: TaskInput): HealthState | null => {
+    const moment = get().timelinePinned;
+    const onScreen = input.asOf === undefined ? moment === null : moment !== null && Math.abs(Date.parse(input.asOf) - moment) < 1000;
+    return onScreen ? (entityOf(selectModelAt(get()), input.target.entity ?? null)?.healthState ?? null) : null;
   };
 
   const notify = (task: Task): void => {
@@ -268,7 +271,7 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
       task.status === "failed"
         ? (task.error?.message ?? "It stopped without an answer.")
         : result?.kind === "explain"
-          ? `${entityLabelOf(task.target.entity) ?? result.entity} is ${result.state}.`
+          ? stateSentence(entityLabelOf(task.target.entity) ?? result.entity, result.state, askedMoment(task))
           : result?.kind === "diff"
             ? `${proposedCount(result.changes.length)}.`
             : "The result is ready.";
@@ -353,7 +356,7 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
   const run = async (input: TaskInput): Promise<void> => {
     if (get().launch.kind === "starting") return;
     const entityLabel = entityLabelOf(input.target.entity);
-    const entityState = stateOf(input.target.entity);
+    const entityState = stateOf(input);
     const label = taskTitle(input, entityLabel, entityState);
     const refuse = (
       step: LaunchStep,
@@ -446,10 +449,10 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
     },
 
     startTask: async (draft) => {
-      const { selected, selectedName, catalog } = get();
+      const { selected, selectedName, catalog, timelinePinned } = get();
       const ready = buildTaskInput(
         { instruction: "", repositoryUrl: "", ...draft },
-        { selected, entity: selectedName, catalog: catalog.kind === "success" ? catalog.value : null },
+        { selected, entity: selectedName, catalog: catalog.kind === "success" ? catalog.value : null, moment: timelinePinned },
       );
       if (ready.input === null) {
         get().announce(ready.problem);
@@ -596,7 +599,14 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
       if (written.size > 0 && selected && sameModel(diff.value.target, selected)) void get().loadHealthModel();
     },
 
-    setCompare: (compare) => set({ compare }),
+    setCompare: (compare) => {
+      // A comparison is of a proposal against the model now, so it begins at now.
+      if (compare && get().timelinePinned !== null) {
+        get().selectMoment(null);
+        get().announce("Back to now: a comparison is about the model now.");
+      }
+      set({ compare });
+    },
 
     activateEntity: (name) => {
       if (get().compare && get().diff.kind === "success") get().toggleEntityChanges(name);

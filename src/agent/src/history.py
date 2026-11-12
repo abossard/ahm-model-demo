@@ -1,10 +1,14 @@
 """How far back Explain reads: the current state by default, history for the asked entity in a bounded window.
 
 The model has no clock and the Azure MCP server's own default is open-ended, so the window is set here, from the clock of
-the agent: at most the last 24 hours, or the period the instruction names, never more than 30 days."""
+the agent: at most the last 24 hours, or the period the instruction names, never more than 30 days.
+
+A Task about a past moment (`asOf`) moves that clock: the model is read as it was at the moment, the window ends there, and
+metrics, log queries and the activity log are read for that window instead of for now."""
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
@@ -30,6 +34,12 @@ PAST = re.compile(
     re.IGNORECASE,
 )
 REFUSAL = "History is read only for an Explain Task, for the asked entity, with no `walk`"
+# The service refuses a start older than what it keeps: a window that would begin there begins a little later.
+RETENTION_MARGIN = timedelta(minutes=5)
+AGO = re.compile(r"\bago\(\s*([^()]*?)\s*\)", re.IGNORECASE)
+NOW_CALL = re.compile(r"\bnow\(\s*([^()]*?)\s*\)", re.IGNORECASE)
+SINCE_AGO = re.compile(r"(\bTimeGenerated\s*)>=?\s*ago\(\s*([^()]+?)\s*\)", re.IGNORECASE)
+BOUNDED_ABOVE = re.compile(r"\bTimeGenerated\s*(?:<=?|between\b)", re.IGNORECASE)
 
 
 class HistoryRefused(Exception):
@@ -76,29 +86,98 @@ def history_window(now: datetime, instruction: str, start_at: datetime | None, e
     return start, end
 
 
+def plain_name(key: Any) -> str:
+    """The name of an argument without separators and in lower case: `start-at` and `start_at` are `startat`."""
+    return re.sub(r"[-_]", "", str(key)).lower()
+
+
+def without(arguments: Mapping[str, Any], *names: str) -> dict[str, Any]:
+    return {key: value for key, value in arguments.items() if plain_name(key) not in names}
+
+
+def moment_window(now: datetime, as_of: datetime, instruction: str, start_at: datetime | None = None, end_at: datetime | None = None) -> tuple[datetime, datetime]:
+    """The window a Task about the moment `as_of` reads: the same rule as `history_window`, counted from the moment instead
+    of from now, and never from before what the service keeps."""
+    start, end = history_window(min(as_of, now), instruction, start_at, end_at)
+    return max(start, min(now - MAX_WINDOW + RETENTION_MARGIN, end - MIN_WINDOW)), end
+
+
 def bounded_arguments(
-    arguments: Mapping[str, Any], *, task_type: str, asked: str, instruction: str, now: datetime
+    arguments: Mapping[str, Any], *, task_type: str, asked: str, instruction: str, now: datetime, as_of: datetime | None = None
 ) -> tuple[dict[str, Any], tuple[datetime, datetime] | None]:
     """The arguments of an inspect call with a bounded history window, or the same arguments when no history is read.
-    Raises HistoryRefused for a read the rule does not allow. The second item is the window that will be read."""
-    named = {re.sub(r"[-_]", "", str(key)).lower(): key for key in arguments}
+    Raises HistoryRefused for a read the rule does not allow. The second item is the window that will be read.
+
+    For a Task about a past moment (`as_of`) every read is of the model as it was then (`timestamp`), and history is read
+    for the window that ends there."""
+    named = {plain_name(key): key for key in arguments}
     wanted = include_names(arguments.get(named.get("include", ""))) & HISTORY_INCLUDES
+    moment = None if as_of is None else {"timestamp": iso(min(as_of, now))}
     if not wanted:
-        return dict(arguments), None
+        return ({**without(arguments, "timestamp"), **moment} if moment else dict(arguments)), None
     if task_type != "explain":
         raise HistoryRefused(f"{REFUSAL}: read the current state instead.")
     entity = arguments.get(named.get("entity", ""))
     if not isinstance(entity, str) or entity.lower() != asked:
         raise HistoryRefused(f"{REFUSAL}: pass `entity` '{asked}' and call again.")
-    if wanted & {"signalhistory", "annotations"} and not asks_about_past(instruction):
+    if wanted & {"signalhistory", "annotations"} and as_of is None and not asks_about_past(instruction):
         raise HistoryRefused(
             "SignalHistory and Annotations are read only when the instruction asks about the past. Use `History` of the asked "
             "entity, or answer from the current state."
         )
-    start, end = history_window(now, instruction, instant(arguments.get(named.get("startat", ""))), instant(arguments.get(named.get("endat", ""))))
-    bounded = {key: value for key, value in arguments.items() if re.sub(r"[-_]", "", str(key)).lower() not in ("walk", "startat", "endat", "timestamp")}
+    asked_window = (instant(arguments.get(named.get("startat", ""))), instant(arguments.get(named.get("endat", ""))))
+    start, end = history_window(now, instruction, *asked_window) if as_of is None else moment_window(now, as_of, instruction, *asked_window)
+    bounded = without(arguments, "walk", "startat", "endat", "timestamp")
     bounded["start-at"], bounded["end-at"] = iso(start), iso(end)
-    return bounded, (start, end)
+    return {**bounded, **(moment or {})}, (start, end)
+
+
+def metric_arguments(arguments: Mapping[str, Any], *, as_of: datetime, instruction: str, now: datetime) -> dict[str, Any]:
+    """A metrics query of a Task about a past moment: the window that ends at the moment instead of the last day before
+    now. A start or an end the call names inside that window is kept."""
+    named = {plain_name(key): key for key in arguments}
+    start, end = moment_window(now, as_of, instruction, instant(arguments.get(named.get("starttime", ""))), instant(arguments.get(named.get("endtime", ""))))
+    return {**without(arguments, "starttime", "endtime"), "start-time": iso(start), "end-time": iso(end)}
+
+
+def query_at(query: str, as_of: datetime) -> str:
+    """A KQL query as it would have run at `as_of`: `now()` and `ago()` count from that instant, and where the query takes
+    everything since an `ago()`, it takes it up to that instant."""
+    moment = f"datetime({iso(as_of)})"
+    text = SINCE_AGO.sub(lambda found: f"{found[1]}between (({moment} - {found[2]}) .. {moment})", query)
+    text = AGO.sub(lambda found: f"({moment} - {found[1]})", text)
+    return NOW_CALL.sub(lambda found: f"({moment} + {found[1]})" if found[1] else moment, text)
+
+
+def hours_back(now: datetime, as_of: datetime, instruction: str) -> int:
+    """How many hours before now the window of a Task about `as_of` begins: the server counts a log read back from now."""
+    return max(1, math.ceil((now - moment_window(now, as_of, instruction)[0]) / timedelta(hours=1)))
+
+
+def log_arguments(arguments: Mapping[str, Any], *, as_of: datetime, instruction: str, now: datetime) -> dict[str, Any]:
+    """A log query of a Task about a past moment: read far enough back to reach its window, with `now()` and `ago()` counted
+    from the moment. The server reads up to now, so a query that does not stop at the moment itself is refused. A look at a
+    table's columns (`getschema`) reads no rows and passes."""
+    named = {plain_name(key): key for key in arguments}
+    bounded = {**without(arguments, "hours"), "hours": hours_back(now, as_of, instruction)}
+    query = arguments.get(named.get("query", ""))
+    if not isinstance(query, str):
+        return bounded
+    pinned = query_at(query, min(as_of, now))
+    if not BOUNDED_ABOVE.search(pinned) and "getschema" not in pinned.lower():
+        start, end = moment_window(now, as_of, instruction)
+        raise HistoryRefused(
+            f"This Task is about {iso(end)}, and a log query reads up to now unless it says otherwise. Add "
+            f"`| where TimeGenerated between (datetime({iso(start)}) .. datetime({iso(end)}))` after the table, or a shorter "
+            "range that ends there, and call again."
+        )
+    return {**bounded, named["query"]: pinned}
+
+
+def activity_arguments(arguments: Mapping[str, Any], *, as_of: datetime, instruction: str, now: datetime) -> dict[str, Any]:
+    """The activity log of a Task about a past moment: far enough back to reach its window. It has no end to set, so what
+    happened after the moment comes back too."""
+    return {**without(arguments, "hours"), "hours": hours_back(now, as_of, instruction)}
 
 
 def widened(read: tuple[datetime, datetime] | None, window: tuple[datetime, datetime]) -> tuple[datetime, datetime]:

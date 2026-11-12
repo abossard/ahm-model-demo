@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STATUS_LABEL, TASK_KIND, formatUpdated, howSure, lookedAt, plural, proposedCount, whyQuestion } from "./wording";
+import { STATUS_LABEL, TASK_KIND, agoWords, formatUpdated, howSure, lookedAt, momentWords, plural, proposedCount, showingMoment, stateHeading, whyQuestion } from "./wording";
 import type { HealthState } from "./types";
 
 describe("whyQuestion", () => {
@@ -17,6 +17,60 @@ describe("whyQuestion", () => {
     { state: null, subject: "Service C", expected: "Why is Service C in this state?" },
   ])("asks $expected for $state and $subject", ({ state, subject, expected }) => {
     expect(whyQuestion(state, subject)).toBe(expected);
+  });
+});
+
+describe("the question about a past moment", () => {
+  it.each<{ state: HealthState | null; subject: string | null; expected: string }>([
+    { state: "Healthy", subject: null, expected: "Why was this Healthy at 23:40?" },
+    { state: "Degraded", subject: null, expected: "Why was this Degraded at 23:40?" },
+    { state: "Unhealthy", subject: null, expected: "Why was this Unhealthy at 23:40?" },
+    { state: "Unknown", subject: null, expected: "Why was the state unknown at 23:40?" },
+    { state: "Deleted", subject: null, expected: "What happened to this before 23:40?" },
+    { state: null, subject: null, expected: "Why was it in this state at 23:40?" },
+    { state: "Unhealthy", subject: "Service C", expected: "Why was Service C Unhealthy at 23:40?" },
+    { state: "Unknown", subject: "Session Storage", expected: "Why was the state of Session Storage unknown at 23:40?" },
+    { state: "Deleted", subject: "Service E", expected: "What happened to Service E before 23:40?" },
+    { state: null, subject: "Service C", expected: "Why was Service C in this state at 23:40?" },
+  ])("asks $expected for $state and $subject", ({ state, subject, expected }) => {
+    expect(whyQuestion(state, subject, "23:40")).toBe(expected);
+  });
+
+  const at = Date.parse("2026-11-11T23:40:10Z");
+  it.each([
+    { name: "the clock alone on the same day", now: "2026-11-11T23:59:00Z", zone: "UTC", expected: "23:40" },
+    { name: "the day with it on the next day", now: "2026-11-12T01:50:00Z", zone: "UTC", expected: "11 Nov 23:40" },
+    { name: "the day of the viewer, not of UTC", now: "2026-11-12T01:50:00Z", zone: "Europe/Zurich", expected: "00:40" },
+    { name: "a day of one digit", now: "2026-11-01T12:00:00Z", zone: "UTC", expected: "11 Nov 23:40" },
+  ])("names a moment by $name", ({ now, zone, expected }) => {
+    expect(momentWords(at, Date.parse(now), zone)).toBe(expected);
+  });
+
+  it("names the day when nothing says which day it is read on", () => {
+    expect(momentWords(at, null, "UTC")).toBe("11 Nov 23:40");
+  });
+
+  it.each([
+    { name: "seconds", ms: 40_000, expected: "under a minute ago" },
+    { name: "a time ahead", ms: -5_000, expected: "under a minute ago" },
+    { name: "minutes", ms: 12 * 60_000 + 30_000, expected: "12 min ago" },
+    { name: "a whole hour", ms: 3_600_000, expected: "1 h ago" },
+    { name: "hours and minutes", ms: 2 * 3_600_000 + 10 * 60_000, expected: "2 h 10 min ago" },
+    { name: "a whole day", ms: 24 * 3_600_000, expected: "1 day ago" },
+    { name: "days and hours", ms: (3 * 24 + 4) * 3_600_000 + 59 * 60_000, expected: "3 days 4 h ago" },
+  ])("says how long ago $name were", ({ ms, expected }) => {
+    expect(agoWords(ms)).toBe(expected);
+  });
+
+  it("says which moment the page shows", () => {
+    expect(showingMoment(at, Date.parse("2026-11-12T01:50:10Z"), "UTC")).toBe("Showing 11 Nov 23:40:10, 2 h 10 min ago");
+  });
+
+  it.each([
+    { at: null, expected: "Current state" },
+    { at: "11 Nov 23:40", expected: "State at 11 Nov 23:40" },
+  ])("heads the state an answer found with $expected", ({ at: when, expected }) => {
+    expect(stateHeading(when)).toBe(expected);
   });
 });
 

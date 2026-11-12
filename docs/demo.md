@@ -25,13 +25,24 @@ Open the web app link that `azd up` prints. The steps build on each other.
 ## Read the history
 
 - **Timeline** in the top bar opens a panel under the graph, whatever view the graph shows. It also opens by itself when you click an entity: the row of that entity is selected, the way to it is open, its signals are open and the row is scrolled into view. Closing the timeline works; the next click on an entity opens it again. The button at the right of its header makes the timeline fill the window below the top bar; the button or Escape returns, and the address keeps it (`fullscreen=1`).
-- The left column is a tree of the relationships, not of layers. The roots are the entities without a parent; an open entity shows its signals first, then its dependencies, and each of those opens the same way. An entity with several parents is listed under each of them. An entity that relates to nothing comes last and says **Not connected**. Each entity row names its state; each signal row its state and its latest value with the unit, as of now or as of the pinned moment.
+- The left column is a tree of the relationships, not of layers. The roots are the entities without a parent; an open entity shows its signals first, then its dependencies, and each of those opens the same way. An entity with several parents is listed under each of them. An entity that relates to nothing comes last and says **Not connected**. Each entity row names its state; each signal row its state and its latest value with the unit, as of now or as of the selected moment.
 - The bar of an entity gets taller as the state gets worse: green for Healthy, orange for Degraded, red for Unhealthy, grey for Unknown. The line of a signal takes the same colours by its value: green while it is on the healthy side of the Degraded threshold, orange past it, red past the Unhealthy threshold, grey where the state is Unknown. The thresholds are drawn and named with their values, for example "Degraded above 70%". The legend above the tree names every colour and mark.
 - The chevron of a row opens one lane per signal. Lanes are read from Azure as they scroll into view.
 - Scrolling moves through the rows, over the tree and over the plot alike. A pinch on a touchpad, or Control (Command on a Mac) and the wheel, zooms around the pointer. Scrolling sideways, or Shift and the wheel, moves in time. A swipe keeps the direction it starts in until it ends. A drag pans, Shift and drag (or a drag on the axis) zooms to a range, a double click shows the last 24 hours. The presets run from 1 hour to all history. The service keeps 30 days.
-- Hover reads every lane at that instant and selects nothing. A click selects the instant: a line with its time at the top, and the model as it was then, with **Show on graph** for what was unhealthy. Drag the line or its label to move it; **Unpin** or Escape returns to now. Incidents (the root being Degraded or Unhealthy) are drawn under the axis, named when pointed at and listed under **Incidents** in the header; a click on one zooms to it.
+- Hover reads every lane at that instant and selects nothing. A click selects the instant: a line with its time at the top, and the whole page shows the model as it was then (see **Investigate a past moment**), with **Show on graph** for what was unhealthy. Drag the line or its label to move it; **Back to now** or Escape returns to now. Incidents (the root being Degraded or Unhealthy) are drawn under the axis, named when pointed at and listed under **Incidents** in the header; a click on one zooms to it.
 - Diamonds are data annotations, flags are health reports and ticks are the state changes of the selected entity. The keyboard works too: left and right move the selected instant, with Shift to the state change before or after it in the focused row, up and down move between rows, Enter picks a row and opens or closes it, plus and minus zoom, space selects the instant under the pointer.
 - **Live** keeps now at the right edge while new points arrive; dragging the plot away ends it. The address keeps the window, `?timeline=1&from=…&to=…`, or `?timeline=1&live=1&span=…` while it follows. What the timeline has read is kept in the browser, for the signed-in user only, so a reload paints at once and reads only what is new.
+
+## Investigate a past moment
+
+1. Open the **Timeline** and click in the plot where something went wrong, for example on the red part of an incident. A bar under the top bar says which time the page shows, "Showing 11 Nov 23:40:00, 2 h 10 min ago", and stays there in every view and when the timeline fills the window.
+2. Everything now shows that moment. The graph, in whichever view, has the states, signal values, cause path and colours of then, the top bar the state the model had and "As of" the moment, the timeline tree the state and value of every row. Drag the line and the page follows.
+   The entities and relationships are the ones the model has today: an entity that did not exist yet reads Unknown.
+3. Click an entity. Its strip shows the state and impact it had, and the question is about then: **Why was this Unhealthy at 23:40?** One click asks it. History and the question name the moment, the answer says "State at 11 Nov 23:40" and that the state now may differ, and **Looked at** is the day before that moment.
+   The assistant reads the model as it was at that instant, its history for the 24 hours before it and metrics and logs for the same window.
+4. **Send a health report** is disabled: a report is about now. **Check this model** and **Design a model** in the **Ask** menu say "as it is now" and look at the model of now. **Compare now and after** returns the page to now, and selecting a moment closes the comparison.
+5. **Back to now**, Escape, or closing the timeline returns to the live model. Changes that arrived meanwhile are on screen at once; they were not announced while you looked at the past.
+6. The address names the moment, `&at=2026-11-11T22:40:00.000Z`, so a link or a reload shows the same moment in the same view.
 
 ## Send a health report
 
@@ -43,6 +54,7 @@ Open the web app link that `azd up` prints. The steps build on each other.
 ## Ask why an entity has its state
 
 1. Click the entity that turned non-healthy, or the root `Health Pulse`. Above the plot it asks the question in the state it has: **Why is this Unhealthy?**, **Why is this Degraded?**, **Why is this Healthy?** or **Why is the state unknown?**. One click on it saves the question in History as "Why is <entity> <state>? (<date time>)", or adds it to the open topic when the assistant is not busy, and asks it.
+   While the page shows a past moment the question is about that moment: see **Investigate a past moment**.
    To add a note for the assistant, click **Add a note** instead: the form opens with the question and the entity filled in, and sending it saves the question.
 2. The panel opens on the question, and **What the assistant is doing** fills live: reading the health model, running queries, writing the answer. Each step is a plain sentence; the tool and its arguments are under the **...** button of the step, as **Technical details**.
    If you close the panel or leave the question, a notification offers **Show answer** when it is done.
@@ -109,6 +121,7 @@ The caps are constants in `src/web/app/config.py`. A refused request carries the
 - The timeline reads at most 120 signals, 400 Azure calls and 40 seconds per request, 8 calls at a time per request and 24 across the app. Beyond that it returns `too_many_series` or reports the series it skipped.
 - 64 KB per request body. A larger body returns `payload_too_large`.
 - 10 minutes per Task. A longer Task fails with `timeout`.
+- A question about a past moment reaches 30 days back, as far as the service keeps history, and 2 minutes ahead of the app's clock, which then counts as now. Any other moment returns `invalid_as_of`.
 - After an Apply writes changes, a later Apply on the same Task returns `base_changed`.
 - Health reports and Apply work only where your own Azure role allows them.
 

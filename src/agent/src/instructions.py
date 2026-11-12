@@ -29,13 +29,29 @@ Azure reads run with the signed-in user's permissions.
 - `load_skill` loads the skill named for the Task. Use its way of reading evidence; skip its file writing, diagrams, approval and deployment steps and full resource ids: the deliverable is `submit_result`.
 - Azure MCP is read-only, with kebab-case parameters and the target's `subscription`. `monitor_healthmodels_inspect`: `include` `Signals` adds signal groups and definitions, `walk` `Causes`, `Dependencies` or `Dependents` starts at `entity`, `top` 500 at most with `next-marker` (read every page). `monitor_metrics_query`: always pass `interval` (`PT1H` for a day). `monitor_workspace_log_query`: `query` is the complete KQL, `table` the table it reads."""
 
-EXPLAIN = """\
+EXPLAIN_READ = """\
 ## Explain
 `target.entity` is the entity to explain: say why it is in its state ("Why is Checkout healthy?"). States: `Healthy`, `Degraded`, `Unhealthy`, `Unknown`.
-1. Load `healthmodel-analyze`. Read the entity at once: `monitor_healthmodels_inspect` with `entity`, `walk` `Causes`, `include` `Signals`. Compare each signal's `status` (`healthState`, `value`, `reportedAt`, `error`) with its `evaluationRules`; `impact` and `signalGroups.dependencies` give the rollup. An `error` that blames a missing resource or data: check it once (`group_resource_list`, the signal's query) and say whether the data exists now, since the status may be stale. `monitor_activitylog_list` shows what changed on a resource.
-2. History is not part of the default answer. Read it only when the instruction asks about the past or a signal changed recently: `include` `History`, `entity` the asked entity, no `walk`. Leave out `start-at` and `end-at` (you have no clock) unless a time in the data gives them. The tool reads the last 24 hours, or the period the instruction names (30 days at most), and refuses `SignalHistory` and `Annotations` unless the instruction asks about the past; this replaces the analyze skill's 30 days. After reading history, `window` is `{"from", "to"}` of the period read (`submit_result` gives the values) and the summary names it; otherwise leave `window` out.
-3. `causes` run from the asked entity down to the root cause, one element per entity or signal on the chain. Every signal of the asked entity that is not `Healthy` (`Unknown` included) is an element with what it last reported; `causes` is empty only when all its signals and dependencies are `Healthy`. `entity` is the asked entity's name, `state` its current state. `threshold` is the rule as text, `value` the reading, `rollup` how it reaches its parent.
+1. Load `healthmodel-analyze`. Read the entity at once: `monitor_healthmodels_inspect` with `entity`, `walk` `Causes`, `include` `Signals`. Compare each signal's `status` (`healthState`, `value`, `reportedAt`, `error`) with its `evaluationRules`; `impact` and `signalGroups.dependencies` give the rollup. An `error` that blames a missing resource or data: check it once (`group_resource_list`, the signal's query) and say whether the data exists now, since the status may be stale. `monitor_activitylog_list` shows what changed on a resource."""
+
+EXPLAIN_HISTORY = """\
+2. History is not part of the default answer. Read it only when the instruction asks about the past or a signal changed recently: `include` `History`, `entity` the asked entity, no `walk`. Leave out `start-at` and `end-at` (you have no clock) unless a time in the data gives them. The tool reads the last 24 hours, or the period the instruction names (30 days at most), and refuses `SignalHistory` and `Annotations` unless the instruction asks about the past; this replaces the analyze skill's 30 days. After reading history, `window` is `{"from", "to"}` of the period read (`submit_result` gives the values) and the summary names it; otherwise leave `window` out."""
+
+# What takes the place of the history step for a Task about a past moment: the tool sets the clock, the model says so.
+EXPLAIN_MOMENT = """\
+2. The Task has `asOf`: the question is about that instant, and the state now may differ. The tool sets `timestamp` on every `monitor_healthmodels_inspect`, so step 1 shows the entity, its causes and their `status` as they were. Also read `include` `History`, `entity` the asked entity, no `walk`: the tool reads the 24 hours that end at `asOf`, or the period the instruction names; `SignalHistory` adds each signal's readings. Evidence too: `monitor_metrics_query` is set to that window, a log query counts `now()` and `ago()` from `asOf` and must bound `TimeGenerated` above, and what `monitor_activitylog_list` lists after `asOf` does not count. `window` is `{"from", "to"}` of the period read (`submit_result` gives the values). Write in the past tense, without a clock time."""
+
+EXPLAIN_CAUSES = """\
+3. `causes` run from the asked entity down to the root cause, one element per entity or signal on the chain. Every signal of the asked entity that is not `Healthy` (`Unknown` included) is an element with what it last reported; `causes` is empty only when all its signals and dependencies are `Healthy`. `entity` is the asked entity's name, `state` its {state}. `threshold` is the rule as text, `value` the reading, `rollup` how it reaches its parent.
 `{"kind":"explain","entity":"checkout","state":"Unhealthy","confidence":"high","summary":"Checkout is unhealthy because the orders database is overloaded. Its CPU is at 97%.","causes":[{"entity":"orders-db","signal":"cpu-percent","state":"Unhealthy","threshold":"> 95 Unhealthy","value":97,"rollup":"WorstOf","note":"The database is too busy to answer orders, so checkout fails."}]}`"""
+
+
+def explain(history: str, state: str) -> str:
+    return "\n".join((EXPLAIN_READ, history, EXPLAIN_CAUSES.replace("{state}", state)))
+
+
+EXPLAIN = explain(EXPLAIN_HISTORY, "current state")
+EXPLAIN_AT = explain(EXPLAIN_MOMENT, "state at `asOf`")
 
 REVIEW = """\
 ## Review
@@ -78,11 +94,12 @@ TYPE_INSTRUCTIONS = {
     "design": f"{DESIGN}\n\n{CHANGES}\n\n{VERIFICATION}",
 }
 
-def instructions_for(task_type: str) -> str:
-    """The part of the instructions that is specific to a Task type; empty for a message that holds no Task."""
-    return TYPE_INSTRUCTIONS.get(task_type, "")
+def instructions_for(task_type: str, moment: bool = False) -> str:
+    """The part of the instructions that is specific to a Task type; empty for a message that holds no Task. An explain
+    about a past moment (`moment`) is told to read that moment in place of the rule for history."""
+    return EXPLAIN_AT if moment and task_type == "explain" else TYPE_INSTRUCTIONS.get(task_type, "")
 
 
-def full_instructions(task_type: str) -> str:
+def full_instructions(task_type: str, moment: bool = False) -> str:
     """What the model is told for a Task of this type: the shared part and the part of its type."""
-    return "\n\n".join(part for part in (COMMON, instructions_for(task_type)) if part)
+    return "\n\n".join(part for part in (COMMON, instructions_for(task_type, moment)) if part)

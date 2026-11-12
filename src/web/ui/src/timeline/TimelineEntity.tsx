@@ -26,7 +26,9 @@ import { stateName, type Transition } from "../model/timeline";
 import { formatInstant } from "../model/timelineScale";
 import type { ReportOptions } from "../model/types";
 import { actions, useStore } from "../store/store";
+import { selectEntityAt } from "../store/timelineSlice";
 import { useStyles } from "./styles";
+import { useAtMoment } from "./useAtMoment";
 
 interface Props {
   readonly options: ReportOptions;
@@ -38,24 +40,30 @@ interface Props {
 /**
  * The selected entity above the plot: its state and impact, the question to ask about it, its health reports and every
  * change of its state. The changes are marked on its row, and listed here for the keyboard and a screen reader.
+ *
+ * Its state is the one the graph shows: the live model's now, the one it had at a selected moment. The detail that is
+ * read when it is selected adds what the model does not carry: whether it takes health reports, and the reports it got.
  */
 export function TimelineEntity({ options, changes, offsetMin }: Props): JSX.Element {
   const styles = useStyles();
   const selectedName = useStore((state) => state.selectedName);
   const detail = useStore((state) => state.detail);
-  // The name the graph gives it, until the detail is read.
-  const known = useStore((state) => (state.model.kind === "success" ? state.model.value.entities.find((entity) => entity.name === state.selectedName)?.displayName : undefined));
-  const title = detail.kind === "success" ? detail.value.entity.displayName : (known ?? selectedName);
+  const shown = useAtMoment(selectEntityAt);
+  const past = useStore((state) => state.timelinePinned !== null);
+  const title = shown?.displayName ?? (detail.kind === "success" ? detail.value.entity.displayName : selectedName);
+  // Now the strip fills in when the detail has been read, as one piece. A past moment needs nothing of the detail,
+  // which is about now: neither its wait nor its failure is shown.
+  const known = shown !== undefined && (past || detail.kind === "success");
 
   return (
     <section className={styles.entity} aria-label="Selected entity" data-testid="entity-details">
-      {detail.kind === "success" ? <HealthBadge state={detail.value.entity.healthState} /> : null}
+      {known ? <HealthBadge state={shown.healthState} /> : null}
       <span className={styles.entityName} data-testid="entity-name">
         {title}
       </span>
-      {detail.kind === "success" ? <Text size={200}>Impact: {detail.value.entity.impact}</Text> : null}
-      {detail.kind === "loading" ? <Spinner size="tiny" label="Loading entity…" labelPosition="after" /> : null}
-      {detail.kind === "failure" ? (
+      {known ? <Text size={200}>Impact: {shown.impact}</Text> : null}
+      {!past && detail.kind === "loading" ? <Spinner size="tiny" label="Loading entity…" labelPosition="after" /> : null}
+      {!past && detail.kind === "failure" ? (
         <MessageBar intent="error" role="alert">
           <MessageBarBody>{accessMessage(detail.error, "browse")}</MessageBarBody>
         </MessageBar>
@@ -65,7 +73,8 @@ export function TimelineEntity({ options, changes, offsetMin }: Props): JSX.Elem
         {detail.kind === "success" ? (
           <Dialog modalType="modal">
             <DialogTrigger disableButtonEnhancement>
-              <Button size="small" data-testid="report-open">
+              {/* A report says how the entity is doing now: there is none to send for a moment that has passed. */}
+              <Button size="small" disabledFocusable={past} title={past ? "A health report is about now. Go back to now to send one." : undefined} data-testid="report-open">
                 Send a health report
               </Button>
             </DialogTrigger>
