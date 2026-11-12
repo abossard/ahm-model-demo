@@ -235,6 +235,10 @@ export function taskFailure(error: TaskError | null | undefined): ErrorPresentat
 const SIGN_IN_HINTS: readonly (readonly [RegExp, string])[] = [
   [/AADSTS50105/, "Your account is not assigned to this app. Ask the owner of the app to give you access, then sign in again."],
   [
+    /AADSTS650052/,
+    "Your own organization has not approved this app, so you cannot sign in to it there. If you are a member or a guest of this app's directory, choose \"Sign in to this app's directory\". For another directory, name it below.",
+  ],
+  [
     /AADSTS65001|AADSTS90094|AADSTS90095|AADSTS500011/,
     "The app has not been approved in your directory yet. An administrator of the directory has to approve it once for the whole organization. If you are the administrator, sign in again and approve it for your organization.",
   ],

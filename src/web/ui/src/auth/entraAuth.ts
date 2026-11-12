@@ -16,15 +16,17 @@ export interface EntraSettings {
 }
 
 /**
- * What a sign-in or an interactive step asks for: the whole API the user consents to, `api://<client id>/.default`. The
+ * What a sign-in or an interactive step asks for: the whole API the user consents to, `<client id>/.default`. The
  * first sign-in in a directory then asks for the app's permissions at once, including the Azure ones it uses on the
  * user's behalf, and the consent covers the Azure MCP server as well. A silent renewal asks for the API's own scope
  * instead, because a token is cached under the scopes it was issued for and a `.default` request would never find it.
+ *
+ * The resource is the bare client id, not `api://<client id>`: the page and the API are one registration, and Entra
+ * refuses an app that asks for a token for itself by its URI (AADSTS90009).
  */
-export function defaultScope(apiScope: string): string {
-  const resource = apiScope.slice(0, apiScope.lastIndexOf("/"));
-  if (!resource.startsWith("api://")) throw new Error("The app's sign-in settings are incomplete: the API scope is not api://<client id>/<scope>.");
-  return `${resource}/.default`;
+export function defaultScope(clientId: string): string {
+  if (clientId.trim() === "" || clientId.includes("/")) throw new Error("The app's sign-in settings are incomplete: the client id is missing.");
+  return `${clientId}/.default`;
 }
 
 /**
@@ -67,7 +69,7 @@ const inAnyDirectory = (info: AccountInfo): boolean => info.tenantId.toLowerCase
 
 export function createEntraAuth(settings: EntraSettings, client?: PublicClientApplication): Auth {
   const msal = client ?? new PublicClientApplication(msalConfiguration(settings, window.location.origin));
-  const scope = defaultScope(settings.apiScope);
+  const scope = defaultScope(settings.clientId);
   let signedIn: AccountInfo | null = null;
 
   const keepAddress = (): void => rememberReturn(window.sessionStorage, window.location.search);

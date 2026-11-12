@@ -182,7 +182,7 @@ user can read in every subscription of the directory they signed in to.
     `user_impersonation`, the `mcp` scope and its own scope.
   - `mcp` is the Azure MCP server. Scope `Mcp.Tools.ReadWrite`, token version 2, pre-authorizing `web` and listing it
     in `knownClientApplications`. It needs ARM `user_impersonation` and Log Analytics `Data.Read`. The known client
-    makes consent to `web`, asked as `api://<web>/.default`, provision this server's service principal and its
+    makes consent to `web`, asked as `<web client id>/.default`, provision this server's service principal and its
     permissions in the consenting directory too: a client cannot be consented into a directory where a resource it
     needs is missing. Both registrations are in this tenant, as the attribute requires.
   - Each has a federated credential (subject: the object id of its identity, audience `api://AzureADTokenExchange`),
@@ -257,7 +257,7 @@ What a user of another directory needs the first time, because every call runs a
   subscription of a health model to list and read it, more for reports and Apply. Nothing in this deployment grants it.
 - A personal Microsoft account has no Azure in the personal-account tenant (`tid` `9188040d-6c67-4c5b-b112-36a304b66dad`).
   It reaches Azure through a directory where it is a member or a guest, for example the default directory that Azure
-  creates when someone signs up with it. The sign-in page's "Personal account or a specific directory" takes a
+  creates when someone signs up with it. The sign-in page's "Guest, personal account or a specific directory" takes a
   subscription ID of that directory (or its domain or ID) and signs in there. In a directory the user created, the
   user is Global Administrator by default and consents for it. A personal account that signs in at `organizations`
   lands in the personal-account tenant and is asked for the directory; the web app refuses its token with 403

@@ -117,6 +117,7 @@ export async function fetchAuthConfig(): Promise<AuthConfig> {
       authMode: config.authMode,
       clientId: config.clientId ?? null,
       apiScope: config.apiScope ?? null,
+      homeDirectory: config.homeDirectory ?? null,
     };
   } catch {
     throw { ...fallbackError("The app's sign-in settings are not valid."), code: "invalid_config", retryable: false };

@@ -261,12 +261,14 @@ flowchart LR
   - `mcp`: the Azure MCP server. Scope `Mcp.Tools.ReadWrite`, pre-authorizes `web` and lists it as a known client.
     Delegated: ARM `user_impersonation`, Log Analytics `Data.Read`.
   - OBO has no interactive consent. A deploy hook grants admin consent for both in the directory the app belongs to.
-    In any other directory the first sign-in asks `api://<web>/.default`: the consent covers `web`, and through the
+    In any other directory the first sign-in asks `<web client id>/.default` (the bare client id: Entra refuses an app that asks for itself by its URI): the consent covers `web`, and through the
     known client the MCP server's service principal and its permissions, so one consent is enough. Users of another
     directory cannot give it for this app (no verified publisher, and ARM access goes beyond basic sign-in), so an
     administrator of that directory consents once: [infra/README.md](../../infra/README.md#another-directory).
-- Browser: a sign-in page offers "Sign in with Microsoft" (authority `organizations`, any work or school directory)
-  and "Personal account or a specific directory". The second takes a subscription ID, a directory domain or a
+- Browser: a sign-in page offers "Sign in with Microsoft" (authority `organizations`, any work or school directory,
+  which signs a user in to their own organisation), "Sign in to this app's directory" (the authority of the directory
+  the app is registered in, for its members and guests, taken from `homeDirectory` in `GET /api/config`)
+  and "Guest, personal account or a specific directory". The last takes a subscription ID, a directory domain or a
   directory ID and signs in at that directory's authority. A subscription ID is resolved by an anonymous `GET
   https://management.azure.com/subscriptions/<id>?api-version=2022-12-01`: the 401 names the directory in
   `WWW-Authenticate: Bearer authorization_uri="https://login.windows.net/<tenant id>"`, and a GUID Azure does not know
@@ -274,7 +276,7 @@ flowchart LR
   in the personal-account tenant, which has no Azure: the page says so and asks for the directory, with the account
   offered first. After sign-in MSAL.js sends `Authorization: Bearer` on every `/api/*` call, renews it silently at the
   account's own directory, and reads the activity stream with `fetch` (an `EventSource` cannot send the header).
-  `GET /api/config` (no token) returns the client id and scope.
+  `GET /api/config` (no token) returns the client id, the scope and `homeDirectory`, the directory the app is registered in.
 - Web app: every other `/api/*` route needs a valid token: the issuer `https://login.microsoftonline.com/<tid>/v2.0`
   of the token's own `tid`, audience, `scp`, signature (one common key set). A token of the personal-account tenant
   answers 403 `personal_account`, and a directory outside `ENTRA_ALLOWED_TENANTS` (empty means any; the app's own

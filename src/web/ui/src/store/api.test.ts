@@ -124,9 +124,9 @@ describe("the Authorization header", () => {
   it("asks for the sign-in settings without a token, and before there is anybody to ask", async () => {
     const getToken = vi.fn().mockResolvedValue("token-1");
     setAuth(signedIn(getToken));
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ authMode: "entra", clientId: "c", apiScope: "api://c/access_as_user" }), { status: 200 }));
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ authMode: "entra", clientId: "c", apiScope: "api://c/access_as_user", homeDirectory: "d" }), { status: 200 }));
 
-    await expect(api.fetchAuthConfig()).resolves.toEqual({ authMode: "entra", clientId: "c", apiScope: "api://c/access_as_user" });
+    await expect(api.fetchAuthConfig()).resolves.toEqual({ authMode: "entra", clientId: "c", apiScope: "api://c/access_as_user", homeDirectory: "d" });
 
     expect(getToken).not.toHaveBeenCalled();
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/config");
@@ -134,7 +134,8 @@ describe("the Authorization header", () => {
   });
 
   it.each([
-    { name: "local mode with nothing else", body: { authMode: "local" }, expected: { authMode: "local", clientId: null, apiScope: null } },
+    { name: "local mode with nothing else", body: { authMode: "local" }, expected: { authMode: "local", clientId: null, apiScope: null, homeDirectory: null } },
+    { name: "an app that does not name its directory", body: { authMode: "entra", clientId: "c", apiScope: "s" }, expected: { authMode: "entra", clientId: "c", apiScope: "s", homeDirectory: null } },
   ])("fills what $name leaves out", async ({ body, expected }) => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }));
     await expect(api.fetchAuthConfig()).resolves.toEqual(expected);

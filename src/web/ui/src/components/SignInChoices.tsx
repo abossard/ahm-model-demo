@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { FormEvent, JSX } from "react";
 import { Button, Field, Input, Text, makeStyles, tokens } from "@fluentui/react-components";
 import { DirectoryError, resolveDirectory } from "../auth/directory";
-import { actions } from "../store/store";
+import { actions, useStore } from "../store/store";
 
 const useStyles = makeStyles({
   choices: { display: "flex", flexDirection: "column", alignItems: "center", rowGap: tokens.spacingVerticalM, maxWidth: "460px", width: "100%" },
@@ -15,12 +15,14 @@ const useStyles = makeStyles({
 const SIGN_IN_FAILED = "Signing in did not work. Try again.";
 
 /**
- * How a user signs in. Any work or school account goes through one button. A personal Microsoft account has no Azure
- * of its own: it reaches Azure through a directory it belongs to, so the user names that directory by a subscription
- * ID, a domain or its ID, and the sign-in goes to it.
+ * How a user signs in. Any work or school account goes through the first button, which signs in to the user's own
+ * organisation. A member or a guest of the directory this app is registered in signs in to that directory with the
+ * second. A personal Microsoft account has no Azure of its own: it reaches Azure through a directory it belongs to, so
+ * the user names that directory by a subscription ID, a domain or its ID, and the sign-in goes to it.
  */
 export function SignInChoices({ openDirectory, loginHint }: { readonly openDirectory: boolean; readonly loginHint: string | null }): JSX.Element {
   const styles = useStyles();
+  const homeDirectory = useStore((state) => state.homeDirectory);
   const [open, setOpen] = useState(openDirectory);
   const [text, setText] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
@@ -44,14 +46,20 @@ export function SignInChoices({ openDirectory, loginHint }: { readonly openDirec
       <Button appearance="primary" size="large" onClick={() => void actions.signIn()} data-testid="sign-in">
         Sign in with Microsoft
       </Button>
+      {homeDirectory ? (
+        <Button appearance="secondary" onClick={() => void actions.signIn({ directory: homeDirectory, ...(loginHint ? { loginHint } : {}) })} data-testid="sign-in-home">
+          Sign in to this app's directory
+        </Button>
+      ) : null}
       <Button appearance="transparent" aria-expanded={open} onClick={() => setOpen(!open)} data-testid="directory-toggle">
-        Personal account or a specific directory
+        Guest, personal account or a specific directory
       </Button>
       {open ? (
         <form className={styles.directory} onSubmit={(event) => void submit(event)} data-testid="directory-form">
           <Text size={200} className={styles.muted}>
-            A personal Microsoft account reaches Azure through a directory it belongs to, such as the default directory of your Azure
-            subscription. Enter one of your subscription IDs, or the domain or ID of the directory.
+            "Sign in with Microsoft" signs you in to your own organisation. If you are a guest in another directory that holds
+            the health models, or you use a personal Microsoft account, name that directory: enter one of its subscription IDs,
+            or its domain or ID.
           </Text>
           <Field label="Subscription ID, directory domain or directory ID" validationState={problem ? "error" : "none"} validationMessage={problem}>
             <div className={styles.row}>

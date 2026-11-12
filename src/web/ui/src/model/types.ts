@@ -172,6 +172,8 @@ export interface AuthConfig {
   readonly authMode: "entra" | "local";
   readonly clientId: string | null;
   readonly apiScope: string | null;
+  /** The directory the app is registered in; null when nobody signs in. */
+  readonly homeDirectory?: string | null;
 }
 
 export interface ApiErrorEnvelope {

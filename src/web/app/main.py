@@ -354,6 +354,8 @@ async def public_config():
             "authMode": AUTH_MODE,
             "clientId": None if local else CLIENT_ID,
             "apiScope": None if local else API_SCOPE,
+            # The directory the app is registered in: its members and guests sign in to it with one click.
+            "homeDirectory": None if local else TENANT_ID,
         }
     )
 

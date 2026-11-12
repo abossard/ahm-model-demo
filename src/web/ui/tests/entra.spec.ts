@@ -16,10 +16,11 @@ const CONSUMERS = "9188040d-6c67-4c5b-b112-36a304b66dad";
 const CLIENT = "c11e47aa-0000-4000-8000-00000000bbbb";
 const SCOPE = `api://${CLIENT}/access_as_user`;
 /** What the app asks of Entra: every permission of its API at once, so one consent covers the Azure access too. */
-const DEFAULT_SCOPE = `api://${CLIENT}/.default`;
+const DEFAULT_SCOPE = `${CLIENT}/.default`;
 const AUTHORITY = "https://login.microsoftonline.com";
 const OID = "5d0e0f2a-0000-4000-8000-00000000cccc";
-const ENTRA_CONFIG = { authMode: "entra", clientId: CLIENT, apiScope: SCOPE } as const;
+const HOME_DIRECTORY = "22222222-2222-4222-8222-222222222222";
+const ENTRA_CONFIG = { authMode: "entra", clientId: CLIENT, apiScope: SCOPE, homeDirectory: HOME_DIRECTORY } as const;
 const CLAIMS = '{"access_token":{"acr":{"essential":true,"value":"c1"}}}';
 const DEEP_LINK = `${MODEL_QUERY}&session=${SESSION_ID}&task=1`;
 
@@ -425,6 +426,19 @@ test.describe("who signs in and how", () => {
     // The code is redeemed at the directory that was asked, and no other directory is asked for a token.
     expect(idp.tokenRequests.map((form) => form.get("grant_type"))).toEqual(["authorization_code"]);
     expect(idp.authorities.has("organizations")).toBe(false);
+  });
+
+  test("a member or guest of the app's directory signs in to it with one click", async ({ page }) => {
+    const idp = await installIdp(page);
+    await installApi(page);
+
+    await openView(page, "zoom");
+    await page.getByTestId("sign-in-home").click();
+
+    await expect(page.getByTestId("user-name")).toHaveText("Ada Lovelace");
+    expect(idp.authorities.has(HOME_DIRECTORY)).toBe(true);
+    expect(idp.authorities.has("organizations")).toBe(false);
+    expect(idp.authorizations[0]!.searchParams.get("scope")).toContain(DEFAULT_SCOPE);
   });
 
   test("a subscription ID is turned into its directory by an anonymous request to Azure, under the policy", async ({ page, baseURL }) => {

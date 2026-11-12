@@ -5,7 +5,8 @@ Open the web app link that `azd up` prints. The steps build on each other.
 ## Sign in
 
 - **Sign in with Microsoft** signs in any work or school account of any Microsoft Entra directory. You see the health models you can read in every subscription of your directory, and everything the app and the assistant read or write in Azure runs as you.
-- A personal Microsoft account has no Azure of its own: it reaches Azure through a directory where it is a member or a guest, such as the default directory of your Azure subscription. Click **Personal account or a specific directory** and enter a subscription ID, the directory's domain or its ID. A personal account that signs in with the first button is told this and asked for the directory.
+- **Sign in to this app's directory** is for members and guests of the directory the app is deployed in. A guest who uses **Sign in with Microsoft** lands in their own organisation, which has usually not approved the app.
+- A personal Microsoft account has no Azure of its own: it reaches Azure through a directory where it is a member or a guest, such as the default directory of your Azure subscription. Click **Guest, personal account or a specific directory** and enter a subscription ID, the directory's domain or its ID. A personal account that signs in with the first button is told this and asked for the directory.
 - The first time a directory uses the app, an administrator of that directory has to approve it once for the organization (the sign-in page says so). Azure RBAC then decides what you see: Reader on the resource group or subscription of a health model lists it, and reports and Apply need more. [Details](../infra/README.md#another-directory).
 - Your topics are yours. Nobody else, in your directory or another, can open them.
 - **Design a model** is for the directory the app belongs to only. A user of another directory has no design model to write to.

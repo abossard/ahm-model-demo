@@ -13,6 +13,8 @@ export interface AuthState {
   readonly authStatus: AuthStatus;
   /** Known once the app has read its config; null before. */
   readonly authMode: "entra" | "local" | null;
+  /** The directory the app is registered in: the one-click choice for its members and guests. */
+  readonly homeDirectory: string | null;
   /** Who is signed in. Only the name the top bar shows: a token never enters the store. */
   readonly account: AuthAccount | null;
   readonly authError: string | null;
@@ -43,7 +45,7 @@ export const authSlice: StateCreator<Store, [], [], AuthState & AuthActions> = (
     set({ authStatus: "starting", authError: null, personalAccount: null });
     try {
       const config = await api.fetchAuthConfig();
-      set({ authMode: config.authMode });
+      set({ authMode: config.authMode, homeDirectory: config.homeDirectory ?? null });
       const auth = createAuth(config);
       setAuth(auth);
       const account = await auth.ready();
@@ -57,6 +59,7 @@ export const authSlice: StateCreator<Store, [], [], AuthState & AuthActions> = (
   return {
     authStatus: "starting",
     authMode: null,
+    homeDirectory: null,
     account: null,
     authError: null,
     personalAccount: null,

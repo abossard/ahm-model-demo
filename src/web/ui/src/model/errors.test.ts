@@ -255,6 +255,7 @@ describe("signInHint", () => {
       message,
       expected: "Your account is not a member or a guest of the directory you signed in to. Use a work or school account of that directory. For a personal account, name the directory it belongs to below.",
     })),
+    { message: "AADSTS650052: The app is trying to access a service that your organization lacks a service principal for.", expected: "Your own organization has not approved this app, so you cannot sign in to it there. If you are a member or a guest of this app's directory, choose \"Sign in to this app's directory\". For another directory, name it below." },
     { message: "AADSTS90002: Tenant not found.", expected: "That directory was not found. Check its domain or ID and try again." },
     { message: "AADSTS50076: MFA required.", expected: "Your organization asks for a second step to sign in. Sign in again and complete it." },
     { message: "AADSTS700016: Application not found.", expected: "The app was not found in the directory you signed in to. An administrator of that directory has to approve it, or you signed in to the wrong directory. If you run the app, check its client ID." },

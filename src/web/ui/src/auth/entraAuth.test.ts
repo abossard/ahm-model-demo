@@ -23,7 +23,7 @@ import { createEntraAuth, defaultScope, msalConfiguration } from "./entraAuth";
 import { AUTHORITY_HOST, CONSUMERS_TENANT_ID } from "./directory";
 
 const SETTINGS = { clientId: "client-1", apiScope: "api://client-1/access_as_user" } as const;
-const SCOPE = "api://client-1/.default";
+const SCOPE = "client-1/.default";
 const ACCOUNT = { homeAccountId: "h", environment: "e", tenantId: "tenant-1", localAccountId: "l", username: "ada@contoso.com", name: "Ada Lovelace" } as AccountInfo;
 const PERSONAL = { ...ACCOUNT, tenantId: CONSUMERS_TENANT_ID, username: "ada@example.test" } as AccountInfo;
 const DEEP_LINK = "?model=hm-demo&resourceGroup=rg-demo&subscription=sub-1&session=c4c19c774d06&task=2";
@@ -79,14 +79,14 @@ describe("msalConfiguration", () => {
 
 describe("defaultScope", () => {
   it.each([
-    { scope: "api://client-1/access_as_user", expected: "api://client-1/.default" },
-    { scope: "api://client-1/Some.Scope", expected: "api://client-1/.default" },
-  ])("asks for the whole API behind $scope", ({ scope, expected }) => {
-    expect(defaultScope(scope)).toBe(expected);
+    { clientId: "client-1", expected: "client-1/.default" },
+    { clientId: "11111111-2222-3333-4444-555555555555", expected: "11111111-2222-3333-4444-555555555555/.default" },
+  ])("asks for the whole API of $clientId by its bare id, which Entra requires of an app that asks for itself", ({ clientId, expected }) => {
+    expect(defaultScope(clientId)).toBe(expected);
   });
 
-  it.each(["access_as_user", "https://management.azure.com/user_impersonation", ""])("refuses %j, which is no scope of the app's own API", (scope) => {
-    expect(() => defaultScope(scope)).toThrow("sign-in settings are incomplete");
+  it.each(["", " ", "api://client-1", "api://client-1/access_as_user"])("refuses %j, which is no client id", (clientId) => {
+    expect(() => defaultScope(clientId)).toThrow("sign-in settings are incomplete");
   });
 });
 

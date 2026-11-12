@@ -1778,7 +1778,7 @@ class LocalModeTests(ApiCase):
             response = client.get("/api/config")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"authMode": "local", "clientId": None, "apiScope": None})
+        self.assertEqual(response.json(), {"authMode": "local", "clientId": None, "apiScope": None, "homeDirectory": None})
 
     def test_requests_need_no_token_and_always_belong_to_the_one_local_user(self):
         cases = [

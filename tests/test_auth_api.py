@@ -243,7 +243,7 @@ class SignInTests(EntraCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(
                 response.json(),
-                {"authMode": "entra", "clientId": CLIENT, "apiScope": API_SCOPE},
+                {"authMode": "entra", "clientId": CLIENT, "apiScope": API_SCOPE, "homeDirectory": TENANT},
             )
             self.assertEqual(response.headers["cache-control"], "no-store")
 
