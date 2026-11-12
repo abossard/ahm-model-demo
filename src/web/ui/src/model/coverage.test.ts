@@ -136,6 +136,35 @@ describe("coverage edge cases", () => {
   });
 });
 
+describe("coverage in the order the viewer gave", () => {
+  const model = tiny("r a b c a1 a2 x y z", "r>a r>b r>c a>a1 a>a2");
+  const chain = (...chains: readonly (readonly [string, string])[]) => ({ chains: chains.map(([of, names]) => ({ of, names: names.split(" ") })), places: {} });
+  const names = (found: Coverage): string[] => found.cells.map((cell) => cell.name);
+
+  it.each([
+    ["no order: by name", null, ["r", "a", "a1", "a2", "b", "c", "x", "y", "z"]],
+    ["the children of a parent stand in its chain, with what is below them", chain(["r", "c a b"]), ["r", "c", "a", "a1", "a2", "b", "x", "y", "z"]],
+    ["only the children the chain names trade places", chain(["r", "c a"]), ["r", "c", "b", "a", "a1", "a2", "x", "y", "z"]],
+    ["a chain a level down", chain(["a", "a2 a1"]), ["r", "a", "a2", "a1", "b", "c", "x", "y", "z"]],
+    ["the parts that are not connected stand in the chain of the top; the root stays first", chain(["", "z r y x"]), ["r", "a", "a1", "a2", "b", "c", "z", "y", "x"]],
+  ] as const)("%s", (_name, order, expected) => {
+    const found = coverage(model.entities, model.relationships, { order });
+
+    expect(names(found)).toEqual(expected);
+    check(found, 9);
+  });
+
+  it("puts a moved cell where its place in the row starts", () => {
+    const found = coverage(model.entities, model.relationships, { order: chain(["r", "c a b"]) });
+
+    expect(found.cells.filter((cell) => cell.parent === "r").map((cell) => [cell.name, cell.start, cell.span])).toEqual([["c", 0, 1], ["a", 1, 2], ["b", 3, 1]]);
+  });
+
+  it("keeps the order when zoomed to an entity", () => {
+    expect(names(coverage(model.entities, model.relationships, { focus: "a", order: chain(["a", "a2 a1"]) }))).toEqual(["a", "a2", "a1"]);
+  });
+});
+
 describe("neighbour", () => {
   const model = coverage(live.entities, live.relationships);
   it.each([

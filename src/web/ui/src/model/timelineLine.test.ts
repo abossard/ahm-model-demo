@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SignalInfo, StateCode } from "./timeline";
-import { colourRuns, levelOf, thresholdLines, type Vertices } from "./timelineLine";
+import type { Point, SignalInfo, StateCode } from "./timeline";
+import { colourRuns, laneOf, levelOf, thresholdLines, type Vertices } from "./timelineLine";
 
 const HIGH: SignalInfo["rules"] = { degraded: { operator: "GreaterThan", threshold: 70 }, unhealthy: { operator: "GreaterThan", threshold: 90 }, dynamic: false };
 const LOW: SignalInfo["rules"] = { degraded: { operator: "LessThan", threshold: 99 }, unhealthy: { operator: "LessThan", threshold: 95 }, dynamic: false };
@@ -129,6 +129,59 @@ describe("colourRuns", () => {
 
   it("an empty line has no runs", () => {
     expect(colourRuns(line(), HIGH, 100)).toEqual([]);
+  });
+});
+
+describe("laneOf", () => {
+  const every = (step: number, values: readonly (number | null)[]): Point[] => values.map((value, i): Point => [i * step, value, value === null ? 0 : 1]);
+
+  it("a series with one evaluation per bucket is drawn as it was measured: every point is a vertex at its own time", () => {
+    const lane = laneOf(every(100, [10, 20, 80, 95, 30]), 64, HIGH, 1000);
+
+    expect(lane.exact).toBe(true);
+    expect(lane.ranges).toBe(false);
+    expect(lane.runs.map((runs) => runs.length)).toEqual([0, 2, 2, 1]);
+    expect(lane.runs[1]?.[0]?.xs.slice(0, 2)).toEqual([0, 100]);
+    expect([...lane.level]).toEqual([1, 1, 2, 3, 1]);
+  });
+
+  it("folded buckets give the line their first and last value, and say that they hold a range", () => {
+    const lane = laneOf(every(1, [10, 50, 20, 30, 5, 40]), 4, DYNAMIC, 1000);
+
+    expect(lane.exact).toBe(false);
+    expect(lane.ranges).toBe(true);
+    expect(shape(lane.runs[1] ?? [])).toEqual([{ level: 1, x: [0, 3, 4, 5], v: [10, 30, 5, 40] }]);
+  });
+
+  it.each([
+    { name: "the level of a bucket is that of its worst end", values: [10, 95, 20, 10], size: 4, levels: [3] },
+    { name: "a bucket that only reaches the degraded threshold is degraded", values: [10, 75, 20, 10], size: 4, levels: [2] },
+    { name: "each bucket has its own level", values: [10, 95, 75, 10], size: 2, levels: [3, 2] },
+  ])("$name", ({ values, size, levels }) => {
+    expect([...laneOf(every(1, values), size, HIGH, 1000).level]).toEqual(levels);
+  });
+
+  it.each([
+    { name: "a measured series breaks where two evaluations are further apart than the hold", step: 100, size: 64, hold: 150, values: [1, 2, 3], gapAt: 500, runs: 2 },
+    { name: "folded buckets stay joined across a few empty ones, though the hold is shorter", step: 1, size: 4, hold: 1, values: [1, 2, 3, 4, 5, 6, 7, 8, 9], gapAt: 16, runs: 1 },
+    { name: "and break across many", step: 1, size: 4, hold: 1, values: [1, 2, 3, 4, 5, 6, 7, 8, 9], gapAt: 400, runs: 2 },
+  ])("$name", ({ step, size, hold, values, gapAt, runs }) => {
+    const points: Point[] = [...every(step, values), [values.length * step + gapAt, 5, 1], [values.length * step + gapAt + step, 6, 1]];
+
+    expect(laneOf(points, size, DYNAMIC, hold).runs[1]?.length).toBe(runs);
+  });
+
+  it("an evaluation without a value breaks the line", () => {
+    const lane = laneOf(every(100, [10, 20, null, 30, 40]), 64, DYNAMIC, 1000);
+
+    expect(lane.runs[1]?.map((run) => [...run.xs])).toEqual([[0, 100], [300, 400]]);
+  });
+
+  it("a series without values has no line", () => {
+    const lane = laneOf(every(100, [null, null]), 64, HIGH, 1000);
+
+    expect(lane.buckets.length).toBe(0);
+    expect(lane.runs.every((runs) => runs.length === 0)).toBe(true);
   });
 });
 

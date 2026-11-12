@@ -148,6 +148,24 @@ export function bandAt(bands: readonly Band[], t: number): StateCode | null {
   return band && band.a <= t ? band.state : null;
 }
 
+/**
+ * The nearest instant after `t` (step 1) or before it (step -1) where the state changes: where a band takes over from
+ * another and where the data stops. Null when there is none that way. The start of the history is no change.
+ */
+export function changeFrom(bands: readonly Band[], t: number, step: -1 | 1): number | null {
+  let best: number | null = null;
+  const consider = (at: number): void => {
+    if (step > 0 ? at > t && (best === null || at < best) : at < t && (best === null || at > best)) best = at;
+  };
+  for (let i = 0; i < bands.length; i += 1) {
+    const band = bands[i] as Band;
+    const next = bands[i + 1];
+    if (i > 0) consider(band.a);
+    if (next && next.a > band.b) consider(band.b);
+  }
+  return best;
+}
+
 /** The last evaluation at or before t that is no older than `hold`. */
 export function pointAt(points: readonly Point[], t: number, hold: number): Point | null {
   const i = upperBound(points, t, (point) => point[0]) - 1;
@@ -205,6 +223,111 @@ export function decimateColumns(points: readonly Point[], t0: number, t1: number
     out.last[out.x.length - 1] = value;
   }
   return out;
+}
+
+/**
+ * A series folded into buckets of `size` ms that start at multiples of it: the same buckets whatever window shows, so a
+ * pan reads them again instead of folding the points again. Only buckets that hold a value are kept, in time order.
+ */
+export interface Buckets {
+  readonly size: number;
+  readonly length: number;
+  /** When the first and the last value of the bucket were measured. */
+  readonly from: Float64Array;
+  readonly to: Float64Array;
+  readonly lo: Float64Array;
+  readonly hi: Float64Array;
+  /** The first and the last value in time order. */
+  readonly first: Float64Array;
+  readonly last: Float64Array;
+  /** The worst state any value of the bucket has. */
+  readonly state: Uint8Array;
+  /** How many values the bucket holds. */
+  readonly values: Uint32Array;
+  /** 1 where an evaluation without a value came between the bucket before and this one: the line breaks there. */
+  readonly cut: Uint8Array;
+}
+
+/** The bucket size for a lane where a pixel is `msPerPx` wide: the power of two that is between half a pixel and a pixel. */
+export function bucketSize(msPerPx: number): number {
+  return 2 ** Math.floor(Math.log2(Math.max(1, msPerPx)));
+}
+
+export function bucketSeries(points: readonly Point[], size: number): Buckets {
+  const n = points.length;
+  const out = {
+    from: new Float64Array(n),
+    to: new Float64Array(n),
+    lo: new Float64Array(n),
+    hi: new Float64Array(n),
+    first: new Float64Array(n),
+    last: new Float64Array(n),
+    state: new Uint8Array(n),
+    values: new Uint32Array(n),
+    cut: new Uint8Array(n),
+  };
+  let at = -1;
+  let bucket = Number.NaN;
+  let cut = false;
+  for (let i = 0; i < n; i += 1) {
+    const point = points[i] as Point;
+    const value = point[1];
+    if (value === null) {
+      cut = true;
+      continue;
+    }
+    const here = Math.floor(point[0] / size);
+    if (here !== bucket || cut) {
+      at += 1;
+      bucket = here;
+      out.from[at] = point[0];
+      out.lo[at] = value;
+      out.hi[at] = value;
+      out.first[at] = value;
+      out.state[at] = point[2];
+      out.cut[at] = cut ? 1 : 0;
+      cut = false;
+    } else {
+      if (value < (out.lo[at] as number)) out.lo[at] = value;
+      if (value > (out.hi[at] as number)) out.hi[at] = value;
+      out.state[at] = worse(out.state[at] as StateCode, point[2]);
+    }
+    out.to[at] = point[0];
+    out.last[at] = value;
+    out.values[at] = (out.values[at] as number) + 1;
+  }
+  const length = at + 1;
+  return {
+    size,
+    length,
+    from: out.from.subarray(0, length),
+    to: out.to.subarray(0, length),
+    lo: out.lo.subarray(0, length),
+    hi: out.hi.subarray(0, length),
+    first: out.first.subarray(0, length),
+    last: out.last.subarray(0, length),
+    state: out.state.subarray(0, length),
+    values: out.values.subarray(0, length),
+    cut: out.cut.subarray(0, length),
+  };
+}
+
+/** The first index of a sorted array whose value is at least `t` (or above it, with `above`). */
+export function firstAt(times: ArrayLike<number>, t: number, above = false): number {
+  let lo = 0;
+  let hi = times.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const value = times[mid] as number;
+    if (above ? value <= t : value < t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** The index range of the buckets that touch `[t0, t1]`, one bucket either side so lines run off the edge. */
+export function bucketRange(buckets: Buckets, t0: number, t1: number): readonly [number, number] {
+  return [Math.max(0, firstAt(buckets.to, t0) - 1), Math.min(buckets.length, firstAt(buckets.from, t1, true) + 1)];
 }
 
 const BELOW = new Set(["LessThan", "LessThanOrEqual"]);

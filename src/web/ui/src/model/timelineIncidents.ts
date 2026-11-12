@@ -1,14 +1,6 @@
 import { formatDuration } from "./duration";
 import { bandAt, bandsFromTransitions, type Band } from "./timelineBands";
-import {
-  missingSpans,
-  seriesKey,
-  stateName,
-  type EntityInfo,
-  type Span,
-  type StateCode,
-  type TimelineData,
-} from "./timeline";
+import { stateName, type EntityInfo, type Span, type StateCode, type TimelineData } from "./timeline";
 import type { HealthState } from "./types";
 
 export interface Incident {
@@ -76,61 +68,4 @@ export function modelAt(data: TimelineData, t: number, bandsOf: (entity: EntityI
     const code = bandAt(bandsOf(entity), t) ?? 0;
     return { entity: entity.name, displayName: entity.displayName, state: stateName(code), code };
   });
-}
-
-/** The window to ask the service for so that a view's signals are covered, or null when every one already is. */
-export function planSignals(
-  data: TimelineData,
-  entities: readonly string[],
-  want: Span,
-): { readonly entities: readonly string[]; readonly span: Span } | null {
-  const lacking: string[] = [];
-  let from = Number.POSITIVE_INFINITY;
-  let to = Number.NEGATIVE_INFINITY;
-  const byName = new Map(data.entities.map((entity) => [entity.name, entity]));
-  for (const name of entities) {
-    const info = byName.get(name);
-    if (!info) continue;
-    let needs = false;
-    for (const signal of info.signals) {
-      const held = data.series[seriesKey(name, signal.name)];
-      if (held?.error) continue;
-      const gaps = missingSpans(held?.covered ?? [], want).filter((gap) => gap.to - gap.from > staleMs(want));
-      for (const gap of gaps) {
-        needs = true;
-        from = Math.min(from, gap.from);
-        to = Math.max(to, gap.to);
-      }
-    }
-    if (needs) lacking.push(name);
-  }
-  return lacking.length === 0 ? null : { entities: lacking, span: { from, to } };
-}
-
-/** A gap narrower than this is the newest minutes not yet read, not missing history. */
-function staleMs(want: Span): number {
-  return Math.max(2 * 60_000, (want.to - want.from) / 200);
-}
-
-/** Splits entities into requests of at most `maxSignals` signals each (an entity with more goes alone). */
-export function batchEntities(
-  data: TimelineData,
-  names: readonly string[],
-  maxSignals: number,
-): readonly (readonly string[])[] {
-  const counts = new Map(data.entities.map((entity) => [entity.name, entity.signals.length]));
-  const batches: string[][] = [];
-  let load = 0;
-  for (const name of names) {
-    const count = counts.get(name) ?? 0;
-    const last = batches[batches.length - 1];
-    if (last && load + count <= maxSignals) {
-      last.push(name);
-      load += count;
-    } else {
-      batches.push([name]);
-      load = count;
-    }
-  }
-  return batches;
 }

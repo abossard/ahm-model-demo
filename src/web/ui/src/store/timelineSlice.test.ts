@@ -1,22 +1,27 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ApiError, ModelRef } from "../model/types";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ApiError, Entity, HealthModel, ModelRef } from "../model/types";
 import { buildFixture } from "../model/timelineFixture";
 import { seriesKey, type TimelineResponse } from "../model/timeline";
-import { allKeys, entityKey, rootKeys } from "../model/timelineRows";
-import { DAY, HOUR } from "../model/timelineScale";
+import { entityKey, rootKeys } from "../model/timelineRows";
+import { DAY, HOUR, MINUTE } from "../model/timelineScale";
+import { RETENTION, WEEK, tileOf } from "../model/timelineTiles";
+import type { Demand } from "../model/timelinePlan";
+import { createTileCache, memoryStorage } from "../timeline/tileCache";
 import * as api from "./api";
-import { SIGNALS_PER_REQUEST, TIMELINE_MAX_HEIGHT, TIMELINE_MIN_HEIGHT, cancelTimelineSignals, historyStart, setOverviewCache } from "./timelineSlice";
-import type { OverviewCache } from "../timeline/overviewCache";
+import { TIMELINE_MAX_HEIGHT, TIMELINE_MIN_HEIGHT, cacheScope, cancelTimelineSignals, historyStart, selectModelAt, selectedMoment, setTimelineCache, timelineIdle } from "./timelineSlice";
 import { actions, useStore } from "./store";
 
 vi.mock("./api");
 
+// A Wednesday noon: the week it is in began the Thursday before.
 const NOW = Date.parse("2026-11-11T12:00:00Z");
+const TODAY = tileOf(NOW, DAY) * DAY;
+const THIS_WEEK = tileOf(NOW, WEEK) * WEEK;
 const MODEL: ModelRef = { id: "/a", name: "hm-a", resourceGroup: "rg-a", subscriptionId: "sub-a", location: null, provisioningState: null };
 const FIXTURE = buildFixture({ now: NOW, days: 5, flows: 1, componentsPerFlow: 1, resourcesPerComponent: 2, signalsPerResource: 2 });
 const FAILURE: ApiError = { code: "http_error", message: "Request failed with status 503.", retryable: true, operationId: null };
-
-const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+const RESOURCE = FIXTURE.entities.find((entity) => entity.signals.length > 0)!;
+const KEY = seriesKey(RESOURCE.name, RESOURCE.signals[0]!.name);
 
 function pending<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
   let resolve!: (value: T) => void;
@@ -28,22 +33,67 @@ function pending<T>(): { promise: Promise<T>; resolve: (value: T) => void; rejec
   return { promise, resolve, reject };
 }
 
-/** The service answers from the fixture: the requested window, the requested entities. */
-function serve(): void {
-  vi.mocked(api.fetchTimeline).mockImplementation(async (_selection, query) =>
-    query.include.includes("signals")
-      ? FIXTURE.signals(query.entities ?? [], query.from, query.to)
-      : FIXTURE.overview(query.from, query.to),
-  );
+const answer = (query: api.TimelineQuery, fixture = FIXTURE): TimelineResponse =>
+  fixture.answer({ from: query.from, to: query.to, include: query.include, entities: query.entities ?? [], signals: query.signals ?? [], resolution: query.resolution ?? 0 });
+
+/** The app answers from the fixture: the window, the entities, the parts and the resolution that are asked for. */
+function serve(fixture = FIXTURE): void {
+  vi.mocked(api.fetchTimeline).mockImplementation(async (_selection, query) => answer(query, fixture));
+}
+
+const entityOf = (name: string): Entity => ({
+  name,
+  displayName: name,
+  healthState: "Healthy",
+  impact: "Standard",
+  canvasPosition: null,
+  discoveredBy: null,
+  parents: [],
+  children: [],
+  unlinked: false,
+  latestEvaluationAt: null,
+  latestTransitionAt: null,
+  signals: [],
+  report: { eligible: false, signalName: null },
+});
+
+/** The model the graph shows, with the entities of a fixture. */
+const graphOf = (fixture = FIXTURE): HealthModel => ({
+  model: { id: null, name: "root", location: null, provisioningState: null, healthState: "Healthy" },
+  observedAt: new Date(NOW).toISOString(),
+  entities: fixture.entities.map((item) => entityOf(item.name)),
+  relationships: [],
+  reportOptions: { signalName: "x", healthStates: [], values: [], expiries: [], reasonPresets: [] },
+});
+
+const demand = (parts: Partial<Demand> = {}): Demand => ({ view: { from: NOW - DAY, to: NOW }, width: 1000, lanes: [], moment: null, watched: [], ...parts });
+const queries = (): readonly api.TimelineQuery[] => vi.mocked(api.fetchTimeline).mock.calls.map((call) => call[1]);
+const seriesQueries = (): readonly api.TimelineQuery[] => queries().filter((query) => query.include.includes("signals"));
+
+/** The timeline of the selected model, opened and read. */
+async function open(parts: Partial<Demand> = {}): Promise<void> {
+  actions.resetTimeline();
+  actions.wantTimeline(demand(parts));
+  await timelineIdle();
+}
+
+async function show(parts: Partial<Demand>): Promise<void> {
+  actions.wantTimeline(demand(parts));
+  await timelineIdle();
 }
 
 beforeEach(() => {
   vi.resetAllMocks();
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
-  cancelTimelineSignals();
+  setTimelineCache(null);
   useStore.setState(useStore.getInitialState(), true);
   useStore.setState({ selected: MODEL });
+  actions.resetTimeline();
+});
+
+afterEach(() => {
+  cancelTimelineSignals();
 });
 
 describe("opening and the link", () => {
@@ -51,10 +101,10 @@ describe("opening and the link", () => {
     { search: "", open: false, view: null },
     { search: "?timeline=1", open: true, view: null },
     { search: "?timeline=1&from=2026-11-10T10:00:00Z&to=2026-11-10T12:00:00Z", open: true, view: { t0: Date.parse("2026-11-10T10:00:00Z"), t1: Date.parse("2026-11-10T12:00:00Z") } },
-  ])("reads $search", ({ search, open, view }) => {
+  ])("reads $search", ({ search, open: opened, view }) => {
     actions.initializeTimeline(search);
 
-    expect(useStore.getState().timelineOpen).toBe(open);
+    expect(useStore.getState().timelineOpen).toBe(opened);
     expect(useStore.getState().timelineView).toEqual(view);
   });
 
@@ -109,32 +159,46 @@ describe("opening and the link", () => {
   });
 });
 
-describe("loadTimelineOverview", () => {
+describe("the overview", () => {
   it("opens the rows of the roots the first time the model is read, and then keeps what the viewer opened", async () => {
     serve();
-    await actions.loadTimelineOverview();
+    await open();
 
     expect(useStore.getState().timelineExpanded).toEqual(rootKeys(FIXTURE.entities));
 
     actions.collapseTimelineEntities();
-    await actions.loadTimelineOverview();
+    await actions.refreshTimeline();
 
     expect(useStore.getState().timelineExpanded).toEqual([]);
   });
 
-  it("reads the whole retention for the selected model and shows the last day", async () => {
+  it("of a model the graph already shows is one request for the structure and the whole retention, and shows the last day", async () => {
     serve();
+    useStore.setState({ model: { kind: "success", value: graphOf() } });
 
-    await actions.loadTimelineOverview();
+    await open();
 
     const state = useStore.getState();
     const [selection, query] = vi.mocked(api.fetchTimeline).mock.calls[0] ?? [];
+    expect(api.fetchTimeline).toHaveBeenCalledTimes(1);
     expect(selection).toBe(MODEL);
-    expect(query).toMatchObject({ from: NOW - 30 * DAY, to: NOW, include: ["states", "annotations", "reports"] });
+    expect(query).toMatchObject({ from: tileOf(NOW - RETENTION, WEEK) * WEEK, to: THIS_WEEK + WEEK, include: ["structure", "states", "annotations", "reports"], entities: null });
     expect(state.timelineStatus).toBe("ready");
     expect(state.timelineData.entities.length).toBe(FIXTURE.entities.length);
     expect(state.timelineView).toEqual({ t0: NOW - DAY, t1: NOW });
-    expect(Object.keys(state.timelineData.states)).toHaveLength(FIXTURE.entities.length);
+  });
+
+  it("of a model nobody has named yet is the week on screen first, then the rest", async () => {
+    serve();
+
+    await open();
+
+    expect(queries().map((query) => [query.include.join(), query.from])).toEqual([
+      ["structure,states,annotations,reports", THIS_WEEK],
+      ["states,annotations,reports", tileOf(NOW - RETENTION, WEEK) * WEEK],
+    ]);
+    expect(Object.keys(useStore.getState().timelineData.states)).toHaveLength(FIXTURE.entities.length);
+    expect(useStore.getState().timelineData.states[RESOURCE.name]?.covered).toEqual([{ from: useStore.getState().timelineData.floor, to: NOW }]);
   });
 
   it("keeps a view a link named", async () => {
@@ -142,56 +206,54 @@ describe("loadTimelineOverview", () => {
     const view = { t0: NOW - 3 * HOUR, t1: NOW - HOUR };
     actions.initializeTimeline(`?timeline=1&from=${view.t0}&to=${view.t1}`);
 
-    await actions.loadTimelineOverview();
+    await open({ view: { from: view.t0, to: view.t1 } });
 
     expect(useStore.getState().timelineView).toEqual(view);
   });
 
-  it("a failure before anything is shown is a failed status with its error", async () => {
+  it("a failure before anything is shown is a failed status with its error, and a retry reads it", async () => {
     vi.mocked(api.fetchTimeline).mockRejectedValue(FAILURE);
 
-    await actions.loadTimelineOverview();
+    await open();
 
     expect(useStore.getState()).toMatchObject({ timelineStatus: "failed", timelineError: FAILURE });
-  });
 
-  it("a failed refresh keeps what is on screen and says why", async () => {
     serve();
     await actions.loadTimelineOverview();
+
+    expect(useStore.getState()).toMatchObject({ timelineStatus: "ready", timelineError: null });
+  });
+
+  it("a failed refresh keeps what is on screen and says why, and the next refresh reads it", async () => {
+    serve();
+    await open();
+    actions.openTimeline();
+    vi.setSystemTime(NOW + MINUTE);
     vi.mocked(api.fetchTimeline).mockRejectedValue(FAILURE);
 
-    await actions.loadTimelineOverview();
+    await actions.refreshTimeline();
 
     expect(useStore.getState()).toMatchObject({ timelineStatus: "ready", timelineError: FAILURE });
     expect(useStore.getState().timelineData.entities.length).toBeGreaterThan(0);
-  });
 
-  it("a second load cancels the first", async () => {
-    const first = pending<TimelineResponse>();
-    vi.mocked(api.fetchTimeline).mockReturnValueOnce(first.promise);
     serve();
-    const slow = actions.loadTimelineOverview();
-    const signal = vi.mocked(api.fetchTimeline).mock.calls[0]?.[2];
+    vi.setSystemTime(NOW + 2 * MINUTE);
+    await actions.refreshTimeline();
 
-    const fast = actions.loadTimelineOverview();
-    first.reject(new DOMException("aborted", "AbortError"));
-    await Promise.all([slow, fast]);
-
-    expect(signal?.aborted).toBe(true);
-    expect(useStore.getState().timelineStatus).toBe("ready");
+    expect(useStore.getState().timelineError).toBeNull();
   });
 
   it("a live change that arrived while the answer was on its way is in the timeline once it answers", async () => {
     const slow = pending<TimelineResponse>();
     vi.mocked(api.fetchTimeline).mockReturnValueOnce(slow.promise);
-    const loading = actions.loadTimelineOverview();
-    const answer = FIXTURE.overview(NOW - 5 * DAY, NOW);
-    const name = answer.entities[0]?.name ?? "";
+    actions.wantTimeline(demand());
+    const name = FIXTURE.entities[0]?.name ?? "";
     const t = NOW + 1000;
     useStore.setState({ timelineHeld: [{ timeline: { transitions: [{ entity: name, t, from: 1, to: 3, reason: "SignalTransition" }] }, observed: t }] });
+    serve();
 
-    slow.resolve(answer);
-    await loading;
+    slow.resolve(answer(queries()[0]!));
+    await timelineIdle();
 
     expect(useStore.getState().timelineData.states[name]?.transitions.at(-1)).toMatchObject({ t, to: 3 });
   });
@@ -199,117 +261,107 @@ describe("loadTimelineOverview", () => {
   it("an answer that arrives after a reset is dropped", async () => {
     const late = pending<TimelineResponse>();
     vi.mocked(api.fetchTimeline).mockReturnValueOnce(late.promise);
-    const load = actions.loadTimelineOverview();
+    actions.wantTimeline(demand());
 
     actions.resetTimeline();
     late.resolve(FIXTURE.overview(NOW - DAY, NOW));
-    await load;
+    await timelineIdle();
 
     expect(useStore.getState().timelineStatus).toBe("idle");
     expect(useStore.getState().timelineData.entities).toEqual([]);
   });
-
-  it("an answer for a model that is no longer selected is dropped", async () => {
-    const late = pending<TimelineResponse>();
-    vi.mocked(api.fetchTimeline).mockReturnValueOnce(late.promise);
-    const load = actions.loadTimelineOverview();
-
-    useStore.setState({ selected: { ...MODEL, name: "hm-b" } });
-    late.resolve(FIXTURE.overview(NOW - DAY, NOW));
-    await load;
-
-    expect(useStore.getState().timelineData.entities).toEqual([]);
-  });
 });
 
-describe("loadTimelineSignals", () => {
-  const RESOURCE = FIXTURE.entities.find((entity) => entity.signals.length > 0)!;
-
-  async function overview(): Promise<void> {
+describe("the lanes", () => {
+  it("are read once for the entities that show, and held by entity and signal", async () => {
     serve();
-    await actions.loadTimelineOverview();
-    vi.mocked(api.fetchTimeline).mockClear();
-  }
+    await open();
 
-  it("reads the signals of the entities and holds their points", async () => {
-    await overview();
-
-    const load = actions.loadTimelineSignals([RESOURCE.name], NOW - 6 * HOUR, NOW);
+    actions.wantTimeline(demand({ lanes: [RESOURCE.name] }));
     expect(useStore.getState().timelineLoading).toEqual([RESOURCE.name]);
-    await load;
+    await timelineIdle();
+    await show({ lanes: [RESOURCE.name], view: { from: NOW - 6 * HOUR, to: NOW } });
 
-    const held = useStore.getState().timelineData.series[seriesKey(RESOURCE.name, RESOURCE.signals[0]!.name)];
-    expect(held?.points.length).toBeGreaterThan(50);
-    expect(held?.covered).toEqual([{ from: NOW - 6 * HOUR, to: NOW }]);
+    const held = useStore.getState().timelineData.series[KEY];
+    expect(held?.points.length).toBeGreaterThan(250);
+    expect(held?.covered).toEqual([{ from: TODAY - DAY, to: NOW }]);
     expect(useStore.getState().timelineLoading).toEqual([]);
-    expect(vi.mocked(api.fetchTimeline).mock.calls[0]?.[1]).toMatchObject({ include: ["signals"], entities: [RESOURCE.name] });
+    expect(seriesQueries()).toHaveLength(1);
+    expect(seriesQueries()[0]).toMatchObject({ include: ["signals"], entities: [RESOURCE.name], signals: null, from: TODAY - DAY, to: TODAY + DAY, resolution: 0 });
   });
 
-  it("splits a long list into requests under the service's limit", async () => {
-    await overview();
-    const many = Array.from({ length: 3 }, (_, i) => ({ ...RESOURCE, name: `big-${i}`, signals: Array.from({ length: 60 }, () => RESOURCE.signals[0]!) }));
-    useStore.setState((state) => ({ timelineData: { ...state.timelineData, entities: [...state.timelineData.entities, ...many] } }));
+  it.each([
+    { name: "a day", span: DAY, level: 0, resolution: 0 },
+    { name: "a week", span: 7 * DAY, level: 1, resolution: 900 },
+    { name: "the whole retention", span: RETENTION, level: 2, resolution: 3600 },
+  ])("$name is read and drawn at level $level", async ({ span, level, resolution }) => {
+    serve();
+    await open();
 
-    await actions.loadTimelineSignals(many.map((entity) => entity.name), NOW - HOUR, NOW);
+    await show({ lanes: [RESOURCE.name], view: { from: NOW - span, to: NOW } });
 
-    const asked = vi.mocked(api.fetchTimeline).mock.calls.map((call) => call[1].entities);
-    expect(asked).toEqual([["big-0"], ["big-1"], ["big-2"]]);
-    expect(60 * 2).toBeGreaterThan(SIGNALS_PER_REQUEST);
+    expect(useStore.getState().timelineShown.level).toBe(level);
+    expect(seriesQueries().every((query) => (query.resolution ?? 0) === resolution)).toBe(true);
+    expect(useStore.getState().timelineSeries.series[KEY]?.[level]?.rows.length).toBeGreaterThan(0);
+    expect(useStore.getState().timelineData.series[KEY]?.points).toBe(useStore.getState().timelineSeries.series[KEY]?.[level]?.rows);
   });
 
-  it("a failed request marks its series so they are not asked for again, and a retry clears the mark", async () => {
-    await overview();
+  it("a failed request marks its series so they are not asked for again, and a retry clears the mark and reads them", async () => {
+    serve();
+    await open();
     vi.mocked(api.fetchTimeline).mockRejectedValue(FAILURE);
 
-    await actions.loadTimelineSignals([RESOURCE.name], NOW - HOUR, NOW);
+    await show({ lanes: [RESOURCE.name] });
+    await show({ lanes: [RESOURCE.name], view: { from: NOW - 23 * HOUR, to: NOW } });
 
-    const key = seriesKey(RESOURCE.name, RESOURCE.signals[0]!.name);
-    expect(useStore.getState().timelineData.series[key]?.error?.code).toBe("http_error");
+    expect(seriesQueries()).toHaveLength(1);
+    expect(useStore.getState().timelineData.series[KEY]?.error?.code).toBe("http_error");
     expect(useStore.getState().timelineError).toEqual(FAILURE);
     expect(useStore.getState().timelineLoading).toEqual([]);
 
+    serve();
     actions.retryTimelineSignals([RESOURCE.name]);
+    expect(useStore.getState().timelineData.series[KEY]?.error).toBeNull();
+    await timelineIdle();
 
-    expect(useStore.getState().timelineData.series[key]?.error).toBeNull();
+    expect(useStore.getState().timelineData.series[KEY]?.points.length).toBeGreaterThan(250);
   });
 
   it("cancelling aborts what is in flight and leaves no mark", async () => {
-    await overview();
+    serve();
+    await open();
     const never = pending<TimelineResponse>();
     vi.mocked(api.fetchTimeline).mockReturnValue(never.promise);
-    const load = actions.loadTimelineSignals([RESOURCE.name], NOW - HOUR, NOW);
-    const signal = vi.mocked(api.fetchTimeline).mock.calls[0]?.[2];
+    actions.wantTimeline(demand({ lanes: [RESOURCE.name] }));
+    const signal = vi.mocked(api.fetchTimeline).mock.calls.at(-1)?.[2];
 
     cancelTimelineSignals();
     never.reject(new DOMException("aborted", "AbortError"));
-    await load;
+    await timelineIdle();
 
     expect(signal?.aborted).toBe(true);
     expect(useStore.getState().timelineError).toBeNull();
     expect(useStore.getState().timelineLoading).toEqual([]);
   });
 
-  it("refresh reads the overview and the newest minutes of the open lanes", async () => {
-    await overview();
+  it("refresh reads the week and the day that are still open, and nothing that closed", async () => {
+    serve();
+    await open({ lanes: [RESOURCE.name] });
     actions.openTimeline();
-    const keys = allKeys(FIXTURE.entities).filter((key) => key.endsWith(RESOURCE.name));
-    expect(keys.length).toBeGreaterThan(0);
-    actions.expandTimelineEntities(keys);
+    vi.mocked(api.fetchTimeline).mockClear();
+    vi.setSystemTime(NOW + MINUTE);
 
     await actions.refreshTimeline();
-    await flush();
 
-    const calls = vi.mocked(api.fetchTimeline).mock.calls.map((call) => call[1]);
-    expect(calls[0]?.include).toEqual(["states", "annotations", "reports"]);
-    expect(calls[1]).toMatchObject({ include: ["signals"], entities: [RESOURCE.name], to: NOW });
-    expect((calls[1]?.to ?? 0) - (calls[1]?.from ?? 0)).toBeLessThanOrEqual(20 * 60_000);
+    expect(queries().map((query) => [query.include.join(), query.from, query.to])).toEqual([
+      ["structure,states,annotations,reports", THIS_WEEK, THIS_WEEK + WEEK],
+      ["signals", TODAY, TODAY + DAY],
+    ]);
   });
-});
 
-describe("refreshTimeline while the timeline is closed", () => {
-  it("reads nothing: it is read afresh when it opens", async () => {
+  it("refresh reads nothing while the timeline is closed: it is read afresh when it opens", async () => {
     serve();
-    await actions.loadTimelineOverview();
+    await open();
     vi.mocked(api.fetchTimeline).mockClear();
 
     await actions.refreshTimeline();
@@ -329,17 +381,9 @@ describe("rows and the view", () => {
     expect(useStore.getState().timelineExpanded).toEqual([]);
   });
 
-  it("sets the order and pins and unpins a moment", () => {
-    actions.setTimelineOrder("worst");
-    actions.pinTimeline(123);
-    expect(useStore.getState()).toMatchObject({ timelineOrder: "worst", timelinePinned: 123 });
-    actions.pinTimeline(null);
-    expect(useStore.getState().timelinePinned).toBeNull();
-  });
-
   it("clamps a view to the history and ignores one that did not change", async () => {
     serve();
-    await actions.loadTimelineOverview();
+    await open();
 
     actions.setTimelineView({ t0: NOW - 100 * DAY, t1: NOW + DAY });
     const wide = useStore.getState().timelineView;
@@ -351,9 +395,9 @@ describe("rows and the view", () => {
     expect(useStore.getState().timelineView).toBe(before.timelineView);
   });
 
-  it("resetting forgets the data, the lanes and the pin", async () => {
+  it("resetting forgets the data, the lanes and the selected moment", async () => {
     serve();
-    await actions.loadTimelineOverview();
+    await open();
     actions.expandTimelineEntities(["a"]);
     actions.pinTimeline(5);
 
@@ -361,11 +405,12 @@ describe("rows and the view", () => {
 
     expect(useStore.getState()).toMatchObject({ timelineStatus: "idle", timelineExpanded: [], timelinePinned: null });
     expect(useStore.getState().timelineData.entities).toEqual([]);
+    expect(useStore.getState().timelineSeries.entities).toEqual([]);
   });
 
   it("history starts at the first transition seen, a little before it", async () => {
     serve();
-    await actions.loadTimelineOverview();
+    await open();
 
     const start = historyStart(useStore.getState().timelineData);
 
@@ -374,19 +419,128 @@ describe("rows and the view", () => {
   });
 });
 
+describe("the selected moment", () => {
+  const TROUBLED = buildFixture({ now: NOW, days: 5, flows: 1, componentsPerFlow: 1, resourcesPerComponent: 4, signalsPerResource: 2 });
+  const graph = graphOf(TROUBLED);
+  const incident = TROUBLED.incidents[1] as readonly [number, number];
 
-describe("live mode and the browser cache", () => {
-  const cache = (stored: TimelineResponse | null): { read: ReturnType<typeof vi.fn>; write: ReturnType<typeof vi.fn> } =>
-    ({ read: vi.fn().mockResolvedValue(stored), write: vi.fn() });
-  afterEach(() => setOverviewCache(null));
+  it("is one field: null is now, and pinning the timeline selects it", () => {
+    actions.setTimelineOrder("worst");
+    expect(selectedMoment(useStore.getState())).toBeNull();
 
+    actions.pinTimeline(123);
+    expect(useStore.getState()).toMatchObject({ timelineOrder: "worst", timelinePinned: 123 });
+    expect(selectedMoment(useStore.getState())).toBe(123);
+
+    actions.selectMoment(456);
+    expect(selectedMoment(useStore.getState())).toBe(456);
+    actions.pinTimeline(null);
+    expect(selectedMoment(useStore.getState())).toBeNull();
+  });
+
+  it.each([
+    { name: "a window that follows now stops where it is while a moment is selected and follows again after", following: true, during: false, after: true },
+    { name: "a window that did not follow stays where it is", following: false, during: false, after: false },
+  ])("$name", async ({ following, during, after }) => {
+    serve();
+    await open();
+    if (!following) actions.setTimelineView({ t0: NOW - 3 * DAY, t1: NOW - 2 * DAY });
+    const view = useStore.getState().timelineView;
+
+    actions.selectMoment(NOW - HOUR);
+    actions.selectMoment(NOW - 2 * HOUR);
+    expect(useStore.getState().timelineFollow).toBe(during);
+    expect(useStore.getState().timelineView).toEqual(view);
+
+    actions.selectMoment(null);
+    expect(useStore.getState().timelineFollow).toBe(after);
+    expect(useStore.getState().timelineView).toEqual(view);
+  });
+
+  it("a window the viewer moved away while a moment was selected stays where it was put when the selection is cleared", async () => {
+    serve();
+    await open();
+    actions.selectMoment(NOW - HOUR);
+    const moved = { t0: NOW - 3 * DAY, t1: NOW - 2 * DAY };
+
+    actions.setTimelineView(moved);
+    actions.selectMoment(null);
+
+    expect(useStore.getState()).toMatchObject({ timelineFollow: false, timelineView: moved });
+  });
+
+  it("a window that followed for a while stops at the now it had reached, not where it was when the following began", async () => {
+    serve();
+    await open();
+    const later = NOW + 20 * MINUTE;
+    useStore.setState((state) => ({ timelineData: { ...state.timelineData, now: later } }));
+
+    actions.selectMoment(NOW - HOUR);
+
+    expect(useStore.getState().timelineView).toEqual({ t0: later - DAY, t1: later });
+  });
+
+  it("the model at the moment has the states of then, and the live model itself is given while none is selected", async () => {
+    serve(TROUBLED);
+    useStore.setState({ model: { kind: "success", value: graph } });
+    await open();
+
+    expect(selectModelAt(useStore.getState())).toBe(graph);
+
+    actions.selectMoment(incident[0] + 10 * MINUTE);
+    const then = selectModelAt(useStore.getState());
+    actions.selectMoment(incident[1] + 30 * MINUTE);
+    const after = selectModelAt(useStore.getState());
+
+    expect(then?.model.healthState).not.toBe("Healthy");
+    expect(then?.entities.some((item) => item.healthState === "Unhealthy" || item.healthState === "Degraded")).toBe(true);
+    expect(after?.entities.every((item) => item.healthState === "Healthy")).toBe(true);
+    expect(then?.relationships).toBe(graph.relationships);
+    actions.selectMoment(null);
+    expect(selectModelAt(useStore.getState())).toBe(graph);
+  });
+
+  it("closing the timeline returns the page to now", () => {
+    actions.openTimeline();
+    actions.selectMoment(NOW - HOUR);
+
+    actions.closeTimeline();
+
+    expect(selectedMoment(useStore.getState())).toBeNull();
+  });
+
+  it("is null until a model is loaded", () => {
+    expect(selectModelAt(useStore.getState())).toBeNull();
+  });
+
+  it("the entities other views watch are remembered, and the same list changes nothing", () => {
+    actions.watchEntities(["a", "b"]);
+    const held = useStore.getState().timelineWatched;
+    actions.watchEntities(["a", "b"]);
+
+    expect(useStore.getState().timelineWatched).toBe(held);
+    expect(held).toEqual(["a", "b"]);
+  });
+
+  it("reads the signals of what is watched around the moment, at full detail", async () => {
+    serve();
+    await open();
+    const moment = NOW - 3 * DAY;
+
+    await show({ moment, watched: [RESOURCE.name] });
+
+    expect(seriesQueries().map((query) => [query.entities, query.from, query.to, query.resolution])).toEqual([[[RESOURCE.name], tileOf(moment, DAY) * DAY, (tileOf(moment, DAY) + 1) * DAY, 0]]);
+  });
+});
+
+describe("live mode", () => {
   it("follows now by default, a link names a following window by its length, and moving away stops following", async () => {
     expect(useStore.getState().timelineFollow).toBe(true);
     actions.initializeTimeline("?timeline=1&live=1&span=3600000");
     expect(useStore.getState().timelineView).toEqual({ t0: NOW - HOUR, t1: NOW });
     expect(useStore.getState().timelineFollow).toBe(true);
     serve();
-    await actions.loadTimelineOverview();
+    await open();
 
     actions.setTimelineView({ t0: NOW - 3 * DAY, t1: NOW - 2 * DAY });
     expect(useStore.getState().timelineFollow).toBe(false);
@@ -400,7 +554,7 @@ describe("live mode and the browser cache", () => {
 
   it("a window that still ends at now stays followed when it is zoomed", async () => {
     serve();
-    await actions.loadTimelineOverview();
+    await open();
 
     actions.setTimelineView({ t0: NOW - 6 * HOUR, t1: NOW });
 
@@ -412,47 +566,77 @@ describe("live mode and the browser cache", () => {
 
     expect(useStore.getState().timelineFollow).toBe(false);
   });
+});
 
-  it("paints what the browser kept before the network answers, then replaces it and starts again from now", async () => {
-    const old = FIXTURE.overview(NOW - 3 * DAY - DAY, NOW - 3 * DAY);
-    const kept = cache(old);
-    setOverviewCache(kept as unknown as OverviewCache);
-    const answer = pending<TimelineResponse>();
-    vi.mocked(api.fetchTimeline).mockReturnValueOnce(answer.promise);
+describe("the browser's cache", () => {
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
+  const ADA = { name: "Ada", username: "ada@example.test", tenantId: "tenant-a" };
 
-    const load = actions.loadTimelineOverview();
-    await flush();
-
-    expect(useStore.getState()).toMatchObject({ timelineStatus: "ready", timelineStale: true });
-    expect(useStore.getState().timelineData.entities.length).toBe(FIXTURE.entities.length);
-    answer.resolve(FIXTURE.overview(NOW - 30 * DAY, NOW));
-    await load;
-
-    const state = useStore.getState();
-    expect(state.timelineStale).toBe(false);
-    expect(state.timelineView).toEqual({ t0: NOW - DAY, t1: NOW });
-    expect(kept.read).toHaveBeenCalledWith("sub-a/rg-a/hm-a");
-    expect(kept.write).toHaveBeenCalledWith("sub-a/rg-a/hm-a", expect.objectContaining({ model: expect.any(String) }));
+  it.each([
+    { name: "nobody signed in, on a development server", account: null, owner: "local" },
+    { name: "a signed-in user", account: ADA, owner: "tenant-a/ada@example.test" },
+    { name: "the same user in another directory", account: { ...ADA, tenantId: "tenant-b" }, owner: "tenant-b/ada@example.test" },
+  ])("belongs to $name", ({ account, owner }) => {
+    expect(cacheScope({ account, selected: MODEL })).toEqual({ owner, model: "sub-a/rg-a/hm-a" });
+    expect(cacheScope({ account, selected: null })).toBeNull();
   });
 
-  it("a cache with nothing in it changes nothing, and a network that answers first wins", async () => {
-    setOverviewCache(cache(null) as unknown as OverviewCache);
+  it("paints what the browser kept before the app answers, then is current and starts again from now", async () => {
+    setTimelineCache(createTileCache(memoryStorage(), { delayMs: 0 }));
     serve();
+    await open({ lanes: [RESOURCE.name] });
+    await settle();
+    const first = vi.mocked(api.fetchTimeline).mock.calls.length;
+    vi.setSystemTime(NOW + 2 * HOUR);
+    const late = pending<void>();
+    vi.mocked(api.fetchTimeline).mockImplementation(async (_selection, query) => {
+      await late.promise;
+      return { ...answer(query), range: { from: new Date(query.from).toISOString(), to: new Date(NOW + 2 * HOUR).toISOString() } };
+    });
 
-    await actions.loadTimelineOverview();
-    await flush();
-
-    expect(useStore.getState()).toMatchObject({ timelineStatus: "ready", timelineStale: false });
-
-    const late = cache(FIXTURE.overview(NOW - 5 * DAY, NOW - 4 * DAY));
-    late.read.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(FIXTURE.overview(NOW - 5 * DAY, NOW - 4 * DAY)), 50)));
-    setOverviewCache(late as unknown as OverviewCache);
+    // A reload: nothing is in the store, and no view is named.
+    useStore.setState({ timelineView: null });
     actions.resetTimeline();
-    serve();
-    await actions.loadTimelineOverview();
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(useStore.getState().timelineData.entities).toEqual([]);
+    actions.wantTimeline(demand({ lanes: [RESOURCE.name], view: { from: NOW + 2 * HOUR - DAY, to: NOW + 2 * HOUR } }));
+    await settle();
+
+    const kept = useStore.getState();
+    expect(kept).toMatchObject({ timelineStatus: "ready", timelineStale: true });
+    expect(kept.timelineData.entities.length).toBe(FIXTURE.entities.length);
+    expect(kept.timelineData.series[KEY]?.points.length).toBeGreaterThan(250);
+    expect(queries().slice(first).map((query) => query.from)).toEqual([THIS_WEEK, TODAY]);
+
+    late.resolve();
+    await timelineIdle();
 
     expect(useStore.getState().timelineStale).toBe(false);
-    expect(useStore.getState().timelineView).toEqual({ t0: NOW - DAY, t1: NOW });
+    expect(useStore.getState().timelineView).toEqual({ t0: NOW + 2 * HOUR - DAY, t1: NOW + 2 * HOUR });
+  });
+
+  it("is never shown to another user: they start empty and read from the app", async () => {
+    setTimelineCache(createTileCache(memoryStorage(), { delayMs: 0 }));
+    serve();
+    useStore.setState({ account: ADA });
+    await open();
+    await settle();
+    const first = vi.mocked(api.fetchTimeline).mock.calls.length;
+    const late = pending<void>();
+    vi.mocked(api.fetchTimeline).mockImplementation(async (_selection, query) => {
+      await late.promise;
+      return answer(query);
+    });
+
+    useStore.setState({ account: { ...ADA, username: "bob@example.test" } });
+    actions.resetTimeline();
+    actions.wantTimeline(demand());
+    await settle();
+
+    expect(useStore.getState()).toMatchObject({ timelineStale: false });
+    expect(useStore.getState().timelineData.entities).toEqual([]);
+    expect(queries().slice(first)[0]).toMatchObject({ include: ["structure", "states", "annotations", "reports"] });
+    late.resolve();
+    await timelineIdle();
+    expect(useStore.getState().timelineStatus).toBe("ready");
   });
 });

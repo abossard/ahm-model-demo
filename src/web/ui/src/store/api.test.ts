@@ -52,6 +52,25 @@ describe("selector scoped requests", () => {
   });
 });
 
+describe("the timeline", () => {
+  const FROM = Date.parse("2026-11-10T00:00:00Z");
+  const TO = Date.parse("2026-11-11T00:00:00Z");
+  const WINDOW = "from=2026-11-10T00%3A00%3A00.000Z&to=2026-11-11T00%3A00%3A00.000Z";
+
+  it.each([
+    { name: "the overview of the whole model", query: { include: ["structure", "states", "annotations", "reports"] as const }, rest: "include=structure%2Cstates%2Cannotations%2Creports" },
+    { name: "the series of some entities", query: { include: ["signals"] as const, entities: ["api", "db"] }, rest: "include=signals&entity=api&entity=db" },
+    { name: "some signals of one entity, thinned", query: { include: ["signals"] as const, entities: ["api"], signals: ["cpu", "queue"], resolution: 900 }, rest: "include=signals&entity=api&signal=cpu&signal=queue&resolution=900" },
+    { name: "every point, which needs no resolution", query: { include: ["signals"] as const, entities: null, signals: null, resolution: 0 }, rest: "include=signals" },
+  ])("asks for $name with the same address every time", async ({ query, rest }) => {
+    fetchMock.mockImplementation(async () => new Response("{}", { status: 200 }));
+    await api.fetchTimeline(SELECTION, { from: FROM, to: TO, ...query });
+    await api.fetchTimeline(SELECTION, { from: FROM, to: TO, ...query });
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual(Array(2).fill(`/api/timeline?${SCOPE}&${WINDOW}&${rest}`));
+  });
+});
+
 describe("failures", () => {
   it.each([
     {

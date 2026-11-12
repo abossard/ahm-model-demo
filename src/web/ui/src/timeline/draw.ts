@@ -1,8 +1,8 @@
 import type { Annotation, Report, SignalInfo, SeriesHistory, StateCode, Transition } from "../model/timeline";
 import { formatValue } from "../model/timelineHover";
-import { colourRuns, levelOf, thresholdLines, type ColourRun, type Level } from "../model/timelineLine";
+import { thresholdLines, type ColourRun, type Lane, type Level, type ThresholdLine } from "../model/timelineLine";
 import { ruleZones } from "../model/timelineTree";
-import { clusterMarkers, decimateColumns, pixelBands, valueDomain, visibleRange, type Band, type MarkerAt, type PixelBand } from "../model/timelineBands";
+import { bucketRange, clusterMarkers, firstAt, pixelBands, valueDomain, visibleRange, type Band, type MarkerAt, type PixelBand } from "../model/timelineBands";
 import type { Incident } from "../model/timelineIncidents";
 import type { EntityRow, SignalRow } from "../model/timelineRows";
 import type { Scale, Tick, View } from "../model/timelineScale";
@@ -15,7 +15,10 @@ const STRIP_H = 6;
 export const INCIDENT_BAND: readonly [number, number] = [STRIP_Y - 4, STRIP_Y + STRIP_H + 4];
 const FONT = "11px system-ui, -apple-system, Segoe UI, sans-serif";
 const SMALL = "10px system-ui, -apple-system, Segoe UI, sans-serif";
-const BOLD = "600 10px system-ui, -apple-system, Segoe UI, sans-serif";
+const BOLD = "600 11px system-ui, -apple-system, Segoe UI, sans-serif";
+const DASH: readonly number[] = [4, 3];
+const DOTS: readonly number[] = [3, 3];
+const SOLID: readonly number[] = [];
 interface MarkerItem {
   readonly kind: "annotation" | "report";
   readonly state: StateCode;
@@ -51,7 +54,7 @@ export function drawAxis(frame: Frame, ticks: readonly Tick[], incidents: readon
     ctx.lineTo(x, STRIP_Y - 2);
     ctx.stroke();
     ctx.fillStyle = tick.major ? colors.ink : colors.muted;
-    ctx.font = tick.major ? BOLD.replace("10px", "11px") : FONT;
+    ctx.font = tick.major ? BOLD : FONT;
     ctx.textAlign = "left";
     ctx.fillText(tick.label, x + 4, 12);
   }
@@ -110,15 +113,18 @@ export function drawEntityRow(
   ctx.fillRect(0, y + row.h - 1, width, 1);
   ctx.globalAlpha = 1;
   fillStrip(frame, pixelBands(bands, view.t0, view.t1, width), y + row.h - 12);
-  const items: MarkerAt<MarkerItem>[] = [
-    ...markers.annotations.map((item): MarkerAt<MarkerItem> => ({ x: scale.x(item.t), item: { kind: "annotation", state: 1 } })),
-    ...markers.reports.map((item): MarkerAt<MarkerItem> => ({ x: scale.x(item.t), item: { kind: "report", state: item.state } })),
-  ]
-    .filter((marker) => marker.x >= -6 && marker.x <= width + 6)
-    .sort((a, b) => a.x - b.x);
-  for (const cluster of clusterMarkers(items, 12)) {
-    drawMarker(frame, cluster.x, y + 2, cluster.items[0]?.kind ?? "annotation", cluster.items[0]?.state ?? 1);
+  if (markers.annotations.length + markers.reports.length > 0) {
+    const items: MarkerAt<MarkerItem>[] = [
+      ...markers.annotations.map((item): MarkerAt<MarkerItem> => ({ x: scale.x(item.t), item: { kind: "annotation", state: 1 } })),
+      ...markers.reports.map((item): MarkerAt<MarkerItem> => ({ x: scale.x(item.t), item: { kind: "report", state: item.state } })),
+    ]
+      .filter((marker) => marker.x >= -6 && marker.x <= width + 6)
+      .sort((a, b) => a.x - b.x);
+    for (const cluster of clusterMarkers(items, 12)) {
+      drawMarker(frame, cluster.x, y + 2, cluster.items[0]?.kind ?? "annotation", cluster.items[0]?.state ?? 1);
+    }
   }
+  if (changes.length === 0) return;
   // Each state change of the selected entity: a tick through its bar.
   ctx.fillStyle = colors.ink;
   ctx.strokeStyle = colors.panel;
@@ -155,12 +161,24 @@ function drawMarker(frame: Frame, x: number, y: number, kind: "annotation" | "re
   ctx.lineWidth = 1;
 }
 
+/** How wide a text of the lanes is: measured once, since the same words are drawn in every frame. */
+const widths = new Map<string, number>();
+
+function widthOf(ctx: CanvasRenderingContext2D, text: string): number {
+  const held = widths.get(text);
+  if (held !== undefined) return held;
+  if (widths.size > 4000) widths.clear();
+  const width = ctx.measureText(text).width;
+  widths.set(text, width);
+  return width;
+}
+
 function axisText(frame: Frame, text: string, x: number, y: number, align: CanvasTextAlign, baseline: CanvasTextBaseline, color = frame.colors.muted): void {
   const { ctx, colors } = frame;
   ctx.font = SMALL;
   ctx.textAlign = align;
   ctx.textBaseline = baseline;
-  const w = ctx.measureText(text).width;
+  const w = widthOf(ctx, text);
   const left = align === "right" ? x - w : x;
   ctx.fillStyle = colors.panel;
   ctx.globalAlpha = 0.78;
@@ -172,33 +190,99 @@ function axisText(frame: Frame, text: string, x: number, y: number, align: Canva
 }
 
 const LEVELS: readonly Level[] = [0, 1, 2, 3];
+const NO_RULES: SignalInfo["rules"] = { degraded: null, unhealthy: null, dynamic: false };
 
-/** Strokes the runs of a line, one colour at a time, and marks a run of one point as a dot. */
-function strokeRuns(frame: Frame, runs: readonly ColourRun[], xOf: (x: number) => number, yOf: (value: number) => number): void {
-  const { ctx, colors } = frame;
+/** The threshold lines of a signal with their words: the same for every frame it is drawn in. */
+const linesBySignal = new WeakMap<SignalInfo, readonly ThresholdLine[]>();
+const NO_LINES: readonly ThresholdLine[] = [];
+
+function linesOf(info: SignalInfo | undefined): readonly ThresholdLine[] {
+  if (!info) return NO_LINES;
+  let lines = linesBySignal.get(info);
+  if (!lines) {
+    lines = thresholdLines(info.rules, info.unit);
+    linesBySignal.set(info, lines);
+  }
+  return lines;
+}
+
+/**
+ * Strokes the part of a lane's line that shows, one colour at a time, and marks a run of one point as a dot. The runs
+ * are in time: each vertex is placed, none is computed.
+ */
+function strokeRuns(frame: Frame, lane: Lane, yOf: (value: number) => number): void {
+  const { ctx, colors, view, scale } = frame;
+  const k = scale.pxPerMs;
   for (const level of LEVELS) {
+    const runs = lane.runs[level] as readonly ColourRun[];
+    if (runs.length === 0) continue;
     ctx.strokeStyle = colors.state[level];
     ctx.fillStyle = colors.state[level];
     ctx.beginPath();
+    let dots = false;
     for (const run of runs) {
-      if (run.level !== level || run.xs.length < 2) continue;
-      ctx.moveTo(xOf(run.xs[0] as number), yOf(run.vs[0] as number));
-      for (let i = 1; i < run.xs.length; i += 1) ctx.lineTo(xOf(run.xs[i] as number), yOf(run.vs[i] as number));
+      const n = run.xs.length;
+      if ((run.xs[n - 1] as number) < view.t0) continue;
+      if ((run.xs[0] as number) > view.t1) break;
+      if (n === 1) {
+        dots = true;
+        continue;
+      }
+      let i = Math.max(0, firstAt(run.xs, view.t0) - 1);
+      ctx.moveTo(((run.xs[i] as number) - view.t0) * k, yOf(run.vs[i] as number));
+      for (i += 1; i < n; i += 1) {
+        const t = run.xs[i] as number;
+        ctx.lineTo((t - view.t0) * k, yOf(run.vs[i] as number));
+        if (t > view.t1) break;
+      }
     }
     ctx.stroke();
+    if (!dots) continue;
     for (const run of runs) {
-      if (run.level !== level || run.xs.length !== 1) continue;
+      const t = run.xs[0] as number;
+      if (run.xs.length !== 1 || t < view.t0) continue;
+      if (t > view.t1) break;
       ctx.beginPath();
-      ctx.arc(xOf(run.xs[0] as number), yOf(run.vs[0] as number), 2.4, 0, Math.PI * 2);
+      ctx.arc((t - view.t0) * k, yOf(run.vs[0] as number), 2.4, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 }
 
+/** The range of the values folded into each pixel column, as a faint bar in the level of its worst end. */
+function fillRanges(frame: Frame, lane: Lane, i0: number, i1: number, yOf: (value: number) => number): void {
+  const { ctx, colors, view, scale } = frame;
+  const { buckets } = lane;
+  ctx.globalAlpha = 0.3;
+  for (const level of LEVELS) {
+    let column = Number.NaN;
+    let top = 0;
+    let bottom = 0;
+    ctx.fillStyle = colors.state[level];
+    for (let i = i0; i < i1; i += 1) {
+      if (lane.level[i] !== level || (buckets.values[i] as number) < 3) continue;
+      const x = Math.floor(((buckets.from[i] as number) - view.t0) * scale.pxPerMs);
+      const hi = yOf(buckets.hi[i] as number);
+      const lo = yOf(buckets.lo[i] as number);
+      if (x === column) {
+        top = Math.min(top, hi);
+        bottom = Math.max(bottom, lo);
+        continue;
+      }
+      if (!Number.isNaN(column)) ctx.fillRect(column, top, 1, Math.max(1, bottom - top));
+      column = x;
+      top = hi;
+      bottom = lo;
+    }
+    if (!Number.isNaN(column)) ctx.fillRect(column, top, 1, Math.max(1, bottom - top));
+  }
+  ctx.globalAlpha = 1;
+}
+
 /**
  * A lane of one signal: the measured value is the line, green while it is healthy, orange past the degraded threshold,
  * red past the unhealthy one and grey where the state is Unknown. The thresholds are drawn and named. A signal without
- * numbers shows its states as marks.
+ * numbers shows its states as marks. `lane` is the series folded for this zoom level, null while there is none.
  */
 export function drawSignalRow(
   frame: Frame,
@@ -207,6 +291,7 @@ export function drawSignalRow(
   info: SignalInfo | undefined,
   history: SeriesHistory | undefined,
   bands: readonly Band[],
+  lane: Lane | null,
   hold: number,
   loading: boolean,
 ): void {
@@ -218,7 +303,7 @@ export function drawSignalRow(
   ctx.fillRect(0, chartTop, width, chartH);
   ctx.globalAlpha = 1;
 
-  if (!history || history.points.length === 0) {
+  if (!history || history.points.length === 0 || lane === null) {
     ctx.fillStyle = colors.muted;
     ctx.font = SMALL;
     ctx.textBaseline = "middle";
@@ -233,36 +318,29 @@ export function drawSignalRow(
   }
   ctx.globalAlpha = 1;
 
-  const rules = info?.rules ?? { degraded: null, unhealthy: null, dynamic: false };
+  const rules = info?.rules ?? NO_RULES;
   const unit = info?.unit ?? null;
-  const [i0, i1] = visibleRange(history.points, view.t0, view.t1);
-  const sparse = i1 - i0 < width / 3;
-  const columns = sparse ? null : decimateColumns(history.points, view.t0, view.t1, width);
+  const { buckets } = lane;
+  const [i0, i1] = bucketRange(buckets, view.t0, view.t1);
   let lo = Number.POSITIVE_INFINITY;
   let hi = Number.NEGATIVE_INFINITY;
-  if (columns) {
-    for (let i = 0; i < columns.x.length; i += 1) {
-      lo = Math.min(lo, columns.lo[i] as number);
-      hi = Math.max(hi, columns.hi[i] as number);
-    }
-  } else {
-    for (let i = i0; i < i1; i += 1) {
-      const value = history.points[i]?.[1];
-      if (value === null || value === undefined) continue;
-      lo = Math.min(lo, value);
-      hi = Math.max(hi, value);
-    }
+  for (let i = i0; i < i1; i += 1) {
+    if ((buckets.lo[i] as number) < lo) lo = buckets.lo[i] as number;
+    if ((buckets.hi[i] as number) > hi) hi = buckets.hi[i] as number;
   }
 
   if (!Number.isFinite(lo)) {
-    drawStateMarks(frame, history, i0, i1, chartTop, chartH);
+    const [p0, p1] = visibleRange(history.points, view.t0, view.t1);
+    drawStateMarks(frame, history, p0, p1, chartTop, chartH);
     axisText(frame, "reported states, no measured value", 6, chartTop + 2, "left", "top");
     return;
   }
 
   const domain = valueDomain(lo, hi, rules);
-  const yOf = (value: number): number => chartTop + chartH - ((value - domain.lo) / (domain.hi - domain.lo)) * chartH;
-  const lines = thresholdLines(rules, unit).filter((line) => line.value >= domain.lo && line.value <= domain.hi);
+  const perUnit = chartH / (domain.hi - domain.lo);
+  const base = chartTop + chartH;
+  const yOf = (value: number): number => base - (value - domain.lo) * perUnit;
+  const lines = linesOf(info);
 
   ctx.save();
   ctx.beginPath();
@@ -274,68 +352,39 @@ export function drawSignalRow(
     ctx.fillRect(0, yOf(zone.to), width, yOf(zone.from) - yOf(zone.to));
   }
   ctx.globalAlpha = 1;
-  ctx.setLineDash([4, 3]);
+  ctx.setLineDash(DASH as number[]);
   ctx.lineWidth = 1;
   for (const line of lines) {
+    if (line.value < domain.lo || line.value > domain.hi) continue;
     ctx.strokeStyle = colors.state[line.state];
     ctx.beginPath();
     ctx.moveTo(0, Math.round(yOf(line.value)) + 0.5);
     ctx.lineTo(width, Math.round(yOf(line.value)) + 0.5);
     ctx.stroke();
   }
-  ctx.setLineDash([]);
+  ctx.setLineDash(SOLID as number[]);
 
   ctx.lineWidth = 1.7;
   ctx.lineJoin = "round";
-  const gapPx = Math.max(6, hold * scale.pxPerMs);
-  if (columns) {
-    // The range inside a pixel column is a bar in the level of its worst end; the line runs through the first and last values.
-    const level = columns.x.map((_, i) => Math.max(levelOf(columns.lo[i] as number, columns.state[i] as StateCode, rules), levelOf(columns.hi[i] as number, columns.state[i] as StateCode, rules)));
-    ctx.globalAlpha = 0.3;
-    for (const l of LEVELS) {
-      ctx.fillStyle = colors.state[l];
-      for (let i = 0; i < columns.x.length; i += 1) {
-        if (level[i] !== l) continue;
-        const top = yOf(columns.hi[i] as number);
-        ctx.fillRect(columns.x[i] as number, top, 1, Math.max(1, yOf(columns.lo[i] as number) - top));
-      }
-    }
-    ctx.globalAlpha = 1;
-    const x: number[] = [];
-    const v: number[] = [];
-    const s: StateCode[] = [];
-    for (let i = 0; i < columns.x.length; i += 1) {
-      x.push(columns.x[i] as number, columns.x[i] as number);
-      v.push(columns.first[i] as number, columns.last[i] as number);
-      s.push(columns.state[i] as StateCode, columns.state[i] as StateCode);
-    }
-    strokeRuns(frame, colourRuns({ x, v, s }, rules, gapPx), (column) => column + 0.5, yOf);
-  } else {
-    const x: number[] = [];
-    const v: (number | null)[] = [];
-    const s: StateCode[] = [];
+  if (lane.ranges) fillRanges(frame, lane, i0, i1, yOf);
+  strokeRuns(frame, lane, yOf);
+  // Each evaluation is a dot once they stand apart.
+  if (lane.exact && (scale.pxPerMs * (hold / 3) > 5 || i1 - i0 < 40)) {
+    let level = -1;
     for (let i = i0; i < i1; i += 1) {
-      const point = history.points[i];
-      if (!point) continue;
-      x.push(point[0]);
-      v.push(point[1]);
-      s.push(point[2]);
-    }
-    strokeRuns(frame, colourRuns({ x, v, s }, rules, hold), scale.x, yOf);
-    if (scale.pxPerMs * (hold / 3) > 5 || i1 - i0 < 40) {
-      for (let i = 0; i < x.length; i += 1) {
-        const value = v[i];
-        if (value === null || value === undefined) continue;
-        ctx.fillStyle = colors.state[levelOf(value, s[i] as StateCode, rules)];
-        ctx.beginPath();
-        ctx.arc(scale.x(x[i] as number), yOf(value), 2.6, 0, Math.PI * 2);
-        ctx.fill();
+      if (lane.level[i] !== level) {
+        level = lane.level[i] as number;
+        ctx.fillStyle = colors.state[level as Level];
       }
+      ctx.beginPath();
+      ctx.arc(((buckets.from[i] as number) - view.t0) * scale.pxPerMs, yOf(buckets.first[i] as number), 2.6, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
   ctx.restore();
 
   for (const line of lines) {
+    if (line.value < domain.lo || line.value > domain.hi) continue;
     const at = yOf(line.value);
     const label = Math.min(chartTop + chartH - 1, Math.max(chartTop + 12, line.side === "above" ? at - 2 : at + 13));
     axisText(frame, line.text, width - 20, label, "right", "bottom", colors.label[line.state]);
@@ -372,31 +421,65 @@ function drawStateMarks(frame: Frame, history: SeriesHistory, i0: number, i1: nu
   ctx.lineWidth = 1;
 }
 
-export function drawCursor(frame: Frame, x: number | null, pinnedX: number | null): void {
+/** The dashed line under the pointer. */
+export function drawCursor(frame: Frame, x: number): void {
   const { ctx, height, colors } = frame;
-  if (pinnedX !== null && pinnedX >= 0 && pinnedX <= frame.width) {
-    ctx.strokeStyle = colors.accent;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(Math.round(pinnedX), 0);
-    ctx.lineTo(Math.round(pinnedX), height);
-    ctx.stroke();
-    ctx.fillStyle = colors.accent;
-    ctx.beginPath();
-    ctx.moveTo(pinnedX - 5, 0);
-    ctx.lineTo(pinnedX + 5, 0);
-    ctx.lineTo(pinnedX, 7);
-    ctx.fill();
-    ctx.lineWidth = 1;
-  }
-  if (x === null) return;
   ctx.strokeStyle = colors.cursor;
-  ctx.setLineDash([3, 3]);
+  ctx.setLineDash(DOTS as number[]);
   ctx.beginPath();
   ctx.moveTo(Math.round(x) + 0.5, 0);
   ctx.lineTo(Math.round(x) + 0.5, height);
   ctx.stroke();
-  ctx.setLineDash([]);
+  ctx.setLineDash(SOLID as number[]);
+}
+
+/** Where the label of the selected moment was drawn: the handle to drag it by. */
+export interface Box {
+  readonly x0: number;
+  readonly x1: number;
+  readonly y0: number;
+  readonly y1: number;
+}
+
+const MOMENT_H = 17;
+
+/**
+ * The selected moment: a line through every row with a rim in the panel's colour, so it reads on any bar or line, and a
+ * label at its top that says the time in full. A moment outside the window keeps its label, at the edge it left by.
+ */
+export function drawMoment(frame: Frame, x: number, text: string): Box {
+  const { ctx, width, height, colors } = frame;
+  const inside = x >= 0 && x <= width;
+  const label = inside ? text : x < 0 ? `◀ ${text}` : `${text} ▶`;
+  ctx.font = BOLD;
+  // Not through the kept widths: a moment that is dragged has a new text in every frame.
+  const w = ctx.measureText(label).width + 12;
+  const at = Math.round(Math.max(0, Math.min(width, x)));
+  const left = Math.max(0, at + w > width ? at - w : at);
+  if (inside) {
+    ctx.strokeStyle = colors.panel;
+    ctx.globalAlpha = 0.85;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(at, MOMENT_H);
+    ctx.lineTo(at, height);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = colors.accent;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(at, 0);
+    ctx.lineTo(at, height);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+  ctx.fillStyle = colors.accent;
+  ctx.fillRect(left, 0, w, MOMENT_H);
+  ctx.fillStyle = colors.panel;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, left + 6, MOMENT_H / 2 + 0.5);
+  return { x0: left, x1: left + w, y0: 0, y1: MOMENT_H };
 }
 
 export function drawBrush(frame: Frame, x0: number, x1: number): void {

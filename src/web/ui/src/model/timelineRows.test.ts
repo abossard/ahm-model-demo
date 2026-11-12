@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EntityInfo, SignalInfo, StateCode } from "./timeline";
-import { ROW_HEIGHT, allKeys, buildRows, entityKey, entityOfKey, moveFocus, revealKeys, rootEntity, rootKeys, scrollToShow, signalKey, visibleRows, type RowInput } from "./timelineRows";
+import { ROW_HEIGHT, allKeys, buildRows, entityKey, entityOfKey, heldRows, moveFocus, revealKeys, rootEntity, rootKeys, scrollToShow, signalKey, visibleRows, type RowInput } from "./timelineRows";
 
 const signal = (name: string): SignalInfo => ({ name, displayName: name, kind: null, unit: null, refreshInterval: null, rules: { degraded: null, unhealthy: null, dynamic: false } });
 const entity = (name: string, parents: string[] = [], signals: string[] = []): EntityInfo => ({ name, displayName: name.toUpperCase(), parents, state: 1, signals: signals.map(signal) });
@@ -187,6 +187,34 @@ describe("virtualization", () => {
 
     expect(from).toBe(0);
     expect(to).toBeGreaterThan(visibleRows(model, 0, 100, 0)[1]);
+  });
+
+  it.each([
+    { name: "a small move keeps the rows that are held", top: 3000 + 3 * ROW_HEIGHT.entity, kept: true },
+    { name: "a move back keeps them too", top: 3000 - 5 * ROW_HEIGHT.entity, kept: true },
+    { name: "a move past what is held cuts them anew", top: 3000 + 20 * ROW_HEIGHT.entity, kept: false },
+    { name: "so does a move back past it", top: 3000 - 20 * ROW_HEIGHT.entity, kept: false },
+  ])("$name", ({ top, kept }) => {
+    const held = heldRows(model, 3000, 300, null);
+
+    const next = heldRows(model, top, 300, held);
+
+    expect(next === held).toBe(kept);
+    const [from, to] = visibleRows(model, top, 300, 0);
+    expect(next[0]).toBeLessThanOrEqual(from);
+    expect(next[1]).toBeGreaterThanOrEqual(to);
+  });
+
+  it.each([
+    { name: "nothing is held yet", held: null },
+    { name: "what is held is for more rows than there are", held: [0, model.rows.length + 5] as const },
+  ])("the rows are cut with room either side when $name", ({ held }) => {
+    const [from, to] = heldRows(model, 3000, 300, held);
+    const [first, last] = visibleRows(model, 3000, 300, 0);
+
+    expect(first - from).toBeGreaterThan(8);
+    expect(to - last).toBeGreaterThan(8);
+    expect(to).toBeLessThanOrEqual(model.rows.length);
   });
 
   it.each([

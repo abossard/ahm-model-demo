@@ -1,5 +1,6 @@
 import type { GraphLayout, NodeSize, Point } from "./layout";
 import type { Entity, HealthState } from "./types";
+import type { ViewId } from "./views";
 
 /**
  * "shortest" leaves the order inside ranks to the arrangement, "custom" is the one the viewer gave
@@ -24,6 +25,43 @@ export const SORT_CHOICES: readonly { readonly key: SortKey; readonly label: str
   { key: "health", label: "Health state" },
   { key: "custom", label: "Custom" },
 ];
+
+/**
+ * The order each view gives a model by itself, in the words of `SORT_CHOICES`. The card graph is
+ * the one view that can sort every way; the others offer their own order and Custom.
+ */
+const OWN_ORDER: Readonly<Record<ViewId, SortKey>> = {
+  swimlanes: "shortest",
+  tidy: "shortest",
+  cause: "shortest",
+  zoom: "shortest",
+  outline: "health",
+  coverage: "name",
+};
+
+export interface OrderChoices {
+  readonly choices: readonly { readonly key: SortKey; readonly label: string }[];
+  /** The choice that is shown as chosen. */
+  readonly value: SortKey;
+  /** The order can be turned round. */
+  readonly reversible: boolean;
+}
+
+/** What the Order control offers in a view, and which choice it shows for the order that is set. */
+export function orderChoices(view: ViewId, sortKey: SortKey): OrderChoices {
+  if (view === "zoom") return { choices: SORT_CHOICES, value: sortKey, reversible: sortKey !== "shortest" && sortKey !== "custom" };
+  const own = OWN_ORDER[view];
+  return { choices: SORT_CHOICES.filter((choice) => choice.key === own || choice.key === "custom"), value: sortKey === "custom" ? "custom" : own, reversible: false };
+}
+
+/**
+ * The order to set when a choice is picked in a view. Another view than the card graph only
+ * enters and leaves Custom: leaving it gives every view its own order back.
+ */
+export function orderPicked(view: ViewId, sortKey: SortKey, picked: SortKey): SortKey {
+  if (view === "zoom" || picked === "custom") return picked;
+  return sortKey === "custom" ? "shortest" : sortKey;
+}
 
 function labelOf(item: Entity): string {
   return (item.displayName || item.name).toLocaleLowerCase();

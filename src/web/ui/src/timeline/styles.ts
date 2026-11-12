@@ -124,7 +124,8 @@ export const useStyles = makeStyles({
   },
   // Named at the height of the incident bars the plot draws beside it.
   incidentsLabel: { position: "absolute", right: tokens.spacingHorizontalS, top: `${(INCIDENT_BAND[0] + INCIDENT_BAND[1]) / 2 - 6}px`, lineHeight: "12px" },
-  labelsBody: { position: "absolute", top: `${AXIS_HEIGHT}px`, left: 0, right: 0, bottom: 0, overflow: "hidden" },
+  // What a scroll cannot use here stays here: it never moves or rubber-bands the page behind.
+  labelsBody: { position: "absolute", top: `${AXIS_HEIGHT}px`, left: 0, right: 0, bottom: 0, overflow: "hidden", overscrollBehaviorX: "contain", overscrollBehaviorY: "contain" },
   labelsInner: { position: "relative" },
   row: {
     position: "absolute",
@@ -203,6 +204,8 @@ export const useStyles = makeStyles({
     width: "14px",
     overflowY: "auto",
     overflowX: "hidden",
+    overscrollBehaviorX: "contain",
+    overscrollBehaviorY: "contain",
     zIndex: 2,
   },
   tip: {

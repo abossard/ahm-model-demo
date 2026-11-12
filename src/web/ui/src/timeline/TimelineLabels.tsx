@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { JSX } from "react";
 import { mergeClasses } from "@fluentui/react-components";
 import { ChevronDown12Regular, ChevronRight12Regular } from "@fluentui/react-icons";
@@ -43,8 +44,9 @@ function Word({ state, className }: { readonly state: StateCode | null; readonly
 /**
  * The tree: it carries the health. An entity names its state, a signal its state and its latest value with the unit.
  * An open entity shows its signals first, then its dependencies. The rows are HTML, so a screen reader and the keyboard meet a tree.
+ * It renders when what it shows changes, not when the panel around it does.
  */
-export function TimelineLabels(props: Props): JSX.Element {
+export const TimelineLabels = memo(function TimelineLabels(props: Props): JSX.Element {
   const styles = useStyles();
   const items: JSX.Element[] = [];
   for (let i = props.range[0]; i < Math.min(props.range[1], props.model.rows.length); i += 1) {
@@ -142,4 +144,4 @@ export function TimelineLabels(props: Props): JSX.Element {
     }
   }
   return <>{items}</>;
-}
+});

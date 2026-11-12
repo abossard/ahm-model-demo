@@ -10,6 +10,7 @@ import {
   formatClock,
   formatDay,
   formatInstant,
+  formatMoment,
   makeScale,
   padView,
   panBy,
@@ -168,6 +169,13 @@ describe("ticks", () => {
 
     expect(formatDay(t, 0)).toBe("Nov 10");
     expect(formatInstant(t, 0)).toBe("Nov 10 09:05:07");
+  });
+
+  it.each([
+    [Date.UTC(2026, 10, 10, 9, 5, 7), 0, "Nov 10 2026, 09:05:07"],
+    [Date.UTC(2026, 11, 31, 23, 30, 0), -60, "Jan 1 2027, 00:30:00"],
+  ])("says the moment %d at offset %d in full: %s", (t, offset, expected) => {
+    expect(formatMoment(t, offset)).toBe(expected);
   });
 
   it.each([

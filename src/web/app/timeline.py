@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 import threading
 import time
@@ -9,6 +11,7 @@ from azure.core.exceptions import AzureError
 from config import (
     CANONICAL_SIGNAL_NAME,
     CLOUDHEALTH_API_VERSION,
+    HISTORY_SAFETY_SECONDS,
     TIMELINE_ANNOTATION_PAGE_SIZE,
     TIMELINE_ANNOTATION_PAGES,
     TIMELINE_CACHE_SIZE,
@@ -35,10 +38,16 @@ import history_store
 logger = logging.getLogger("ahm-demo")
 
 STATE_CODES = {"Unknown": 0, "Healthy": 1, "Degraded": 2, "Unhealthy": 3, "Deleted": 4}
-PARTS = ("states", "annotations", "reports", "signals")
-DEFAULT_PARTS = ("states", "annotations", "reports")
-QUERY_KEYS = ("from", "to", "include", "entity", "resolution")
+PARTS = ("structure", "states", "annotations", "reports", "signals")
+DEFAULT_PARTS = ("structure", "states", "annotations", "reports")
+QUERY_KEYS = ("from", "to", "include", "entity", "signal", "resolution")
 MAX_RESOLUTION_SECONDS = 86400
+# How bad a state is when one point stands for several: a gap in the data ranks above Healthy and below Degraded.
+SEVERITY = {1: 1, 4: 1, 0: 1.5, 2: 2, 3: 3}
+DECIMATE_ABOVE = 5
+ETAG_VERSION = "t1"
+# A closed window is kept by the browser and checked again on every use, so the access check still runs.
+CLOSED_CACHE_CONTROL = "private, no-cache"
 RETENTION_MARGIN = timedelta(minutes=5)
 SNAP_BY_SPAN = ((timedelta(hours=6), 60), (timedelta(days=2), 300), (timedelta(days=365), 900))
 WINDOW_KEYS = ("startAt", "endAt", "top")
@@ -90,7 +99,7 @@ def snap_seconds(span):
 def parse_query(params, now):
     unknown = set(params) - set(QUERY_KEYS) - {"model", "resourceGroup", "subscription"}
     if unknown:
-        raise TimelineRequestError("unsupported_query", "The timeline takes from, to, include, entity and resolution.")
+        raise TimelineRequestError("unsupported_query", "The timeline takes from, to, include, entity, signal and resolution.")
     parts = tuple(part for part in (params.get("include") or ",".join(DEFAULT_PARTS)).split(",") if part)
     if not parts or any(part not in PARTS for part in parts):
         raise TimelineRequestError("invalid_include", f"include takes {', '.join(PARTS)}.")
@@ -106,7 +115,8 @@ def parse_query(params, now):
     start = max(start, floor)
     if end - start < timedelta(seconds=TIMELINE_MIN_SPAN_SECONDS):
         raise TimelineRequestError("invalid_range", "The range must span at least one minute inside the last 30 days.")
-    return {"parts": parts, "resolution": resolution, "start": start, "end": end, "floor": floor}
+    asked = (params.get("from") or "", params.get("to") or "")
+    return {"parts": parts, "resolution": resolution, "start": start, "end": end, "floor": floor, "asked": asked}
 
 
 def snap_window(start, end, now, floor):
@@ -122,23 +132,53 @@ def state_code(value):
     return STATE_CODES.get(scalar(value), 0)
 
 
-def downsample(points, step_ms):
+def decimate(points, step_ms):
+    """At most five real points per slot of `step_ms`: the last of each half, so the kept points stay evenly spaced and a
+    reader that joins a point to the next one sees no hole, then the lowest and the highest value and the worst state."""
     if step_ms <= 0:
         return points
-    buckets = {}
-    for point in points:
-        buckets.setdefault(point[0] // step_ms, []).append(point)
     kept = []
-    for bucket in buckets.values():
-        if len(bucket) <= 3:
-            kept.extend(bucket)
-            continue
-        valued = [point for point in bucket if point[1] is not None]
-        picks = [max(bucket, key=lambda point: point[2])]
+    slot, index = [], None
+
+    def flush():
+        if len(slot) <= DECIMATE_ABOVE:
+            kept.extend(slot)
+            return
+        middle = index * step_ms + step_ms // 2
+        early = [point for point in slot if point[0] < middle]
+        picks = [slot[-1]] + early[-1:]
+        valued = [point for point in slot if point[1] is not None]
         if valued:
             picks += [min(valued, key=lambda point: point[1]), max(valued, key=lambda point: point[1])]
-        kept.extend({id(point): point for point in picks}.values())
-    return sorted(kept, key=lambda point: point[0])
+        worst = max(slot, key=lambda point: SEVERITY.get(point[2], 0))
+        if SEVERITY.get(worst[2], 0) > max(SEVERITY.get(point[2], 0) for point in picks):
+            picks.append(worst)
+        kept.extend(sorted({id(point): point for point in picks}.values(), key=lambda point: point[0]))
+
+    for point in points:
+        if point[0] // step_ms != index:
+            flush()
+            slot, index = [], point[0] // step_ms
+        slot.append(point)
+    flush()
+    return kept
+
+
+def matches(header, etag):
+    """Whether an If-None-Match header names the validator, strong or weak."""
+    if not header or not etag:
+        return False
+    names = [name.strip().removeprefix("W/") for name in header.split(",")]
+    return "*" in names or etag in names
+
+
+def validator(scope, query, window, jobs, closed_before_ms):
+    """The ETag of an answer that can never change: a window that closed a safety margin ago, without the model's structure.
+    It names the request, not the bytes, so it is known before anything is read."""
+    if window["to"] is None or window["to"] > closed_before_ms or "structure" in query["parts"] or not jobs:
+        return None
+    identity = [ETAG_VERSION, CLOUDHEALTH_API_VERSION, *scope, *query["asked"], window["from"], window["to"], query["resolution"], sorted(query["parts"]), sorted(query["only"]), jobs]
+    return f'"{hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode("utf-8")).hexdigest()[:32]}"'
 
 
 def rule_dto(rule):
@@ -252,6 +292,18 @@ class Budget:
         return self._clock() >= self._deadline
 
 
+class Prepared:
+    def __init__(self, etag, read):
+        self.etag = etag
+        self.read = read
+
+    def headers(self, body=None):
+        """The headers of an answer the browser may keep: none for a window that is still open or an answer with holes."""
+        if self.etag is None or (body is not None and (body["partial"] or body["failures"])):
+            return {}
+        return {"ETag": self.etag, "Cache-Control": CLOSED_CACHE_CONTROL}
+
+
 class TimelineReader:
     def __init__(self, clock=time.monotonic, now=lambda: datetime.now(timezone.utc), history=None, structure=None):
         self._history = history
@@ -263,9 +315,13 @@ class TimelineReader:
         self._live = TtlCache(TIMELINE_CACHE_SIZE, TIMELINE_LIVE_CACHE_SECONDS, clock)
         self._past = TtlCache(TIMELINE_CACHE_SIZE, TIMELINE_PAST_CACHE_SECONDS, clock)
 
-    def read(self, caller, user, selection, params, names=()):
+    def read(self, caller, user, selection, params, names=(), signals=()):
+        return self.prepare(caller, user, selection, params, names, signals).read()
+
+    def prepare(self, caller, user, selection, params, names=(), signals=()):
+        """One request, checked and laid out but not read: its validator is known before any history call."""
         now = self._now()
-        query = parse_query(params, now)
+        query = {**parse_query(params, now), "only": frozenset(signals)}
         subscription, group, model = selection
         client = user.client(subscription)
         scope = (caller.owner, subscription.casefold(), group.casefold(), model.casefold())
@@ -274,15 +330,20 @@ class TimelineReader:
         )
         wanted = self._wanted(structure, names)
         window = snap_window(query["start"], query["end"], now, query["floor"])
-        jobs = self._jobs(wanted, query["parts"])
+        jobs = self._jobs(wanted, query["parts"], query["only"])
         if sum(1 for job in jobs if job[0] == "signal") > TIMELINE_MAX_SERIES:
             raise TimelineRequestError(
                 "too_many_series", f"Ask for at most {TIMELINE_MAX_SERIES} signals at a time: pass entity to narrow the request."
             )
-        budget = Budget(TIMELINE_MAX_CALLS, self._clock() + TIMELINE_DEADLINE_SECONDS, self._clock)
-        cache = self._live if window["live"] else self._past
-        results = self._run(jobs, lambda job: self._job(cache, scope, client, group, model, window, budget, job))
-        return self._assemble(model, now, window, query, wanted, jobs, results)
+        etag = validator(scope[1:], query, window, jobs, to_ms(now) - HISTORY_SAFETY_SECONDS * 1000)
+
+        def read():
+            budget = Budget(TIMELINE_MAX_CALLS, self._clock() + TIMELINE_DEADLINE_SECONDS, self._clock)
+            cache = self._live if window["live"] else self._past
+            results = self._run(jobs, lambda job: self._job(cache, scope, client, group, model, window, budget, job))
+            return self._assemble(model, now, window, query, wanted, jobs, results)
+
+        return Prepared(etag, read)
 
     def read_tail(self, user, selection, since, annotation_names):
         """The newest transitions of some entities, from a time each, and the newest annotations of others: what the live feed adds to a snapshot."""
@@ -337,7 +398,8 @@ class TimelineReader:
             raise TimelineRequestError("unknown_entity", "Every entity must exist in the selected Health Model.")
         return [known[name] for name in unique]
 
-    def _jobs(self, wanted, parts):
+    def _jobs(self, wanted, parts, only=frozenset()):
+        """What a request reads, one history each. `only` narrows the series to the signals with those names."""
         jobs = []
         for entity in wanted:
             name = entity["name"]
@@ -347,7 +409,8 @@ class TimelineReader:
                 jobs.append(("annotations", name, None))
             signals = [signal["name"] for signal in entity["signals"]]
             for signal in signals:
-                if "signals" in parts or (signal == CANONICAL_SIGNAL_NAME and "reports" in parts):
+                series = "signals" in parts and (not only or signal in only)
+                if series or (signal == CANONICAL_SIGNAL_NAME and "reports" in parts):
                     jobs.append(("signal", name, signal))
         return jobs
 
@@ -482,10 +545,10 @@ class TimelineReader:
                 self._fold(out, "annotations", entity, result)
             elif signal == CANONICAL_SIGNAL_NAME and "reports" in query["parts"]:
                 self._fold(out, "reports", entity, {**result, "items": result.get("reports", [])})
-            if kind == "signal" and "signals" in query["parts"]:
+            if kind == "signal" and "signals" in query["parts"] and (not query["only"] or signal in query["only"]):
                 body = self._body(result, "points")
                 if not error:
-                    body["points"] = downsample(body["points"], step)
+                    body["points"] = decimate(body["points"], step)
                 out["series"].append({"entity": entity, "signal": signal, **body})
             if error:
                 failures.append(result)
@@ -499,7 +562,7 @@ class TimelineReader:
             "retentionDays": TIMELINE_RETENTION_DAYS,
             "resolution": query["resolution"],
             "apiVersion": CLOUDHEALTH_API_VERSION,
-            "entities": wanted,
+            "entities": wanted if "structure" in query["parts"] else [],
             "states": out["states"],
             "annotations": out["annotations"],
             "reports": out["reports"],

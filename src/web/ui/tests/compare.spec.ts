@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 import { openCompare } from "./compareHelpers";
+import { SUBSCRIPTION_A } from "./fixture";
 import { designDiff } from "./workspaceStub";
 import type { ViewId } from "../src/model/views";
 
@@ -231,6 +232,47 @@ test.describe("the view switch while comparing", () => {
     await expect(page.getByTestId("change-select-c1")).toBeChecked();
     await expect(thing(page, "coverage", "merged", "report-queue")).toHaveAttribute("data-marked", "true");
   });
+});
+
+test.describe("Compare and the viewer's own order", () => {
+  // The order of the open model, as a drag in any view keeps it: the three flows under the root, turned round.
+  const FLOWS = ["flow-view-health-model", "flow-send-health-reports", "flow-run-agent-tasks"];
+  const ORDER = { chains: [{ of: "hm-contosodemo", names: FLOWS }], places: {} };
+
+  for (const view of [...SPLIT, ...MERGED]) {
+    test(`${view} draws the order and offers no drag`, async ({ page }) => {
+      await page.addInitScript(
+        ({ key, order }) => {
+          window.localStorage.setItem("ahm.customOrders.v2", JSON.stringify({ [key]: order }));
+          window.localStorage.setItem("ahm.sortKey.v1", "custom");
+        },
+        { key: `${SUBSCRIPTION_A}/rg-demo/hm-demo`, order: ORDER },
+      );
+      await openCompare(page, view);
+      const sides = SPLIT.includes(view as (typeof SPLIT)[number]) ? ["base", "proposed"] : ["merged"];
+      await expect(page.getByTestId("sort-key")).toHaveValue("custom");
+
+      for (const side of sides) {
+        await expect(thing(page, view, side, FLOWS[0] as string)).toBeVisible();
+        await expect
+          .poll(async () => {
+            const places: { name: string; top: number; left: number }[] = [];
+            for (const name of FLOWS) {
+              const box = (await thing(page, view, side, name).boundingBox()) as { x: number; y: number };
+              places.push({ name, top: Math.round(box.y / 12), left: box.x });
+            }
+            return places.sort((a, b) => a.top - b.top || a.left - b.left).map((place) => place.name);
+          }, { message: `${view}, ${side}: the flows stand in the order given` })
+          .toEqual(FLOWS);
+        // No drag: nothing says M, no node of a graph can be dragged, and M picks nothing up.
+        await expect(thing(page, view, side, FLOWS[0] as string)).not.toHaveAttribute("aria-keyshortcuts", "M");
+        await expect(page.getByTestId(`compare-side-${side}`).locator(".react-flow__node.draggable")).toHaveCount(0);
+        await thing(page, view, side, FLOWS[0] as string).focus();
+        await page.keyboard.press("m");
+        await expect(page.getByTestId(`compare-side-${side}`).locator("[data-moving]")).toHaveCount(0);
+      }
+    });
+  }
 });
 
 test.describe("Compare in the selected view, on a phone", () => {

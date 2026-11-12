@@ -82,6 +82,31 @@ describe("outlineRows order", () => {
   });
 });
 
+describe("outlineRows in the order the viewer gave", () => {
+  const SPEC = "r:Degraded a:Healthy b:Unhealthy c:Degraded lone:Unknown other:Healthy b1:Healthy b2:Unhealthy";
+  const PAIRS = "r>a r>b r>c b>b1 b>b2";
+  const chain = (...chains: readonly (readonly [string, string])[]) => ({ chains: chains.map(([of, names]) => ({ of, names: names.split(" ") })), places: {} });
+
+  it.each([
+    ["no order: worst first", null, ["r", "b", "b2", "b1", "c", "a", "lone", "other"]],
+    ["the children of a parent stand in its chain, and take their rows below along", chain(["r", "a b c"]), ["r", "a", "b", "b2", "b1", "c", "lone", "other"]],
+    ["only the children the chain names trade places", chain(["r", "a b"]), ["r", "a", "c", "b", "b2", "b1", "lone", "other"]],
+    ["a chain a level down", chain(["b", "b1 b2"]), ["r", "b", "b1", "b2", "c", "a", "lone", "other"]],
+    ["the parts at the top stand in the chain of the top", chain(["", "other lone"]), ["r", "b", "b2", "b1", "c", "a", "other", "lone"]],
+    ["the model's own root stays first, whatever the chain of the top says", chain(["", "other lone r"]), ["r", "b", "b2", "b1", "c", "a", "other", "lone"]],
+  ] as const)("%s", (_name, order, expected) => {
+    const rows = outlineRows(entities(SPEC), links(PAIRS), expandAllOverrides(entities(SPEC), links(PAIRS)), new Set(), order);
+
+    expect(keys(rows)).toEqual(expected);
+  });
+
+  it("numbers the places after the order", () => {
+    const rows = outlineRows(entities(SPEC), links(PAIRS), new Map(), new Set(), chain(["r", "a c b"]));
+
+    expect(rows.filter((row) => row.parentKey === "r").map((row) => [row.key, row.position, row.setSize])).toEqual([["a", 1, 3], ["c", 2, 3], ["b", 3, 3]]);
+  });
+});
+
 describe("outlineRows with several parents", () => {
   const spec = entities("r:Degraded left:Degraded right:Healthy shared:Degraded");
   const pairs = links("r>left r>right left>shared right>shared");

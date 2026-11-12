@@ -15,7 +15,7 @@ from azure.identity import DefaultAzureCredential
 from azure.storage.blob import ContainerClient
 from azure.monitor.opentelemetry import configure_azure_monitor
 from fastapi import APIRouter, Depends, FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from opentelemetry import trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -83,7 +83,7 @@ from sessions_store import (
     utc_now,
 )
 from model_hub import HubSettings, ModelHub, Refusal
-from timeline import TimelineReader, TimelineRequestError, build_structure
+from timeline import CLOSED_CACHE_CONTROL, TimelineReader, TimelineRequestError, build_structure, matches
 from task_runner import AgentsBusy, TaskRunner, TaskRunning, TooManySubscribers, UserBusy
 
 
@@ -207,7 +207,9 @@ class SecurityHeadersMiddleware:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(raw=message["headers"])
                 headers["content-security-policy"] = SECURITY_POLICY
-                headers["cache-control"] = "no-store"
+                # Only a closed window of the timeline names its own caching: everything else is never kept.
+                if headers.get("cache-control") != CLOSED_CACHE_CONTROL:
+                    headers["cache-control"] = "no-store"
                 headers["x-content-type-options"] = "nosniff"
                 headers["referrer-policy"] = "no-referrer"
                 headers["strict-transport-security"] = "max-age=31536000"
@@ -493,15 +495,20 @@ def timeline_history(request: Request, caller: Authed):
         span.set_attribute("cloudhealth.operation", "timeline.read")
         span.set_attribute("cloudhealth.model", selection[2])
         try:
-            body = timeline.read(
-                caller, user, selection, request.query_params, request.query_params.getlist("entity")
+            prepared = timeline.prepare(
+                caller, user, selection, request.query_params, request.query_params.getlist("entity"), request.query_params.getlist("signal")
             )
+            # The caller was admitted above: a closed window the browser still holds costs no history call and no body.
+            if matches(request.headers.get("if-none-match"), prepared.etag):
+                span.set_attribute("cloudhealth.not_modified", True)
+                return Response(status_code=304, headers=prepared.headers())
+            body = prepared.read()
         except TimelineRequestError as error:
             return validation_error(error.code, error.message)
         except AzureError as error:
             return sdk_error_response(error, "timeline.read")
         span.set_attribute("cloudhealth.partial", body["partial"])
-        return JSONResponse(body)
+        return JSONResponse(body, headers=prepared.headers(body))
 
 
 @api.get("/entities/{entity_name:path}")

@@ -1,4 +1,5 @@
 import { healthBucket } from "./collapse";
+import { inOrder, type ModelOrder } from "./customOrder";
 import { HEALTH_SORT_ORDER } from "./ordering";
 import { formatSignalValue } from "./signalValue";
 import type { Entity, HealthState, Relationship } from "./types";
@@ -166,12 +167,15 @@ function openByDefault(tree: Tree, name: string): boolean {
  * viewer's choices by entity name, true for open); the model's root is open unless the viewer
  * closed it. An entity with several parents is a full row under the first parent the walk reaches
  * and an `also` row under the others, so no entity is drawn twice in full and a cycle ends.
+ * `order` is the order the viewer gave the model by dragging: the children of a parent, and the
+ * parts at the top after the model's own root, stand in it where it names them.
  */
 export function outlineRows(
   entities: readonly Entity[],
   relationships: readonly Relationship[],
   overrides: ReadonlyMap<string, boolean> = new Map(),
   dimmed: ReadonlySet<string> = new Set(),
+  order: ModelOrder | null = null,
 ): readonly OutlineRow[] {
   const tree = treeOf(entities, relationships);
   const { graph } = tree;
@@ -197,7 +201,7 @@ export function outlineRows(
       return;
     }
     placed.set(name, parentKey);
-    const children = tree.sorted(graph.children.get(name) ?? []);
+    const children = inOrder(tree.sorted(graph.children.get(name) ?? []), order);
     const open = children.length > 0 && (overrides.get(name) ?? openByDefault(tree, name));
     const below = tree.below.get(name) as Below;
     rows.push({ ...common, key: name, kind: "entity", expandable: children.length > 0, open, below: below.count, belowTrouble: below.trouble, shownUnder: null });
@@ -206,7 +210,8 @@ export function outlineRows(
   };
 
   const start = (names: readonly string[]): void => names.forEach((name, index) => visit(name, null, 1, index + 1, names.length));
-  start(tree.roots);
+  // The model's own root stays first, as in every view; the other parts stand in the viewer's order.
+  start(tree.roots.slice(0, 1).concat(inOrder(tree.roots.slice(1), order)));
   // Entities that reach only each other: nothing above them, so start at each in turn.
   for (const entity of [...entities].sort(compareEntities)) if (!placed.has(entity.name) && !hasPlacedAncestor(graph, entity.name, placed)) visit(entity.name, null, 1, 1, 1);
   return rows;

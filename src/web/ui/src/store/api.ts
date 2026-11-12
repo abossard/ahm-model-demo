@@ -310,11 +310,20 @@ export function openTaskEvents(sid: string, seq: number, handlers: TaskStreamHan
 export interface TimelineQuery {
   readonly from: number;
   readonly to: number;
-  readonly include: readonly ("states" | "annotations" | "reports" | "signals")[];
-  readonly entities?: readonly string[];
+  readonly include: readonly ("structure" | "states" | "annotations" | "reports" | "signals")[];
+  /** Only these entities; all of them when left out. */
+  readonly entities?: readonly string[] | null;
+  /** Only the signals with these names; all of them when left out. */
+  readonly signals?: readonly string[] | null;
+  /** Seconds a slot: the series come thinned to it. 0 or nothing for every point. */
+  readonly resolution?: number;
 }
 
-/** The history of the selected model for the signal timeline: GET /api/timeline. `signal` cancels it. */
+/**
+ * The history of the selected model for the signal timeline: GET /api/timeline. `signal` cancels it. The same query
+ * is the same address, parameter for parameter, so a window that closed is answered from the browser's cache once the
+ * server has confirmed, for this user, that nothing changed.
+ */
 export function fetchTimeline(
   selection: ModelSelection | null,
   query: TimelineQuery,
@@ -325,6 +334,8 @@ export function fetchTimeline(
   params.set("to", new Date(query.to).toISOString());
   params.set("include", query.include.join(","));
   for (const entity of query.entities ?? []) params.append("entity", entity);
+  for (const name of query.signals ?? []) params.append("signal", name);
+  if (query.resolution) params.set("resolution", String(query.resolution));
   return requestJson<TimelineResponse>(`/api/timeline?${params.toString()}`, signal ? { signal } : undefined);
 }
 

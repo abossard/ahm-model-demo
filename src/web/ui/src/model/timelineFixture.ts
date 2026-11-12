@@ -1,4 +1,7 @@
 import { MINUTE, HOUR } from "./timelineScale";
+import { decimate, levelOfResolution } from "./timelineTiles";
+import { EMPTY_STORE, mergeAnswer, toTimelineData, type TimeStore } from "./timeStore";
+import { EMPTY_TIMELINE } from "./timeline";
 import type {
   Annotation,
   EntityInfo,
@@ -6,9 +9,19 @@ import type {
   Report,
   SignalInfo,
   StateCode,
+  TimelineData,
   TimelineResponse,
   Transition,
 } from "./timeline";
+
+/** What the browser holds after some answers for the whole model: the store, and the store as the plot reads it. */
+export function heldFrom(...responses: readonly TimelineResponse[]): { readonly store: TimeStore; readonly data: TimelineData } {
+  let store = EMPTY_STORE;
+  for (const response of responses) {
+    store = mergeAnswer(store, response, { parts: ["structure", "states", "annotations", "reports", ...(response.series.length > 0 ? (["signals"] as const) : [])], entities: null, signals: null, level: levelOfResolution(response.resolution) });
+  }
+  return { store, data: toTimelineData(store, { level: 0, window: null }, EMPTY_TIMELINE) };
+}
 
 /** A synthetic health model with history, shaped like GET /api/timeline answers it: for tests, benchmarks and stubs. */
 export interface FixtureOptions {
@@ -29,7 +42,21 @@ export interface TimelineFixture {
   readonly incidents: readonly (readonly [number, number | null])[];
   readonly overview: (from: number, to: number) => TimelineResponse;
   readonly signals: (names: readonly string[], from: number, to: number) => TimelineResponse;
+  /** What GET /api/timeline answers to a query: the parts, the entities, the signals and the resolution it asks for. */
+  readonly answer: (query: FixtureQuery) => TimelineResponse;
   readonly signalCount: number;
+}
+
+export interface FixtureQuery {
+  readonly from: number;
+  readonly to: number;
+  readonly include: readonly string[];
+  /** Empty for every entity. */
+  readonly entities?: readonly string[];
+  /** Empty for every signal. */
+  readonly signals?: readonly string[];
+  /** Seconds a slot, 0 for every point. */
+  readonly resolution?: number;
 }
 
 const RULES_HIGH: SignalInfo["rules"] = {
@@ -198,10 +225,46 @@ function simulate(entities: EntityInfo[], full: Required<FixtureOptions>, faulty
     failures: [],
   });
 
+  const answer = (query: FixtureQuery): TimelineResponse => {
+    const part = (name: string): boolean => query.include.includes(name);
+    const asked = withState.filter((entity) => !query.entities?.length || query.entities.includes(entity.name));
+    const names = new Set(asked.map((entity) => entity.name));
+    const { from, to } = query;
+    return {
+      ...base(from, to),
+      resolution: query.resolution ?? 0,
+      entities: part("structure") ? asked : [],
+      states: part("states") ? asked.map((entity) => ({ entity: entity.name, transitions: transitionsOf(entity.name, from, to), complete: true, earliest: null })) : [],
+      series: part("signals")
+        ? asked.flatMap((entity) =>
+            entity.signals
+              .map((signal, index) => ({ signal, index }))
+              .filter(({ signal }) => !query.signals?.length || query.signals.includes(signal.name))
+              .map(({ signal, index }) => ({
+                entity: entity.name,
+                signal: signal.name,
+                points: decimate(
+                  grid(from, to).map((t): Point => {
+                    const value = valueAt(entity.name, signal, index, t);
+                    return [t, value, judge(value, signal.rules)];
+                  }),
+                  (query.resolution ?? 0) * 1000,
+                ),
+                complete: true,
+                earliest: null,
+              })),
+          )
+        : [],
+      annotations: part("annotations") ? annotations.filter((item) => names.has(item.entity) && item.t >= from && item.t <= to) : [],
+      reports: part("reports") ? reports.filter((item) => names.has(item.entity) && item.t >= from && item.t <= to) : [],
+    };
+  };
+
   return {
     entities: withState,
     options: full,
     incidents,
+    answer,
     signalCount: withState.reduce((sum, entity) => sum + entity.signals.length, 0),
     overview: (from, to) => ({
       ...base(from, to),

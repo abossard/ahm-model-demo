@@ -16,6 +16,10 @@ const SERVED_CSP =
   "img-src 'self' data:; connect-src 'self' https://login.microsoftonline.com https://management.azure.com; base-uri 'none'; " +
   "frame-ancestors 'none'";
 
+// The canvas is drawn on the GPU, as on a real screen. The software renderer a headless browser falls back to rasterizes
+// it on the processor, and the frame times it gives say nothing about a screen.
+test.use({ launchOptions: { args: ["--enable-gpu", "--ignore-gpu-blocklist", ...(process.platform === "darwin" ? ["--use-angle=metal"] : [])] } });
+
 const SHOTS = process.env.TIMELINE_SHOTS ?? "";
 const NOW = Math.floor(Date.now() / 60_000) * 60_000;
 const MODEL = `model=hm-demo&resourceGroup=rg-demo&subscription=${SUBSCRIPTION_A}`;
@@ -276,19 +280,35 @@ test("presets change the window, and double click puts the default window back",
   expect(Math.abs(reset.span - DAY)).toBeLessThan(DAY * 0.02);
 });
 
-test("the wheel zooms around the pointer, a drag pans, and a shift drag brushes a range", async ({ page }) => {
+/** Where the rows are scrolled to: the tree and the scrollbar of the plot, which must agree. */
+async function scrollOf(page: Page): Promise<{ tree: number; plot: number }> {
+  return { tree: await page.getByTestId("tl-labels-body").evaluate((element) => element.scrollTop), plot: await page.getByTestId("tl-scroll").evaluate((element) => element.scrollTop) };
+}
+
+/** A pinch as the browser reports it: wheel events with Control down. */
+async function pinch(page: Page, dy: number, count: number): Promise<void> {
+  await page.keyboard.down("Control");
+  for (let i = 0; i < count; i += 1) await page.mouse.wheel(0, dy);
+  await page.keyboard.up("Control");
+}
+
+test("a pinch or Control and the wheel zooms around the pointer, a drag pans, and a shift drag brushes a range", async ({ page }) => {
   await open(page);
   await openTimeline(page);
+  await page.getByTestId("tl-expand-all").click();
+  await settled(page);
   const box = await plotBox(page);
   const start = await windowOf(page);
 
   await page.mouse.move(box.x + box.width * 0.75, box.y + 120);
-  await page.mouse.wheel(0, -600);
+  await pinch(page, -100, 3);
   const zoomed = await windowOf(page);
   expect(zoomed.span).toBeLessThan(start.span * 0.5);
   const anchor = start.from + (start.to - start.from) * 0.75;
   expect(zoomed.from).toBeLessThan(anchor);
   expect(zoomed.to).toBeGreaterThan(anchor - 1);
+  // A zoom is no scroll: the rows are where they were.
+  expect(await scrollOf(page)).toEqual({ tree: 0, plot: 0 });
 
   await page.mouse.move(box.x + 200, box.y + 120);
   await page.mouse.down();
@@ -308,6 +328,170 @@ test("the wheel zooms around the pointer, a drag pans, and a shift drag brushes 
   const brushed = await windowOf(page);
   expect(brushed.span).toBeLessThan(panned.span * 0.3);
   expect(brushed.span).toBeGreaterThan(panned.span * 0.1);
+});
+
+test("a vertical wheel scrolls the rows over the plot as over the tree, and never changes the time window", async ({ page }) => {
+  await open(page);
+  await openTimeline(page);
+  await page.getByTestId("tl-expand-all").click();
+  await settled(page);
+  const box = await plotBox(page);
+  const labels = await page.getByTestId("tl-labels-body").boundingBox();
+  const address = page.url();
+
+  // Over the lines of the plot.
+  await page.mouse.move(box.x + box.width / 2, box.y + 120);
+  await page.mouse.wheel(0, 90);
+  await expect.poll(async () => (await scrollOf(page)).plot).toBe(90);
+  expect(await scrollOf(page)).toEqual({ tree: 90, plot: 90 });
+
+  // Over the tree, and it leans sideways after it began: the swipe keeps its axis.
+  await page.mouse.move((labels?.x ?? 0) + 40, (labels?.y ?? 0) + 60);
+  await page.mouse.wheel(0, 30);
+  await page.mouse.wheel(60, 20);
+  await expect.poll(async () => (await scrollOf(page)).tree).toBe(140);
+  expect(await scrollOf(page)).toEqual({ tree: 140, plot: 140 });
+
+  // Back past the top: the rows stop there.
+  await page.mouse.move(box.x + box.width / 2, box.y + 120);
+  await page.mouse.wheel(0, -600);
+  await expect.poll(async () => (await scrollOf(page)).plot).toBe(0);
+
+  await page.waitForTimeout(400);
+  expect(page.url()).toBe(address);
+});
+
+test("a horizontal wheel, or Shift and the wheel, pans in time and never scrolls the rows", async ({ page }) => {
+  await open(page);
+  await openTimeline(page);
+  await page.getByTestId("tl-expand-all").click();
+  await page.getByTestId("tl-preset-6h").click();
+  await settled(page);
+  const box = await plotBox(page);
+  const start = await windowOf(page);
+
+  await page.mouse.move(box.x + box.width / 2, box.y + 120);
+  await page.mouse.wheel(-200, 0);
+  // It leans down after it began: the swipe keeps its axis.
+  await page.mouse.wheel(-100, 80);
+  const panned = await windowOf(page);
+  expect(panned.to).toBeLessThan(start.to - start.span * 0.1);
+  expect(Math.abs(panned.span - start.span)).toBeLessThan(start.span * 0.01);
+  expect(await scrollOf(page)).toEqual({ tree: 0, plot: 0 });
+
+  await page.keyboard.down("Shift");
+  await page.mouse.wheel(0, -200);
+  await page.keyboard.up("Shift");
+  const again = await windowOf(page);
+  expect(again.to).toBeLessThan(panned.to - start.span * 0.05);
+  expect(Math.abs(again.span - start.span)).toBeLessThan(start.span * 0.01);
+  expect(await scrollOf(page)).toEqual({ tree: 0, plot: 0 });
+});
+
+test("the page behind stays where it is, whatever the wheel does in the timeline", async ({ page }) => {
+  await open(page);
+  await openTimeline(page);
+  await page.getByTestId("tl-expand-all").click();
+  await settled(page);
+  const box = await plotBox(page);
+  const labels = await page.getByTestId("tl-labels-body").boundingBox();
+  const bar = await page.getByTestId("tl-scroll").boundingBox();
+  // What the page could do with a wheel: scroll a box around the timeline, or zoom and pan the graph.
+  const behind = (): Promise<string> =>
+    page.evaluate(() => {
+      const offsets: number[] = [window.scrollX, window.scrollY];
+      for (let node = document.querySelector('[data-testid="timeline-panel"]')?.parentElement; node; node = node.parentElement) offsets.push(node.scrollLeft, node.scrollTop);
+      return `${offsets.join()} ${document.querySelector<HTMLElement>(".react-flow__viewport")?.style.transform ?? ""}`;
+    });
+  await page.evaluate(() => {
+    const w = window as unknown as { __left: number };
+    w.__left = 0;
+    // A wheel event the timeline did not take is one the browser scrolls or rubber-bands the page with.
+    window.addEventListener("wheel", (event) => {
+      if (!event.defaultPrevented) w.__left += 1;
+    });
+  });
+  const before = await behind();
+
+  const spots = [
+    { x: box.x + box.width / 2, y: box.y + 120 },
+    { x: box.x + box.width / 2, y: box.y + 12 },
+    { x: (labels?.x ?? 0) + 40, y: (labels?.y ?? 0) + 60 },
+    { x: (bar?.x ?? 0) + 6, y: (bar?.y ?? 0) + 30 },
+  ];
+  for (const spot of spots) {
+    await page.mouse.move(spot.x, spot.y);
+    // Up at the top and down past the end, where a scroller hands the rest to the page; sideways; a pinch.
+    for (const [dx, dy] of [[0, -400], [0, 5000], [0, 5000], [0, -9000], [-400, 0], [400, 0]] as const) await page.mouse.wheel(dx, dy);
+    await pinch(page, -30, 2);
+    await pinch(page, 30, 2);
+  }
+  await page.waitForTimeout(300);
+
+  expect(await page.evaluate(() => (window as unknown as { __left: number }).__left)).toBe(0);
+  expect(await behind()).toBe(before);
+});
+
+test("the selected moment is dragged by its line or its label; a drag beside it still pans and Shift still zooms to a range", async ({ page }) => {
+  await open(page);
+  await openTimeline(page);
+  await page.getByTestId("tl-preset-6h").click();
+  await settled(page);
+  let box = await plotBox(page);
+  const at = (fraction: number): number => box.x + box.width * fraction;
+  const moment = page.getByTestId("tl-model-at");
+  // What the header says the moment is: "The model at Nov 11 22:45:42".
+  const said = moment.locator("span").first();
+  const drag = async (from: number, to: number, height = box.y + 120): Promise<void> => {
+    await page.mouse.move(from, height);
+    await page.mouse.down();
+    await page.mouse.move(to, height, { steps: 6 });
+    // A pause before the release, so a pan does not glide on.
+    await page.waitForTimeout(120);
+    await page.mouse.up();
+  };
+
+  // Hovering selects nothing; a click does.
+  await page.mouse.move(at(0.3), box.y + 120);
+  await expect(page.getByTestId("tl-tip")).toBeVisible();
+  await expect(moment).toHaveCount(0);
+  await page.mouse.click(at(0.3), box.y + 120);
+  await expect(moment).toBeVisible();
+  // The header has grown by what it says about the moment: the plot is where it is now.
+  await settled(page);
+  box = await plotBox(page);
+  const clicked = await said.innerText();
+  const view = await windowOf(page);
+
+  // By its line: the moment moves, the window does not.
+  await drag(at(0.3), at(0.5));
+  await expect(said).not.toHaveText(clicked);
+  const byLine = await said.innerText();
+  expect((await windowOf(page)).span).toBe(view.span);
+
+  // By the label at its top, which stands to the right of the line.
+  await drag(at(0.5) + 30, at(0.35) + 30, box.y + 8);
+  await expect(said).not.toHaveText(byLine);
+  const byLabel = await said.innerText();
+
+  // Beside the line a drag pans: the window moves by a tenth, the moment stays.
+  const address = page.url();
+  await drag(at(0.7), at(0.8));
+  await expect.poll(() => page.url()).not.toBe(address);
+  await expect(said).toHaveText(byLabel);
+
+  // Shift and a drag that starts on the line zooms to the range, as anywhere else.
+  const wide = await windowOf(page);
+  await page.keyboard.down("Shift");
+  await drag(at(0.45), at(0.65));
+  await page.keyboard.up("Shift");
+  expect((await windowOf(page)).span).toBeLessThan(wide.span * 0.3);
+  await expect(said).toHaveText(byLabel);
+
+  // The clear control returns to now.
+  await page.getByTestId("tl-unpin").click();
+  await expect(moment).toHaveCount(0);
+  await expect(page.getByTestId("tl-asof")).toHaveText("Now");
 });
 
 test("an open row shows one lane per signal, and only the lanes that show are asked for", async ({ page }) => {
@@ -441,21 +625,40 @@ test("a pick from the search, deep in a long tree, opens the way to its row, scr
   await settled(page);
 });
 
-test("the keyboard moves in time and between rows, opens and closes a row, zooms and pins", async ({ page }) => {
+test("the keyboard moves the selected moment and between rows, opens and closes a row, zooms and returns to now", async ({ page }) => {
   await open(page);
   await openTimeline(page);
   const stage = page.getByTestId("tl-stage");
+  const asOf = page.getByTestId("tl-asof");
   await stage.focus();
 
-  await page.keyboard.press("ArrowRight");
-  await expect(page.getByTestId("tl-tip")).toBeVisible();
-  const first = await page.getByTestId("tl-tip").innerText();
+  // Left selects a moment a step before the end of the window, and each press moves it a step.
   await page.keyboard.press("ArrowLeft");
-  await page.keyboard.press("Shift+ArrowLeft");
-  await expect.poll(async () => page.getByTestId("tl-tip").innerText()).not.toBe(first);
+  await expect(page.getByTestId("tl-model-at")).toBeVisible();
+  await expect(asOf).toContainText("As of");
+  const first = await asOf.innerText();
+  await page.keyboard.press("ArrowLeft");
+  await expect(asOf).not.toHaveText(first);
+  await page.keyboard.press("ArrowRight");
+  await expect(asOf).toHaveText(first);
   await expect(page.getByTestId("tl-live")).not.toBeEmpty();
 
+  // With Shift it goes to the state change before it in the focused row, the root: from two steps before a change, the next one is that change.
   await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Shift+ArrowLeft");
+  await expect(asOf).not.toHaveText(first);
+  const change = await asOf.innerText();
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await expect(asOf).not.toHaveText(change);
+  await page.keyboard.press("Shift+ArrowRight");
+  await expect(asOf).toHaveText(change);
+
+  // Escape returns to now, space selects again.
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("tl-model-at")).toHaveCount(0);
+  await expect(asOf).toHaveText("Now");
+
   await page.keyboard.press("ArrowDown");
   expect(await stage.getAttribute("aria-activedescendant")).toBe("tl-row-1");
   await page.keyboard.press("ArrowUp");
@@ -789,10 +992,12 @@ test("a history of 80 entities and 300 signals over 7 days pans and zooms withou
     requestAnimationFrame(tick);
   });
   await page.mouse.move(box.x + box.width / 2, box.y + 200);
+  await page.keyboard.down("Control");
   for (let i = 0; i < 40; i += 1) {
     await page.mouse.wheel(0, i % 2 === 0 ? -120 : 120);
     await page.waitForTimeout(16);
   }
+  await page.keyboard.up("Control");
   await page.mouse.down();
   for (let i = 0; i < 60; i += 1) {
     await page.mouse.move(box.x + box.width / 2 + (i % 2 === 0 ? i * 4 : -i * 4), box.y + 200);
@@ -815,4 +1020,161 @@ test("a history of 80 entities and 300 signals over 7 days pans and zooms withou
   console.log(`timeline frames: n=${frames.length} p50=${pick(0.5).toFixed(1)}ms p95=${pick(0.95).toFixed(1)}ms p99=${pick(0.99).toFixed(1)}ms max=${sorted.at(-1)?.toFixed(1)}ms`);
   expect(pick(0.5)).toBeLessThan(50);
   await shot(page, "dense-light");
+});
+
+interface FrameStats {
+  readonly frames: number;
+  readonly p50: number;
+  readonly p95: number;
+  readonly work50: number;
+  readonly work95: number;
+  readonly workMax: number;
+  readonly wheels: number;
+  readonly commits: number;
+  /** How often the plot drew itself. */
+  readonly draws: number;
+}
+
+/**
+ * Counts what a gesture costs, from before the app loads: the script time of every animation frame (the plot draws inside
+ * one), the wheel events the page saw and the commits React made. React reports a commit to the devtools hook it finds.
+ */
+async function instrument(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __perf: { work: Map<number, number>; frames: number[]; wheels: number; commits: number; draws: number; on: boolean }; __REACT_DEVTOOLS_GLOBAL_HOOK__: unknown };
+    w.__perf = { work: new Map(), frames: [], wheels: 0, commits: 0, draws: 0, on: false };
+    // The plot clears its canvas once per draw.
+    const clearRect = CanvasRenderingContext2D.prototype.clearRect;
+    CanvasRenderingContext2D.prototype.clearRect = function (...args) {
+      w.__perf.draws += 1;
+      clearRect.apply(this, args);
+    };
+    w.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+      supportsFiber: true,
+      isDisabled: false,
+      renderers: new Map(),
+      inject: () => 1,
+      checkDCE: () => undefined,
+      onCommitFiberUnmount: () => undefined,
+      onPostCommitFiberRoot: () => undefined,
+      onCommitFiberRoot: () => {
+        w.__perf.commits += 1;
+      },
+    };
+    const raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (callback) =>
+      raf((time) => {
+        const start = performance.now();
+        callback(time);
+        if (w.__perf.on) w.__perf.work.set(time, (w.__perf.work.get(time) ?? 0) + performance.now() - start);
+      });
+    window.addEventListener("wheel", () => (w.__perf.wheels += 1), { capture: true, passive: true });
+    let last = 0;
+    const tick = (now: number): void => {
+      if (w.__perf.on && last > 0) w.__perf.frames.push(now - last);
+      last = now;
+      raf(tick);
+    };
+    raf(tick);
+  });
+}
+
+/** The frames, the frame work, the wheel events and the React commits while `drive` runs. */
+async function measure(page: Page, drive: () => Promise<void>): Promise<FrameStats> {
+  await page.evaluate(() => {
+    const perf = (window as unknown as { __perf: { work: Map<number, number>; frames: number[]; wheels: number; commits: number; draws: number; on: boolean } }).__perf;
+    perf.work.clear();
+    perf.frames.length = 0;
+    perf.wheels = 0;
+    perf.commits = 0;
+    perf.draws = 0;
+    perf.on = true;
+  });
+  await drive();
+  const raw = await page.evaluate(() => {
+    const perf = (window as unknown as { __perf: { work: Map<number, number>; frames: number[]; wheels: number; commits: number; draws: number; on: boolean } }).__perf;
+    perf.on = false;
+    return { work: [...perf.work.values()], frames: perf.frames, wheels: perf.wheels, commits: perf.commits, draws: perf.draws };
+  });
+  const pick = (values: readonly number[], q: number): number => {
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0;
+  };
+  return {
+    frames: raw.frames.length,
+    p50: pick(raw.frames, 0.5),
+    p95: pick(raw.frames, 0.95),
+    work50: pick(raw.work, 0.5),
+    work95: pick(raw.work, 0.95),
+    workMax: pick(raw.work, 1),
+    wheels: raw.wheels,
+    commits: raw.commits,
+    draws: raw.draws,
+  };
+}
+
+const report = (name: string, stats: FrameStats): void =>
+  console.log(
+    `timeline ${name}: frames n=${stats.frames} p50=${stats.p50.toFixed(1)}ms p95=${stats.p95.toFixed(1)}ms, frame work p50=${stats.work50.toFixed(2)}ms p95=${stats.work95.toFixed(2)}ms max=${stats.workMax.toFixed(2)}ms, wheel events=${stats.wheels}, plot draws=${stats.draws}, React commits=${stats.commits}`,
+  );
+
+test("at 1280x720 and device pixel ratio 2, rows scroll and time pans and zooms at 60 frames a second without a React render per wheel event", async ({ browser }) => {
+  test.setTimeout(180_000);
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 2 });
+  const page = await context.newPage();
+  page.on("pageerror", (error) => {
+    throw error;
+  });
+  const fixture = buildFixture({ now: NOW, flows: 5, componentsPerFlow: 3, resourcesPerComponent: 4, signalsPerResource: 5, days: 7 });
+  await instrument(page);
+  await installStubs(page, { healthModelFails: false, model: modelOf(fixture) });
+  await installTimeline(page, fixture);
+  await page.goto(`/?${MODEL}&view=zoom`);
+  await page.waitForSelector(".react-flow__node .entity-node");
+  // Not `openTimeline`: it reads pixels back, and a canvas that is read back is drawn without the GPU from then on.
+  await page.getByTestId("timeline-toggle").click();
+  await expect(page.getByTestId("tl-label-entity").first()).toBeVisible();
+  await page.getByTestId("tl-fullscreen").click();
+  await page.getByTestId("tl-expand-all").click();
+  await page.getByTestId("tl-preset-7d").click();
+  await page.waitForTimeout(800);
+  const box = await plotBox(page);
+  const labels = await page.getByTestId("tl-labels-body").boundingBox();
+  if (!labels) throw new Error("no labels");
+  const overPlot = { x: box.x + box.width / 2, y: box.y + 200 };
+  const sweep = async (dx: number, dy: number, count: number): Promise<void> => {
+    for (let i = 0; i < count; i += 1) await page.mouse.wheel(i < count / 2 ? dx : -dx, i < count / 2 ? dy : -dy);
+    await page.waitForTimeout(300);
+  };
+
+  // Once through the rows first, so their lanes are read before anything is timed.
+  await page.mouse.move(labels.x + 40, labels.y + 120);
+  await sweep(0, 30, 120);
+  await expect(page.getByTestId("tl-busy")).toHaveCount(0, { timeout: 30_000 });
+  await page.waitForTimeout(500);
+
+  // What this machine does with nothing to draw: the frames of a gesture are held to 60 a second only when these are.
+  const idle = await measure(page, () => page.waitForTimeout(1500));
+  report("idle", idle);
+  await page.mouse.move(640, 20);
+  const control = await measure(page, () => sweep(0, 30, 240));
+  report("wheel over the top bar (control)", control);
+  await page.mouse.move(labels.x + 40, labels.y + 120);
+  const scroll = await measure(page, () => sweep(0, 30, 240));
+  report("scrolling rows", scroll);
+  await page.mouse.move(overPlot.x, overPlot.y);
+  const pan = await measure(page, () => sweep(24, 0, 240));
+  report("panning", pan);
+  await page.keyboard.down("Control");
+  const zoom = await measure(page, () => sweep(0, -6, 240));
+  await page.keyboard.up("Control");
+  report("zooming", zoom);
+  await shot(page, "frames-dpr2");
+
+  for (const stats of [scroll, pan, zoom]) {
+    expect(stats.work95).toBeLessThanOrEqual(6);
+    expect(stats.commits).toBeLessThan(stats.wheels / 8);
+    if (idle.p95 <= 16.7) expect(stats.p95).toBeLessThanOrEqual(16.7);
+  }
+  await context.close();
 });

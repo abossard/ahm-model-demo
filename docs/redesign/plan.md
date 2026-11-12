@@ -136,22 +136,23 @@ A pure function in the web app. Apply refuses when the live fingerprint differs 
 
 ### Timeline history
 
-`GET /api/timeline?model&resourceGroup&subscription&from&to&include&entity&resolution`, as the signed-in user.
+`GET /api/timeline?model&resourceGroup&subscription&from&to&include&entity&signal&resolution`, as the signed-in user.
 Every parameter is optional. The route is a plain `def`, so Starlette runs it in its thread pool and the event loop never waits on Azure.
 
 | Parameter | Meaning |
 |-----------|---------|
 | `from`, `to` | ISO 8601, UTC when no offset. Default: the last 24 hours. `to` is clamped to now, `from` to 30 days back (the service refuses older). A range under one minute is `invalid_range`. |
-| `include` | Comma list of `states` (state transitions of every entity), `annotations`, `reports` (health reports, read from the report signal of the entities that have one), `signals` (state and value of every signal). Default `states,annotations,reports`. |
+| `include` | Comma list of `structure` (the entities with their signals, rules and current state), `states` (state transitions), `annotations`, `reports` (health reports, read from the report signal of the entities that have one), `signals` (state and value of every signal). Default `structure,states,annotations,reports`. |
 | `entity` | Repeatable. Only these entities (their rows, signals and history). Default: all. Unknown names are `unknown_entity`. |
-| `resolution` | Seconds, 0 to 86400, default 0. Thins `series` to at most min, max and worst state per bucket. It saves bytes, not Azure calls: the service returns every point. |
+| `signal` | Repeatable. Only the series of the signals with these names, of the entities asked for. Default: all. A name nothing has reads nothing. |
+| `resolution` | Seconds, 0 to 86400, default 0. Thins `series` to at most five real points per slot of that length, slots counted from the epoch: the last point of each half of the slot, the lowest and the highest value, and the worst state when none of those has it. A slot of five points or fewer is kept whole. It saves bytes, not Azure calls: the service returns every point. |
 
 Response (all times are epoch milliseconds, states are codes `0` Unknown, `1` Healthy, `2` Degraded, `3` Unhealthy, `4` Deleted):
 
 ```text
 { model, observedAt, retentionDays: 30, resolution, apiVersion, partial,
   range: {from, to},                        // ISO. The window actually read: snapped outwards, `to` is now when live
-  entities: [{name, displayName, parents, state,   // state is the current one
+  entities: [{name, displayName, parents, state,   // only with `structure`, else []. state is the current one
               signals: [{name, displayName, kind, unit, refreshInterval,
                          rules: {degraded: {operator, threshold}|null, unhealthy: {...}|null, dynamic: bool}}]}],
   states:  [{entity, transitions: [{t, from, to, reason}], complete, earliest, error?}],
@@ -163,16 +164,66 @@ Response (all times are epoch milliseconds, states are codes `0` Unknown, `1` He
 
 - Transitions and points are oldest first. The state of an entity before its first transition in the range is that transition's `from`. With no transition in the range it is the current `state`.
 - A point has `value: null` and state `0` when the signal had no data. External signals and log queries return the same shape as metrics.
+- A thinned series keeps real evaluations with their own times, values and states. The points stay evenly spaced (never further apart than half a slot plus one evaluation), so a reader that joins each point to the next sees no hole that the data does not have. `decimate` in `timeline.py` and in `src/web/ui/src/model/timelineTiles.ts` are the same rule: change both.
 - `error` is `{code, message, retryable}` with `forbidden`, `not_found`, `busy`, `unavailable`, `deadline` or `call_budget`. One failing series never fails the response (`partial: true`). When every history fails, the route answers like `/api/entities/{name}` (403, 404, 503).
-- `complete: false` means the page budget cut the series at its old end: `earliest` is the oldest point returned. Zoom in and ask for the narrower range to read it in full.
-- The service returns the newest points first, 1000 per page (100 for annotations), and a `nextMarker` that cannot be combined with a window. The app follows markers up to 4 pages per signal, 5 per entity state history and 3 per annotation list. A signal that refreshes every minute fills a page in 17 hours, so a 7 day range of such a signal is cut. Entity transitions are sparse and almost always complete.
-- Fan-out: 8 concurrent calls per request, 24 across the app, 400 calls and 40 seconds per request, 120 signals per request (more is `too_many_series`: pass `entity`). The UI asks for `states,annotations,reports` once and then `signals` for the entities it shows.
-- Every route that takes a model checks that the caller can read it, as the caller, before anything is served: also the app's own model, which a user of the app's directory gets when the request has no selector. A model the caller cannot read answers `unknown_model`, whatever a warm hub or a cache holds.
+- `complete: false` means the page budget cut the series at its old end: `earliest` is the oldest point returned.
+- The service returns the newest points first, 1000 per page (100 for annotations), and a `nextMarker` that cannot be combined with a window. The app follows markers up to 4 pages per signal, 5 per entity state history and 3 per annotation list. The app reads a signal a day at a time and the states and annotations of an entity a week at a time (see the history cache under [Live model data](#live-model-data)), so a day of a signal that refreshes every minute is two pages and is read in full.
+- Fan-out: 8 concurrent calls per request, 24 across the app, 400 calls and 40 seconds per request, 120 signals per request (more is `too_many_series`: pass `entity`). One request for a month of a model of about 30 entities passes the 400 calls and comes back `partial`. The UI never asks that way: it asks tile by tile (below), so every request fits and the month of a model of 60 entities is 5 or 6 requests of 120 calls each.
+- **Windows that never change.** A window that ended 15 minutes ago or more is closed. An answer for a closed window without `structure`, with no failure and nothing cut, carries `ETag` and `Cache-Control: private, no-cache`: the browser keeps it and asks again with `If-None-Match` on every use. The app admits the caller first, as for any request, and then answers `304` with no body and no history call. The ETag names the request (model, window, parts, entities, signals, resolution, API version), not the bytes, so it is known before anything is read. Every other answer of the app is `Cache-Control: no-store`.
+- Every route that takes a model checks that the caller can read it, as the caller, before anything is served: also the app's own model, which a user of the app's directory gets when the request has no selector. A model the caller cannot read answers `unknown_model`, whatever a warm hub, a cache or the browser holds.
 - An Azure or sign-in-exchange failure that a route does not map itself answers the usual envelope with 503 `health_model_unavailable` (retryable), never a plain 500.
 - `POST .../tasks` refuses a `workload.repositoryUrl` that the agent would not clone with 400 `invalid_repository_url`: `https://github.com/<owner>/<repository>`, optionally ending in `.git` and `/`, an owner of 1 to 39 letters, digits and hyphens that starts with a letter or digit, a repository of up to 100 letters, digits, `_`, `.` and `-` that does not start with `.` or `-`. A session title or an instruction with a lone surrogate is refused with `invalid_title` or `invalid_instruction`.
 - Every response carries `Strict-Transport-Security: max-age=31536000` besides the other security headers.
-- Caching: per user, per entity, signal and window. The window is snapped outwards to 1 minute (up to 6 hours), 5 minutes (up to 2 days) or 15 minutes, so a moving window hits the cache. A window that reaches now lives 30 seconds, a closed one 5 minutes. Failures are not cached. The entity list lives 30 seconds.
+- Caching in the app: per user, per entity, signal and window. The window is snapped outwards to 1 minute (up to 6 hours), 5 minutes (up to 2 days) or 15 minutes; a tile begins and ends on that grid, so snapping leaves it as it is. A window that reaches now lives 30 seconds, a closed one 5 minutes. Failures are not cached. The entity list lives 30 seconds.
 - Errors: `unsupported_query`, `invalid_include`, `invalid_resolution`, `invalid_range`, `unknown_entity`, `too_many_series`, `unknown_model` with the usual envelope.
+
+### Timeline data in the browser
+
+[ADR 0009](../adr/0009-timeline-in-tiles.md): the browser reads the timeline in tiles, keeps them, and holds them once.
+
+**Boundaries.** Four layers, each reading only the one before it:
+
+| Layer | Where | What it is |
+|-------|-------|------------|
+| Loader and cache | `timeline/timelineLoader.ts`, `timeline/tileCache.ts`, planned by `model/timelinePlan.ts` | The only way timeline data reaches the browser. Hides tiles, levels, batches, the cache and the requests |
+| Time-series store | `timelineSeries` in the zustand store, `model/timeStore.ts` | Everything held, keyed by what it is. Changed only by `mergeAnswer`, `mergeKept` and `applyLive` |
+| Derived read models | `model/timeTravel.ts`, `toTimelineData`, selectors in `store/timelineSlice.ts` | Calculations over the store: the plot's `timelineData`, the state and values at a moment, the model at a moment |
+| Views | the timeline panel, the graph views, the Task launcher | Read selectors, call actions |
+
+An update flows one way: a view calls an action (`wantTimeline`, `selectMoment`); the loader reads what is missing; an answer or a live delta changes `timelineSeries` in one `set`, which derives `timelineData` in the same step; selectors give each view the objects that changed and the same objects for what did not.
+
+**The store** (`TimeStore`): `entities` (the reference data, once: names, parents, signals, rules, units), `states`, `annotations` and `reports` by entity name, `series` by entity and signal with one track per resolution level, `now`, `floor`. A track is `{rows, covered, error}`: its rows oldest first and the spans of time they are known for. A tree row, a graph node and a plot lane point at an entry: an entity under five parents is asked for once, held once and drawn five times.
+
+**The loader** has one way in: `want({view, width, lanes, moment, watched})`, what the viewer looks at. The states, annotations and reports of every entity for the 30 days are always part of it. `refresh()` reads the open tiles again, `retry()` asks again for what failed, `open(scope)` starts another model or user, `stop()` cancels, `idle()` resolves when nothing is being read. After every event it plans again from what is held, in flight and settled, so there is no queue to keep right.
+
+- **Tiles** begin at multiples of their size since the epoch (UTC days, weeks that begin on Thursday), the same grid as the app's history cache. States, annotations and reports: a week. Series: by level.
+
+  | Level | Slot | Tile | Used when a slot is at most 2 px wide: for 1000 px |
+  |-------|------|------|------|
+  | 0 | every point | a day | windows under about 5 days |
+  | 1 | 15 min | a day | from about 5 days |
+  | 2 | 1 h | a week | from about 21 days |
+
+- **Coverage** is per history and level, as spans. A tile is asked for only where the window needs it and no level at least as fine holds it: a pan or a zoom over what is held asks nothing, and finer points stand in for a coarser level (thinned in the browser to the same slots, so the plot gets evenly dense points).
+- **Requests** are the fewest that fit the app's limits: a run of neighbouring tiles is one window, entities travel together, at most 160 history reads (a read is one entity and part for a week, or one signal for a day), 100 signals and 40 entity names a request, 4 requests at a time. A model whose 30 days fit one request gets one. A tile that is in flight is never asked twice; a later demand waits for it. Only a request none of whose tiles is wanted any more is cancelled. The tiles on screen go first, then the rest of the overview newest first, and after 4 seconds of rest the window before the one on screen (and the one after it) is read ahead.
+- **Open and closed.** The tile that holds now is read when the model opens, again on `refresh()`, and kept current in between by the live stream's deltas. A tile that was read 15 minutes or more after it ended is never asked for again.
+- **The browser's cache** (IndexedDB `ahm-timeline`, schema 2): one entry per history, level and tile, and the structure of each model. The key begins with a SHA-256 of the signed-in user and directory, then the model: nothing is read by another key, and neither the user nor the directory is written down. What was read less than 15 minutes after its end is kept only up to 15 minutes before the read, so a reload reads the rest again. At most 48 MB by estimate; beyond it the least recently used entries go. A reload paints from it before the app answers and then asks only for the open week and day.
+- **What the plot gets** (`timelineData`, shape unchanged): per signal one series at the level its window calls for, or the next coarser one that holds the window while the right one is on its way. Level 0 is every evaluation; levels 1 and 2 are real evaluations, at most five a slot. `points` and `rules` keep their identity while a series or a signal did not change.
+
+**One clock.** `timelinePinned` is the selected moment of the whole page (`selectedMoment`, `selectMoment(t)`; `pinTimeline` is the same action): null is now, and live. While a moment is selected the window stops following now, the live stream keeps filling the store, and nothing a view reads at that moment changes. Clearing it follows now again without a read.
+
+| Read | Signature | Cost |
+|------|-----------|------|
+| State of an entity at a moment | `stateAt(track, t, now, current) -> StateCode or null` | O(log n) |
+| All states at a moment | `statesAt(store, t) -> Map` | O(entities · log n) |
+| Signal at a moment | `signalAt(levels, info, t) -> {t, value, state, age, rule, stale, level} or null` | O(log n) |
+| Series to read a signal from at a moment | `historyAt(levels, t) -> SeriesHistory` | O(levels · log n) |
+| Model at a moment | `modelAt(model, store, t) -> HealthModel`, `selectModelAt(state)` | O(1) while the moment crosses no transition and no evaluation, else O((entities + signals) · log n) |
+
+- The state at a moment is what the last transition before it led to, else what the next one came from, else the current state when the history held reaches now. Where the history held does not say, it is null and a reader shows Unknown.
+- A signal at a moment is its last evaluation at or before it, from the finest level that holds the moment. `stale` says it is older than three of the signal's usual intervals (two minutes at least, two hours at most): the plot shows no data there.
+- `modelAt` returns the health model the graph views take, with the entities and relationships of now (the service keeps no history of the structure) and the states and signal values of the moment. The model's own state is that of its root entity. A signal whose history at the moment is not held reads as Unknown with no value, never as its value of now. A null moment gives the live model itself; every entity that did not change between two moments is the same object.
+- Selecting a moment asks the loader for the weeks from the moment to now first (the states of every entity then are known from them) and for the raw day around the moment for the lanes on screen, the selected entity and `timelineWatched` (`watchEntities(names)`: what other views show). In a model of 60 entities, a moment 6 days ago costs 1 request once the overview is read. At once after opening it costs 2 when the moment is in the open week and 3 when it is in the week before.
 
 ### Live model data
 
@@ -206,7 +257,7 @@ delta = { observedAt?, model?: {changed fields}, reportOptions?,
 - Every poll reads the entity list and the relationships (with the model: 3 calls). New points and reports come from the status of each signal in that snapshot, so they cost no call. The history of an entity is read only when its state changed (from its last transition minus 2 min, merged by `(entity, t, from, to)`; a failed read is retried on the next poll, but after a 429 or 503 only once the `Retry-After` has passed, at least a minute and at most 5; an entity that answers 404 adds nothing and does not fail the read of the others), annotations of all entities every 5 min. A failure backs off 30 s, 60 s, up to 5 min; 429 and 503 wait at least a minute.
 - Limits: 8 hubs, 50 viewers per hub, 6 streams per user (tenant and user), a queue of 64 events per viewer, 4 concurrent reads toward Azure.
 - **History cache** (`history_store.py`): closed days of a signal and closed weeks of transitions and annotations (closed means ended 15 min ago) are kept per model in memory (4096 buckets, least recently used out) and, when a Sessions container is configured, in that container under `history/v1/<subscription>/<resource group>/<model>/<kind>/<entity>/<signal>/<bucket start ms>.json`. A bucket is kept only when read in full and wholly inside the 30 days the service keeps; the open tail is always read. The store never deletes (set a lifecycle rule on the prefix) and a blob that cannot be read is a miss. It is read only after the route admitted the caller, and it is keyed by model, not by user: a subscription id belongs to one directory, so a key never names the data of two directories. It does keep the history of every directory's models in the app's storage account.
-- The browser: one stream per selected model, closed when the model changes; the model in the store is changed in place (`model/live.ts`), so entities a delta does not touch keep their identity and the arrays of a view do not change unless its structure did. A change is announced to a screen reader and the node is outlined for 2 s (still under `prefers-reduced-motion`). The Live control pauses and resumes; a 503 `live_unavailable` falls back to reading the model every minute. The timeline follows now (`?timeline=1&live=1&span=<ms>`) and keeps the last overview of each model in IndexedDB (schema 1) for a first paint.
+- The browser: one stream per selected model, closed when the model changes; the model in the store is changed in place (`model/live.ts`), so entities a delta does not touch keep their identity and the arrays of a view do not change unless its structure did. A change is announced to a screen reader and the node is outlined for 2 s (still under `prefers-reduced-motion`). The Live control pauses and resumes; a 503 `live_unavailable` falls back to reading the model every minute. The timeline follows now (`?timeline=1&live=1&span=<ms>`); a delta's rows go onto every history that is held and reaches now, and each such history is carried forward to the delta's time, because no row means no change. A delta that arrives while an answer of the timeline is on its way is applied to that answer too (`timelineHeld`, two minutes). What the timeline read is kept in IndexedDB, see [Timeline data in the browser](#timeline-data-in-the-browser).
 
 ### Session store (blob container `sessions`)
 

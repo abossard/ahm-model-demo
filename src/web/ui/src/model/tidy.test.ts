@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { visibleGraph } from "./collapse";
+import type { ModelOrder } from "./customOrder";
 import { basisFor, linkKey } from "./compare";
 import { throughCards, collinearOverlaps, type Rect, type Routing } from "./stepRouter";
 import { CHIP, FOLD_ABOVE, TILE, firstProblem, planFolds, tidyLayout, tileSignals, type Fold, type TidyLayout } from "./tidy";
@@ -350,25 +351,44 @@ describe("tidyLayout in Compare, one side of an arrangement made for both", () =
 
 describe("tidyLayout keeps the order a viewer gave", () => {
   const model = fan(3);
-  const across = (layout: TidyLayout): string[] =>
+  const across = (layout: TidyLayout, prefix = "leaf-"): string[] =>
     layout.nodes
-      .filter((node) => node.id.startsWith("leaf-"))
+      .filter((node) => node.id.startsWith(prefix))
       .sort((left, right) => left.rect.x - right.rect.x)
       .map((node) => node.id);
-  const run = (order: readonly (readonly string[])[]): string[] =>
-    across(tidyLayout({ entities: model.entities, relationships: model.relationships, folds: [], whole: model, order }));
+  const chain = (of: string, names: readonly string[]): ModelOrder => ({ chains: [{ of, names }], places: {} });
+  const run = (order: ModelOrder | null): TidyLayout => tidyLayout({ entities: model.entities, relationships: model.relationships, folds: [], whole: model, order });
 
   it.each([
-    ["turned round", [["root"], ["leaf-02", "leaf-01", "leaf-00"]], ["leaf-02", "leaf-01", "leaf-00"]],
-    ["a leaf to the front", [["root"], ["leaf-01", "leaf-00", "leaf-02"]], ["leaf-01", "leaf-00", "leaf-02"]],
-  ] as const)("%s", (_name, order, expected) => {
-    expect(run(order)).toEqual(expected);
+    ["turned round", ["leaf-02", "leaf-01", "leaf-00"], ["leaf-02", "leaf-01", "leaf-00"]],
+    ["a leaf to the front", ["leaf-01", "leaf-00", "leaf-02"], ["leaf-01", "leaf-00", "leaf-02"]],
+    ["only the leaves the order names trade places", ["leaf-02", "leaf-00"], ["leaf-02", "leaf-01", "leaf-00"]],
+    ["names that are not there are passed over", ["ghost", "leaf-01", "leaf-00"], ["leaf-01", "leaf-00", "leaf-02"]],
+  ] as const)("%s", (_name, names, expected) => {
+    expect(across(run(chain("root", names)))).toEqual(expected);
   });
 
-  it("keeps the order of the leaves the order knows, and ignores names that are not there", () => {
-    const found = run([["root"], ["ghost", "leaf-02", "leaf-00"]]);
+  it.each([
+    ["no order", null],
+    ["an order of other entities", chain("elsewhere", ["x", "y"])],
+    ["the order the arrangement has by itself", chain("root", ["leaf-00", "leaf-01", "leaf-02"])],
+  ] as const)("is the arrangement's own with %s", (_name, order) => {
+    expect(run(order)).toEqual(run(null));
+  });
 
-    expect(found.filter((name) => name !== "leaf-01")).toEqual(["leaf-02", "leaf-00"]);
-    expect(found).toHaveLength(3);
+  it("says what stands side by side, row by row: what a drag reorders", () => {
+    expect(run(null).ranks).toEqual([["root"], ["leaf-00", "leaf-01", "leaf-02"]]);
+    expect(run(chain("root", ["leaf-02", "leaf-01", "leaf-00"])).ranks).toEqual([["root"], ["leaf-02", "leaf-01", "leaf-00"]]);
+  });
+
+  it("takes what hangs below a moved parent along, and draws no line through a tile", () => {
+    const tree = { entities: ["r", "a", "b", "a1", "a2", "b1", "b2"].map((name) => entity(name)), relationships: [link("r", "a"), link("r", "b"), link("a", "a1"), link("a", "a2"), link("b", "b1"), link("b", "b2")] };
+    const own = tidyLayout({ entities: tree.entities, relationships: tree.relationships, folds: [], whole: tree });
+    const [first, second] = own.ranks[1] as [string, string];
+    const turned = tidyLayout({ entities: tree.entities, relationships: tree.relationships, folds: [], whole: tree, order: chain("r", [second, first]) });
+
+    expect(turned.ranks[1]).toEqual([second, first]);
+    expect((turned.ranks[2] ?? []).map((name) => name.slice(0, 1))).toEqual([second, second, first, first]);
+    expect(throughCards(asRouting(turned))).toEqual([]);
   });
 });

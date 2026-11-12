@@ -16,6 +16,7 @@ import {
 import { Filter20Regular, Search20Regular } from "@fluentui/react-icons";
 import { tokensFor } from "../model/palette";
 import type { Entity, Relationship } from "../model/types";
+import { OrderControls } from "../views/OrderControls";
 import { viewDefinition } from "../views/registry";
 import { actions, useStore } from "../store/store";
 import type { ExcludedEntityMode, HealthFilterState } from "../store/uiSlice";
@@ -170,6 +171,7 @@ export function GraphToolbar({ entities, relationships }: GraphToolbarProps): JS
     <div className={styles.root} data-testid="graph-toolbar" role="group" aria-label="View controls">
       <ViewSwitch />
       {Controls ? <Controls entities={entities} relationships={relationships} /> : null}
+      <OrderControls />
       <Button
         size="small"
         icon={<Search20Regular />}

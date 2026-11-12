@@ -58,26 +58,29 @@ export function modelOf(fixture: TimelineFixture): HealthModel {
 
 export interface TimelineRequests {
   readonly seen: URLSearchParams[];
+  /** The size of each answer, in characters of JSON. */
+  readonly bytes: number[];
 }
 
-/** Answers GET /api/timeline from a simulated history, as the service does: the window, the entities, the parts. */
-export async function installTimeline(page: Page, fixture: TimelineFixture, answer?: (query: URLSearchParams) => number): Promise<TimelineRequests> {
+/** Answers GET /api/timeline from a simulated history, as the service does: the window, the entities, the signals, the parts and the resolution. */
+export async function installTimeline(page: Page, fixture: TimelineFixture, answer?: (query: URLSearchParams) => number, delay?: () => number): Promise<TimelineRequests> {
   const seen: URLSearchParams[] = [];
+  const bytes: number[] = [];
   await page.route("**/api/timeline?**", async (route) => {
     const query = new URL(route.request().url()).searchParams;
     seen.push(query);
     const from = Date.parse(query.get("from") ?? "");
     const to = Date.parse(query.get("to") ?? "");
-    const include = (query.get("include") ?? "").split(",");
-    const body = include.includes("signals") ? fixture.signals(query.getAll("entity"), from, to) : fixture.overview(from, to);
+    const include = (query.get("include") ?? "structure,states,annotations,reports").split(",");
+    const body = fixture.answer({ from, to, include, entities: query.getAll("entity"), signals: query.getAll("signal"), resolution: Number(query.get("resolution") ?? 0) });
     const status = answer?.(query) ?? 200;
-    await route.fulfill({
-      status,
-      contentType: "application/json",
-      body: JSON.stringify(status === 200 ? body : { error: { code: "health_model_unavailable", message: "Health Model data is temporarily unavailable.", retryable: true, operationId: "x" } }),
-    });
+    const text = JSON.stringify(status === 200 ? body : { error: { code: "health_model_unavailable", message: "Health Model data is temporarily unavailable.", retryable: true, operationId: "x" } });
+    bytes.push(text.length);
+    const wait = delay?.() ?? 0;
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    await route.fulfill({ status, contentType: "application/json", body: text });
   });
-  return { seen };
+  return { seen, bytes };
 }
 
 export async function bootWith(page: Page, fixture: TimelineFixture, model?: HealthModel): Promise<TimelineRequests> {

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LiveEvent } from "../model/live";
-import { EMPTY_TIMELINE, mergeResponse, type TimelineResponse } from "../model/timeline";
+import type { TimelineResponse } from "../model/timeline";
+import { heldFrom } from "../model/timelineFixture";
 import type { ApiError, Entity, HealthModel, ModelRef } from "../model/types";
 import * as api from "./api";
 import { POLL_FALLBACK_MS, clockSkew, resetLive } from "./liveSlice";
@@ -179,7 +180,8 @@ describe("events", () => {
       reports: [],
       failures: [],
     };
-    useStore.setState({ timelineStatus: "ready", timelineData: mergeResponse(EMPTY_TIMELINE, overview) });
+    const { store, data: read } = heldFrom(overview);
+    useStore.setState({ timelineStatus: "ready", timelineSeries: store, timelineData: read });
     const t = Date.parse("2026-11-11T10:00:30.000Z");
 
     emit({ kind: "delta", id: "e-1", delta: { observedAt: "2026-11-11T10:00:30.000Z", entities: { upsert: [entity("ss", "Unhealthy")] }, timeline: { transitions: [{ entity: "ss", t, from: 1, to: 3, reason: "SignalTransition" }] } } });

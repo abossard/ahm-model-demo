@@ -253,6 +253,56 @@ describe("layoutSwimlanes, a dense model", () => {
   });
 });
 
+describe("layoutSwimlanes in the order the viewer gave", () => {
+  const chain = (of: string, names: readonly string[]) => ({ chains: [{ of, names }], places: {} });
+  const model = incidentModel();
+  const own = lay(model);
+  const rowOf = (layout: SwimlaneLayout, id: string): string[] => {
+    const card = layout.cards.find((item) => item.id === id) as SwimlaneLayout["cards"][number];
+    return layout.cards.filter((item) => item.row === card.row).sort((a, b) => a.rect.x - b.rect.x).map((item) => item.id);
+  };
+  // Two cards of one row under one parent: the first pair the layout has.
+  const pair = (() => {
+    for (const parent of model.entities) {
+      const children = model.relationships.filter((item) => item.parentEntityName === parent.name).map((item) => item.childEntityName);
+      const drawn = children.filter((name) => own.cards.some((card) => card.id === name));
+      const row = drawn.length > 0 ? rowOf(own, drawn[0] as string).filter((name) => drawn.includes(name)) : [];
+      if (row.length >= 2) return { parent: parent.name, row };
+    }
+    throw new Error("the incident model has no two siblings in one row");
+  })();
+  const turned = lay(model, { order: chain(pair.parent, [...pair.row].reverse()) });
+
+  it("puts siblings of a row in the chain's order, in the places they hold", () => {
+    const before = rowOf(own, pair.row[0] as string);
+    const after = rowOf(turned, pair.row[0] as string);
+
+    expect(after.filter((name) => pair.row.includes(name))).toEqual([...pair.row].reverse());
+    expect(after.map((name) => (pair.row.includes(name) ? "*" : name))).toEqual(before.map((name) => (pair.row.includes(name) ? "*" : name)));
+  });
+
+  it("moves no card to another lane", () => {
+    const laneOf = (layout: SwimlaneLayout): Map<string, number> => new Map(layout.cards.map((card) => [card.id, card.lane] as const));
+
+    expect([...laneOf(turned)].sort()).toEqual([...laneOf(own)].sort());
+  });
+
+  it("still draws no line through a card and puts no card on another", () => {
+    const rects = [...rectsOf(turned)];
+
+    for (const [index, [id, rect]] of rects.entries()) for (const [other, otherRect] of rects.slice(index + 1)) expect(overlap(rect, otherRect), `${id} on ${other}`).toBe(false);
+    expect(throughCards({ nodes: rectsOf(turned), edges: turned.edges.map((edge) => ({ ...edge })), bounds: turned.bounds })).toEqual([]);
+  });
+
+  it.each([
+    ["no order", null],
+    ["an order of other entities", chain("elsewhere", ["x", "y"])],
+    ["the order the lanes have by themselves", chain(pair.parent, pair.row)],
+  ] as const)("is the layout's own with %s", (_name, order) => {
+    expect(lay(model, { order })).toEqual(own);
+  });
+});
+
 describe("firstProblem, withParents, lineageOf and contentKey", () => {
   const layout = lay(incidentModel());
   const byName = new Map(incidentModel().entities.map((entity) => [entity.name, entity] as const));

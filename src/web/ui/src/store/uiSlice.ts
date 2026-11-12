@@ -1,7 +1,7 @@
 import type { StateCreator } from "zustand";
 import { DEFAULT_LAYOUT_ID, type LayoutId } from "../model/layout";
 import type { ConnectionPolicy, EdgeStyle } from "../model/edgeRouting";
-import { persistOrders, persistSortKey, readStoredOrders, readStoredSortKey, orderKey, type CustomOrder, type CustomOrders, type OrderFamily } from "../model/customOrder";
+import { persistOrders, persistSortKey, readStoredOrders, readStoredSortKey, orderKey, type CustomOrders, type ModelOrder } from "../model/customOrder";
 import { SORT_CHOICES, type SortKey } from "../model/ordering";
 import type { ThemeName } from "../model/theme";
 import { DEFAULT_VIEW, persistView, readStoredView, viewFromSearch, type ViewId } from "../model/views";
@@ -24,7 +24,7 @@ export interface UiState {
   readonly layoutId: LayoutId;
   readonly sortKey: SortKey;
   readonly sortReversed: boolean;
-  /** The orders the viewer gave by dragging, per model and family of layouts; kept in this browser. */
+  /** The order the viewer gave each model by dragging, shared by every view; kept in this browser. */
   readonly customOrders: CustomOrders;
   readonly edgeStyle: EdgeStyle;
   readonly connectionPolicy: ConnectionPolicy;
@@ -56,9 +56,9 @@ export interface UiActions {
   readonly setSortKey: (sortKey: SortKey) => void;
   readonly toggleSortDirection: () => void;
   /** Keeps an order the viewer gave and switches the Order to Custom. It belongs to the open model. */
-  readonly commitCustomOrder: (family: OrderFamily, order: CustomOrder) => void;
-  /** Forgets the order of the open model for one family of layouts; Custom, if chosen, gives way to the shortest connections. */
-  readonly resetCustomOrder: (family: OrderFamily) => void;
+  readonly commitCustomOrder: (order: ModelOrder) => void;
+  /** Forgets the order of the open model; Custom, if chosen, gives way to each view's own order. */
+  readonly resetCustomOrder: () => void;
   readonly setEdgeStyle: (edgeStyle: EdgeStyle) => void;
   readonly setConnectionPolicy: (policy: ConnectionPolicy) => void;
   readonly toggleCollapse: (name: string) => void;
@@ -129,8 +129,8 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
     set({ sortKey });
     if (typeof window !== "undefined") persistSortKey(sortKey, () => window.localStorage);
   },
-  commitCustomOrder: (family, order) => {
-    const key = orderKey(get().selected, family);
+  commitCustomOrder: (order) => {
+    const key = orderKey(get().selected);
     if (key === null) return;
     const customOrders = { ...get().customOrders, [key]: order };
     set({ customOrders, sortKey: "custom" });
@@ -139,8 +139,8 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
       persistSortKey("custom", () => window.localStorage);
     }
   },
-  resetCustomOrder: (family) => {
-    const key = orderKey(get().selected, family);
+  resetCustomOrder: () => {
+    const key = orderKey(get().selected);
     if (key === null || !(key in get().customOrders)) return;
     const { [key]: _gone, ...customOrders } = get().customOrders;
     const sortKey = get().sortKey === "custom" ? "shortest" : get().sortKey;

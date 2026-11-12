@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
-import { Button, makeStyles, tokens } from "@fluentui/react-components";
+import { Button, makeStyles, mergeClasses, tokens } from "@fluentui/react-components";
 import { Background, BackgroundVariant, Panel, ReactFlow, ReactFlowProvider, ViewportPortal, useReactFlow } from "@xyflow/react";
 import type { NodeTypes } from "@xyflow/react";
 import { chainSteps } from "../model/chainSteps";
 import { collapseControls, visibleGraph } from "../model/collapse";
 import { SIDE_LABEL, linkKey, noEntitiesText } from "../model/compare";
 import { cardTokens, edgeAppearance, type DiffMark, type EdgeAppearance } from "../model/palette";
-import { orderKey } from "../model/customOrder";
+import { drawnParents, type ReorderWorld } from "../model/reorder";
 import { FOLD_ABOVE, firstProblem, planFolds, tidyLayout } from "../model/tidy";
 import type { Entity } from "../model/types";
 import { actions, canvasFrame, useStore } from "../store/store";
@@ -15,6 +15,7 @@ import { stepEdge, stepEdgeTypes, type StepRfEdge } from "../components/StepEdge
 import { prefersReducedMotion } from "../components/Topology";
 import { TidyFold, TidyTile, type TidyRfNode } from "./TidyTile";
 import type { ViewProps } from "./types";
+import { DropSlot, useReorder, withMoveNodes } from "./useReorder";
 
 const MIN_ZOOM = 0.05;
 const MAX_FIT_ZOOM = 1;
@@ -70,7 +71,7 @@ const useStyles = makeStyles({
   },
 });
 
-const nodeTypes: NodeTypes = { tile: TidyTile, fold: TidyFold };
+const nodeTypes: NodeTypes = { tile: TidyTile, fold: TidyFold, slot: DropSlot };
 
 const NEUTRAL: EdgeAppearance = { stroke: "var(--edge)", width: 1.4, dash: "2 4", cap: "round" };
 
@@ -84,12 +85,6 @@ function TidyCanvas({ entities, relationships, selectedName, highlightedName, ch
   const workspaceFrame = useStore(canvasFrame);
   const focusNames = useStore((state) => state.focusNames);
   const focusSeq = useStore((state) => state.focusSeq);
-  // The order given by dragging in the card graph is the order of the hierarchy here too.
-  const hierarchyOrder = useStore((state) => {
-    const key = orderKey(state.selected, "hierarchy");
-    const stored = key !== null && state.sortKey === "custom" ? state.customOrders[key] : undefined;
-    return stored?.kind === "ranks" ? stored.ranks : undefined;
-  });
   const rf = useReactFlow();
   const rfRef = useRef(rf);
   rfRef.current = rf;
@@ -103,6 +98,8 @@ function TidyCanvas({ entities, relationships, selectedName, highlightedName, ch
   const visible = useMemo(() => visibleGraph(entities, relationships, collapsedSet, options), [entities, relationships, collapsedSet, options]);
   const controls = useMemo(() => collapseControls(entities, relationships, collapsedSet, options), [entities, relationships, collapsedSet, options]);
   const byName = useMemo(() => new Map(visible.entities.map((entity) => [entity.name, entity] as const)), [visible]);
+  // The viewer's order, shared with every view; while a tile is dragged, the order a drop would keep.
+  const reorder = useReorder({ labelOf: (id) => byName.get(id)?.displayName || id });
   const steps = useMemo(() => chainSteps(chainNames, byName.keys()), [chainNames, byName]);
 
   // In Compare, both sides are arranged together and each draws what it has: folds, keeps and the
@@ -146,11 +143,19 @@ function TidyCanvas({ entities, relationships, selectedName, highlightedName, ch
         folds: foldsRef.current,
         whole: side ? side.basis : { entities, relationships },
         ...(only ? { only } : {}),
-        ...(hierarchyOrder ? { order: hierarchyOrder } : {}),
+        order: reorder.order,
       }),
     // `foldsRef` holds the folds `foldsKey` names, so the key is what decides when to lay out again.
-    [shared, foldsKey, entities, relationships, side, only, hierarchyOrder],
+    [shared, foldsKey, entities, relationships, side, only, reorder.order],
   );
+  // A tile trades places with its siblings in its row; a count tile holds its place. A compared model is arranged for both sides and is not dragged.
+  const world = useMemo<ReorderWorld | null>(() => {
+    if (compare !== undefined) return null;
+    const tiles = layout.nodes.filter((node) => node.kind === "entity").map((node) => node.id);
+    return { rows: layout.ranks, rects: new Map(layout.nodes.map((node) => [node.id, node.rect] as const)), parents: drawnParents(tiles, new Set(tiles), visible.relationships) };
+  }, [compare, layout, visible]);
+  reorder.offer(world);
+  const moving = reorder.move;
   const problem = useMemo(() => firstProblem(visible.entities, visible.relationships, layout.nodes.map((node) => node.id)), [visible, layout]);
   const dense = shared.entities.length > FOLD_ABOVE;
 
@@ -193,7 +198,7 @@ function TidyCanvas({ entities, relationships, selectedName, highlightedName, ch
     () =>
       layout.nodes.map((node): TidyRfNode => {
         const size = { width: node.rect.width, height: node.rect.height };
-        const common = { id: node.id, position: { x: node.rect.x, y: node.rect.y }, ...size, measured: size };
+        const common = { id: node.id, position: { x: node.rect.x, y: node.rect.y }, ...size, measured: size, draggable: world !== null && node.kind === "entity" };
         if (node.kind === "fold") {
           const parent = byName.get(node.fold.parent);
           return { ...common, type: "fold", data: { fold: node.fold, parentLabel: parent?.displayName || node.fold.parent, onToggleFold, onFocusNode } };
@@ -214,14 +219,17 @@ function TidyCanvas({ entities, relationships, selectedName, highlightedName, ch
             marked: marked?.has(key) ?? false,
             dimmed: visible.dotNames.has(entity.name),
             collapse: control ? { collapsed: isCollapsed, hiddenCount: isCollapsed ? (visible.hiddenCounts.get(entity.name) ?? 0) : control.hiddenCount } : null,
+            ...(world ? { reorderable: true } : {}),
+            ...(moving?.id === entity.name ? { dragging: true } : {}),
             onActivate,
             onToggle,
             onFocusNode,
           },
         };
       }),
-    [layout, byName, controls, collapsedSet, visible, selectedName, highlightedName, steps, badges, marked, onActivate, onToggle, onToggleFold, onFocusNode],
+    [layout, byName, controls, collapsedSet, visible, selectedName, highlightedName, steps, badges, marked, world, moving?.id, onActivate, onToggle, onToggleFold, onFocusNode],
   );
+  const shownNodes = useMemo(() => withMoveNodes(nodes, moving), [nodes, moving]);
 
   const edges = useMemo<StepRfEdge[]>(
     () =>
@@ -293,7 +301,7 @@ function TidyCanvas({ entities, relationships, selectedName, highlightedName, ch
   }, [layout, focusSeq]);
 
   return (
-    <div className={styles.root} data-testid="tidy-view" data-side={side?.side}>
+    <div className={mergeClasses(styles.root, moving !== null && "is-reordering")} data-testid="tidy-view" data-side={side?.side} {...reorder.root}>
       <div
         className={styles.canvas}
         ref={paneRef}
@@ -310,13 +318,16 @@ function TidyCanvas({ entities, relationships, selectedName, highlightedName, ch
         <ReactFlow
           id={side ? `tidy-${side.side}` : "tidy"}
           aria-label={side ? `${SIDE_LABEL[side.side as "base" | "proposed"]}, tidy tree` : "Health model, tidy tree"}
-          nodes={nodes}
+          nodes={shownNodes}
           edges={edges}
           nodeOrigin={[0, 0]}
           nodeTypes={nodeTypes}
           edgeTypes={stepEdgeTypes}
           minZoom={MIN_ZOOM}
-          nodesDraggable={false}
+          nodesDraggable={world !== null}
+          nodeDragThreshold={4}
+          nodeClickDistance={4}
+          {...reorder.flow}
           nodesConnectable={false}
           nodesFocusable={false}
           elementsSelectable={false}

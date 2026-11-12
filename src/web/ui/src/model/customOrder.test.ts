@@ -1,20 +1,28 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import {
+  EMPTY_ORDER,
+  TOP,
   familyOf,
+  forLayout,
+  hasOrder,
+  impose,
+  inOrder,
   kindOf,
-  moveTo,
   orderKey,
   persistOrders,
   persistSortKey,
   ranksFromPositions,
+  ranksInOrder,
   readStoredOrders,
   readStoredSortKey,
-  reconcile,
-  slotsFor,
+  sameRanks,
   swapTargets,
   swapped,
+  withChain,
+  withPlaces,
   type CustomOrders,
+  type ModelOrder,
 } from "./customOrder";
 import { LAYOUT_CHOICES } from "./layout";
 
@@ -27,6 +35,11 @@ function links(text: string): { parentEntityName: string; childEntityName: strin
 
 function rows(text: string): string[][] {
   return text.split("/").map((row) => row.split(" ").filter(Boolean));
+}
+
+/** An order from text: `r:b a;a:a2 a1` is the children of r as b a, then those of a as a2 a1; `:` alone names the top. */
+function order(text: string): ModelOrder {
+  return { chains: text.split(";").filter(Boolean).map((chain) => ({ of: chain.split(":")[0] ?? "", names: (chain.split(":")[1] ?? "").split(" ").filter(Boolean) })), places: {} };
 }
 
 function storage(initial: Record<string, string> = {}, fails = false): () => Storage {
@@ -61,7 +74,7 @@ describe("families, keys and kinds", () => {
     ["elk-radial", "elk-radial", "slots"],
     ["d3-force", "force", "slots"],
     ["d3-force-adaptive", null, null],
-  ] as const)("%s keeps its order as %s, a %s order", (layout, family, kind) => {
+  ] as const)("%s is of the family %s, which is handed %s", (layout, family, kind) => {
     expect(familyOf(layout)).toBe(family);
     if (family) expect(kindOf(family)).toBe(kind);
   });
@@ -70,114 +83,119 @@ describe("families, keys and kinds", () => {
     expect(LAYOUT_CHOICES.map((engine) => familyOf(engine.id)).filter((family) => family === null)).toHaveLength(1);
   });
 
-  it("keys an order by the model the address names and the family", () => {
-    expect(orderKey({ subscriptionId: "sub", resourceGroup: "rg", name: "hm" }, "hierarchy")).toBe("sub/rg/hm#hierarchy");
-    expect(orderKey({ subscriptionId: "sub", resourceGroup: "rg", name: "hm" }, "force")).not.toBe(orderKey({ subscriptionId: "sub", resourceGroup: "rg", name: "hm" }, "hierarchy"));
-    expect(orderKey(null, "hierarchy")).toBeNull();
+  it("keys an order by the model the address names: one order for every view and layout", () => {
+    expect(orderKey({ subscriptionId: "sub", resourceGroup: "rg", name: "hm" })).toBe("sub/rg/hm");
+    expect(orderKey(null)).toBeNull();
+  });
+
+  it.each([
+    ["nothing", null, false],
+    ["an empty order", EMPTY_ORDER, false],
+    ["a chain", order("r:b a"), true],
+    ["places", withPlaces(null, "force", { a: { x: 1, y: 2 } }), true],
+  ] as const)("%s is an order to show: %s", (_name, given, expected) => {
+    expect(hasOrder(given)).toBe(expected);
   });
 });
 
-describe("slotsFor: where a card may go", () => {
+describe("impose: a chain on things drawn side by side", () => {
   it.each([
-    ["a child among its siblings", TREE, TREE_LINKS, "a", { rank: 1, from: 0, indices: [0, 1, 2], part: false }],
-    ["a middle child", TREE, TREE_LINKS, "b", { rank: 1, from: 1, indices: [0, 1, 2], part: false }],
-    ["a grandchild among the children of its parent, a shared child between them included", TREE, TREE_LINKS, "a1", { rank: 2, from: 0, indices: [0, 1, 2], part: false }],
-    ["a grandchild with a shared child beside it", TREE, TREE_LINKS, "b1", { rank: 2, from: 3, indices: [2, 3], part: false }],
-    ["a card with several parents, among the cards of its part", TREE, TREE_LINKS, "s", { rank: 2, from: 2, indices: [0, 1, 2, 3, 4, 5], part: false }],
-    ["the only root of the main part: nowhere else to go", TREE, TREE_LINKS, "r", { rank: 0, from: 0, indices: [0], part: false }],
-    ["the root of a part on the shelf moves its part", SHELF, SHELF_LINKS, "y", { rank: 0, from: 1, indices: [0, 1], part: true }],
-    ["a lone entity on the shelf", SHELF, SHELF_LINKS, "x", { rank: 0, from: 0, indices: [0, 1], part: true }],
-    ["a child on the shelf stays among its siblings", SHELF, SHELF_LINKS, "y2", { rank: 1, from: 3, indices: [2, 3], part: false }],
-    ["a child of the main part", SHELF, SHELF_LINKS, "m1", { rank: 1, from: 0, indices: [0, 1], part: false }],
-  ] as const)("%s", (_name, ranks, edges, name, expected) => {
-    expect(slotsFor(ranks, edges, name)).toEqual(expected);
-  });
-
-  it("knows nothing of a card the ranks do not have", () => {
-    expect(slotsFor(TREE, TREE_LINKS, "ghost")).toBeNull();
-  });
-
-  it("ignores relationships to cards the ranks do not have, and self loops", () => {
-    expect(slotsFor(TREE, [...TREE_LINKS, ...links("a>ghost ghost>b a>a")], "a")).toEqual({ rank: 1, from: 0, indices: [0, 1, 2], part: false });
-  });
-
-  it("leaves a card with no parent in a deeper rank where it is: its part is only itself", () => {
-    expect(slotsFor(rows("r/a b"), links("r>a"), "b")).toEqual({ rank: 1, from: 1, indices: [1], part: false });
+    ["the chain's names take the places they hold, in its order", "a b c", "c a", "c b a"],
+    ["names the row does not draw are passed over", "a b c", "c x a", "c b a"],
+    ["a chain with one name of the row changes nothing", "a b c", "b x", "a b c"],
+    ["a chain with none changes nothing", "a b c", "x y", "a b c"],
+    ["the others keep their places", "a p b q c", "c b a", "c p b q a"],
+    ["a name the chain repeats counts once", "a b", "b a b", "b a"],
+  ] as const)("%s", (_name, row, chain, expected) => {
+    expect(impose(row.split(" "), chain.split(" "))).toEqual(expected.split(" "));
   });
 });
 
-describe("moveTo: taking a card to a place", () => {
+describe("inOrder: every chain, the earliest first", () => {
   it.each([
-    ["a child to the end: its subtree follows", TREE, "a", 2, "r/b c a/s b1 c1 c2 a1 a2"],
-    ["a child to the front: the others keep their order", TREE, "c", 0, "r/c a b/c1 c2 a1 a2 s b1"],
-    ["a middle child to the front", TREE, "b", 0, "r/b a c/s b1 a1 a2 c1 c2"],
-    ["a grandchild among its siblings", TREE, "a1", 2, "r/a b c/a2 s a1 b1 c1 c2"],
-    ["a grandchild to where it is", TREE, "a1", 0, "r/a b c/a1 a2 s b1 c1 c2"],
-    ["a place past the last is the last", TREE, "a1", 99, "r/a b c/a2 s a1 b1 c1 c2"],
-    ["a place before the first is the first", TREE, "a2", -5, "r/a b c/a2 a1 s b1 c1 c2"],
-    ["a card with several parents anywhere in its rank", TREE, "s", 5, "r/a b c/a1 a2 b1 c1 c2 s"],
-    ["a card with several parents, to the front", TREE, "s", 0, "r/a b c/s a1 a2 b1 c1 c2"],
-  ] as const)("%s", (_name, ranks, name, index, expected) => {
-    expect(moveTo(ranks, TREE_LINKS, name, index)).toEqual(rows(expected));
+    ["no order leaves the row", "a b c", null, "a b c"],
+    ["one chain", "a b c", order("r:c b a"), "c b a"],
+    ["a later chain wins where two disagree", "a b c", order("p:c b a;q:a c"), "a b c"],
+    ["chains of other parents do nothing", "a b c", order("p:x y;q:z"), "a b c"],
+    ["two chains of different cards both hold", "a b c d", order("p:b a;q:d c"), "b a d c"],
+  ] as const)("%s", (_name, row, given, expected) => {
+    expect(inOrder(row.split(" "), given)).toEqual(expected.split(" "));
   });
+});
 
+describe("ranksInOrder: the order laid over the ranks of a layout", () => {
   it.each([
-    ["a part moves ahead of another", "x", 1, "m y x/m1 m2 y1 y2"],
-    ["a part with children moves ahead", "y", 0, "m y x/m1 m2 y1 y2"],
-    ["a part to where it is", "x", 0, "m x y/m1 m2 y1 y2"],
-  ] as const)("shelf: %s", (_name, name, index, expected) => {
-    expect(moveTo(SHELF, SHELF_LINKS, name, index)).toEqual(rows(expected));
+    ["no order returns the ranks", TREE, TREE_LINKS, null, "r/a b c/a1 a2 s b1 c1 c2"],
+    ["a chain of other cards returns the ranks", TREE, TREE_LINKS, order("x:p q"), "r/a b c/a1 a2 s b1 c1 c2"],
+    ["siblings stand in the chain's order and take what hangs below them along", TREE, TREE_LINKS, order("r:c a b"), "r/c a b/c1 c2 a1 a2 s b1"],
+    ["a chain of leaves moves only them", TREE, TREE_LINKS, order("c:c2 c1"), "r/a b c/a1 a2 s b1 c2 c1"],
+    ["a parent moved and its children ordered", TREE, TREE_LINKS, order("r:b a c;a:a2 a1"), "r/b a c/s b1 a2 a1 c1 c2"],
+    ["the parts on the shelf follow the chain of the top", SHELF, SHELF_LINKS, order(":m y x"), "m y x/m1 m2 y1 y2"],
+    ["a part moved takes its cards along", rows("m x y z/m1 y1 z1"), links("m>m1 y>y1 z>z1"), order(":m z y x"), "m z y x/m1 z1 y1"],
+  ] as const)("%s", (_name, ranks, edges, given, expected) => {
+    expect(ranksInOrder(ranks, edges, given)).toEqual(rows(expected));
   });
 
-  it("moves a part with every rank it has", () => {
-    const ranks = rows("m x y/m1 y1/y2");
-    const moved = moveTo(ranks, links("m>m1 y>y1 y1>y2"), "y", 0);
-
-    expect(moved).toEqual(rows("m y x/m1 y1/y2"));
-  });
-
-  it("changes nothing for a card that is not there, and never changes what it is given", () => {
-    const given = rows("r/a b c/a1 a2 s b1 c1 c2");
-    const copy = JSON.parse(JSON.stringify(given)) as string[][];
-
-    expect(moveTo(given, TREE_LINKS, "ghost", 0)).toEqual(given);
-    moveTo(given, TREE_LINKS, "a", 2);
-    expect(given).toEqual(copy);
-  });
-
-  it("is the same whatever order the relationships are given in", () => {
-    expect(moveTo(TREE, [...TREE_LINKS].reverse(), "a", 2)).toEqual(moveTo(TREE, TREE_LINKS, "a", 2));
-  });
-
-  it("keeps every card exactly once", () => {
-    for (const name of ["a", "b", "c", "a1", "s", "c2"]) {
-      const slots = slotsFor(TREE, TREE_LINKS, name);
-      for (const index of slots?.indices ?? []) {
-        const moved = moveTo(TREE, TREE_LINKS, name, index);
-
-        expect(moved.map((row) => [...row].sort()), `${name} to ${index}`).toEqual(TREE.map((row) => [...row].sort()));
-      }
+  it("keeps every card exactly once, in its rank", () => {
+    for (const given of [order("r:c b a"), order("a:s a2 a1;b:b1 s"), order(":r;r:b c a;c:c2 c1")]) {
+      expect(ranksInOrder(TREE, TREE_LINKS, given).map((row) => [...row].sort())).toEqual(TREE.map((row) => [...row].sort()));
     }
   });
+
+  it("leaves children that stand between the children of another parent where they are, when no parent moved", () => {
+    const mixed = rows("r/a b/a1 b1 a2");
+
+    expect(ranksInOrder(mixed, links("r>a r>b a>a1 a>a2 b>b1"), order("b:b1"))).toEqual(mixed);
+  });
 });
 
-describe("reconcile: an order without what is gone", () => {
+describe("forLayout: what a layout of the card graph is handed", () => {
+  const PLACED = withPlaces(order("r:c a b"), "force", { a: { x: 1, y: 2 } });
+
   it.each([
-    ["ranks", { kind: "ranks", ranks: rows("r/a b c") } as const, { kind: "ranks", ranks: rows("r/a c") }],
-    ["slots", { kind: "slots", slots: { r: { x: 0, y: 0 }, b: { x: 1, y: 1 } } } as const, { kind: "slots", slots: { r: { x: 0, y: 0 } } }],
-  ] as const)("drops from %s what is not present", (_name, order, expected) => {
-    expect(reconcile(order, new Set(["r", "a", "c"]))).toEqual(expected);
+    ["the hierarchy gets its ranks in the order", "hierarchy", PLACED, { kind: "ranks", ranks: rows("r/c a b/c1 c2 a1 a2 s b1") }],
+    ["ELK layered gets its ranks in the order", "elk-layered", PLACED, { kind: "ranks", ranks: rows("r/c a b/c1 c2 a1 a2 s b1") }],
+    ["the force layout gets its places", "force", PLACED, { kind: "slots", slots: { a: { x: 1, y: 2 } } }],
+    ["ELK radial has no places kept", "elk-radial", PLACED, null],
+    ["an order that changes nothing is none", "hierarchy", order("r:a b c"), null],
+    ["no order is none", "hierarchy", null, null],
+  ] as const)("%s", (_name, family, given, expected) => {
+    expect(forLayout(family, given, TREE, TREE_LINKS)).toEqual(expected);
   });
 
-  it("keeps the rank a row was in even when it is left empty", () => {
-    expect(reconcile({ kind: "ranks", ranks: rows("r/a b/c") }, new Set(["r", "c"]))).toEqual({ kind: "ranks", ranks: [["r"], [], ["c"]] });
+  it.each([
+    ["the same ranks", "r/a b", "r/a b", true],
+    ["another order in a rank", "r/a b", "r/b a", false],
+    ["another number of ranks", "r/a b", "r", false],
+  ] as const)("sameRanks: %s", (_name, left, right, expected) => {
+    expect(sameRanks(rows(left), rows(right))).toBe(expected);
+  });
+});
+
+describe("withChain: the order a drop leaves", () => {
+  it.each([
+    ["the first chain of a parent", null, "r", "b a", "r:b a"],
+    ["a chain replaces the one its parent had and becomes the latest", order("r:a b c;p:x y"), "r", "c b a", "p:x y;r:c b a"],
+    ["children the view did not draw keep their places in the chain", order("r:a b c d"), "r", "d a", "r:d b c a"],
+    ["a child the chain did not know stands after the one before it", order("r:a b"), "r", "a n b", "r:a n b"],
+    ["a new child that comes first stands first", order("r:a b"), "r", "n a b", "r:n a b"],
+    ["the top has a chain of its own", order("r:a b"), TOP, "y x", "r:a b;:y x"],
+  ] as const)("%s", (_name, before, of, names, expected) => {
+    expect(withChain(before, of, names.split(" "))).toEqual(order(expected));
+  });
+
+  it("keeps the places beside the chains", () => {
+    const placed = withPlaces(order("r:a b"), "elk-radial", { a: { x: 1, y: 2 } });
+
+    expect(withChain(placed, "r", ["b", "a"]).places).toEqual({ "elk-radial": { a: { x: 1, y: 2 } } });
+    expect(withPlaces(placed, "force", { b: { x: 3, y: 4 } })).toEqual({ chains: [{ of: "r", names: ["a", "b"] }], places: { "elk-radial": { a: { x: 1, y: 2 } }, force: { b: { x: 3, y: 4 } } } });
   });
 });
 
 describe("keeping orders in storage", () => {
   const ORDERS: CustomOrders = {
-    "s/g/hm#hierarchy": { kind: "ranks", ranks: rows("r/a b") },
-    "s/g/hm#force": { kind: "slots", slots: { a: { x: 1, y: 2 } } },
+    "s/g/hm": { chains: [{ of: "r", names: ["b", "a"] }], places: { force: { a: { x: 1, y: 2 } } } },
+    "s/g/other": { chains: [{ of: "", names: ["y", "x"] }], places: {} },
   };
 
   it("reads back what it kept", () => {
@@ -189,28 +207,62 @@ describe("keeping orders in storage", () => {
 
   it.each([
     ["nothing kept", {}],
-    ["text that is not json", { "ahm.customOrders.v1": "{not json" }],
-    ["json that is not an object", { "ahm.customOrders.v1": "[1,2]" }],
-    ["json null", { "ahm.customOrders.v1": "null" }],
+    ["text that is not json", { "ahm.customOrders.v2": "{not json" }],
+    ["json that is not an object", { "ahm.customOrders.v2": "[1,2]" }],
+    ["json null", { "ahm.customOrders.v2": "null" }],
+    ["text kept per family that is not json", { "ahm.customOrders.v1": "{not json" }],
   ] as const)("finds no orders when there is %s", (_name, initial) => {
-    expect(readStoredOrders(storage(initial))).toEqual({});
+    expect(Object.keys(readStoredOrders(storage(initial)))).toEqual([]);
   });
 
   it("leaves out what is not an order and keeps what is", () => {
     const get = storage({
-      "ahm.customOrders.v1": JSON.stringify({
-        good: { kind: "ranks", ranks: [["a"], ["b"]] },
-        wrongKind: { kind: "grid", ranks: [] },
-        badRow: { kind: "ranks", ranks: [["a"], "b"] },
-        badSlot: { kind: "slots", slots: { a: { x: "no", y: 1 }, b: { x: 3, y: 4 } } },
+      "ahm.customOrders.v2": JSON.stringify({
+        good: { chains: [{ of: "r", names: ["a", "b"] }], places: {} },
+        noChains: { places: {} },
+        badChain: { chains: [{ of: 3, names: ["a"] }, { of: "r", names: ["a", 7, "b"] }, "x"], places: { force: { a: { x: "no", y: 1 }, b: { x: 3, y: 4 } }, grid: { a: { x: 1, y: 1 } } } },
         notAnObject: 7,
       }),
     });
 
     expect(readStoredOrders(get)).toEqual({
-      good: { kind: "ranks", ranks: [["a"], ["b"]] },
-      badSlot: { kind: "slots", slots: { b: { x: 3, y: 4 } } },
+      good: { chains: [{ of: "r", names: ["a", "b"] }], places: {} },
+      badChain: { chains: [{ of: "r", names: ["a", "b"] }], places: { force: { b: { x: 3, y: 4 } } } },
     });
+  });
+
+  it.each([
+    [
+      "the ranks of a hierarchy are chains: their cards stood side by side",
+      { "s/g/hm#hierarchy": { kind: "ranks", ranks: rows("r/b a/a2 a1") } },
+      { "s/g/hm": { chains: [{ of: "#hierarchy:1", names: ["b", "a"] }, { of: "#hierarchy:2", names: ["a2", "a1"] }], places: {} } },
+    ],
+    [
+      "the hierarchy's come after ELK layered's, so they win",
+      { "s/g/hm#hierarchy": { kind: "ranks", ranks: rows("r/b a") }, "s/g/hm#elk-layered": { kind: "ranks", ranks: rows("r/a b") } },
+      { "s/g/hm": { chains: [{ of: "#elk-layered:1", names: ["a", "b"] }, { of: "#hierarchy:1", names: ["b", "a"] }], places: {} } },
+    ],
+    [
+      "places stay places, per layout, beside the chains of the same model",
+      { "s/g/hm#force": { kind: "slots", slots: { a: { x: 1, y: 2 } } }, "s/g/hm#elk-radial": { kind: "slots", slots: { b: { x: 3, y: 4 } } }, "s/g/hm#hierarchy": { kind: "ranks", ranks: rows("b a") } },
+      { "s/g/hm": { chains: [{ of: "#hierarchy:0", names: ["b", "a"] }], places: { "elk-radial": { b: { x: 3, y: 4 } }, force: { a: { x: 1, y: 2 } } } } },
+    ],
+    ["what is not an order per family is left out", { "s/g/hm#hierarchy": { kind: "grid" }, "s/g/hm#tree": { kind: "ranks", ranks: [] }, plain: 7 }, {}],
+  ] as const)("reads orders kept per family of layouts as one per model: %s", (_name, kept, expected) => {
+    expect(readStoredOrders(storage({ "ahm.customOrders.v1": JSON.stringify(kept) }))).toEqual(expected);
+  });
+
+  it("an order per model, once kept, is what counts: the ones per family are not read again", () => {
+    const get = storage({ "ahm.customOrders.v1": JSON.stringify({ "s/g/hm#hierarchy": { kind: "ranks", ranks: rows("r/b a") } }) });
+    persistOrders({}, get);
+
+    expect(readStoredOrders(get)).toEqual({});
+  });
+
+  it("an order read from the ones per family draws as it did: the migrated chains order the ranks", () => {
+    const read = readStoredOrders(storage({ "ahm.customOrders.v1": JSON.stringify({ "s/g/hm#hierarchy": { kind: "ranks", ranks: rows("r/c a b/c1 c2 a1 a2 s b1") } }) }));
+
+    expect(ranksInOrder(TREE, TREE_LINKS, read["s/g/hm"])).toEqual(rows("r/c a b/c1 c2 a1 a2 s b1"));
   });
 
   it("copes with storage that refuses", () => {

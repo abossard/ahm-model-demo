@@ -106,3 +106,42 @@ describe("kindOf", () => {
     expect(layout.nodes[0]!.rows).toHaveLength(MAX_SIGNAL_ROWS);
   });
 });
+
+describe("layoutCause in the order the viewer gave", () => {
+  const model = denseIncidentModel();
+  const path = causePath(model.entities, model.relationships, {});
+  const own = layoutCause(model.entities, model.relationships, path, measure);
+  // Cards beside each other under one parent, off the chain: the first such row the layout has.
+  const pair = (() => {
+    const drawn = new Set(path.draw);
+    for (const row of own.ranks) {
+      for (const parent of path.draw) {
+        const siblings = row.filter((id) => drawn.has(id) && !path.chain.includes(id) && model.relationships.some((item) => item.parentEntityName === parent && item.childEntityName === id));
+        if (siblings.length >= 2) return { parent, siblings };
+      }
+    }
+    throw new Error("the dense model draws no two siblings side by side");
+  })();
+  const order = { chains: [{ of: pair.parent, names: [...pair.siblings].reverse() }], places: {} };
+  const turned = layoutCause(model.entities, model.relationships, path, measure, new Set(), order);
+  const across = (layout: typeof own): string[] =>
+    layout.nodes.filter((node) => pair.siblings.includes(node.id)).sort((a, b) => a.rect.x - b.rect.x).map((node) => node.id);
+
+  it("says what stands side by side, row by row", () => {
+    expect([...own.ranks.flat()].sort()).toEqual(own.nodes.map((node) => node.id).sort());
+  });
+
+  it("puts siblings in the chain's order, and still draws no line through a card", () => {
+    expect(across(own)).toEqual(pair.siblings);
+    expect(across(turned)).toEqual([...pair.siblings].reverse());
+    const rects = new Map(turned.nodes.map((node) => [node.id, node.rect] as const));
+    expect(throughCards({ nodes: rects, edges: turned.edges.map((edge) => ({ ...edge })), bounds: turned.bounds })).toEqual([]);
+  });
+
+  it.each([
+    ["no order", null],
+    ["an order of other entities", { chains: [{ of: "elsewhere", names: ["x", "y"] }], places: {} }],
+  ] as const)("is the layout's own with %s", (_name, given) => {
+    expect(layoutCause(model.entities, model.relationships, path, measure, new Set(), given)).toEqual(own);
+  });
+});

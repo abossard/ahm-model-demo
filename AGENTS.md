@@ -39,6 +39,7 @@ Terms follow [GLOSSARY.md](GLOSSARY.md).
 - Keep the two copies of `task-result.schema.json` (`src/agent/src/contracts/`, `src/web/app/contracts/`) byte-identical.
   A change to the Task result also changes `src/agent/src/instructions.py` and the contract in `docs/redesign/plan.md`.
 - The agent signals of `hm-<env>` query the web app's `foundry.agent.*` spans. Rename a span and its signal together.
+- The timeline is read in tiles ([ADR 0009](docs/adr/0009-timeline-in-tiles.md)). `decimate` in `src/web/app/timeline.py` and in `src/web/ui/src/model/timelineTiles.ts` are the same rule with the same test table, and the tile sizes of `timelineTiles.ts` are the bucket sizes of `history_store.py`: change both. Timeline data reaches the browser only through `timeline/timelineLoader.ts` and lives only in `timelineSeries`.
 - The limits of the public app live in `src/web/app/config.py`.
   [docs/demo.md](docs/demo.md#limits-of-the-public-app) lists their values: change both.
 - Write parametrized tests in the style of the file you edit: `unittest` with `subTest` in Python, `it.each` in vitest.

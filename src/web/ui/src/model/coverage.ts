@@ -1,3 +1,4 @@
+import { inOrder, type ModelOrder } from "./customOrder";
 import type { Entity, Relationship } from "./types";
 
 /**
@@ -6,7 +7,9 @@ import type { Entity, Relationship } from "./types";
  *
  * An entity with several parents sits under its first parent, the one whose label sorts first;
  * the others are listed on its cell so a view can draw arcs to them. Order is by label, never by
- * the order of the input, so a refresh moves nothing but states.
+ * the order of the input, so a refresh moves nothing but states. The order the viewer gave the
+ * model by dragging is laid over it: the children of a parent, and the parts that are not
+ * connected to the root, stand in it where it names them.
  */
 export interface CoverageCell {
   readonly name: string;
@@ -51,7 +54,7 @@ function labelOf(entity: Entity): string {
 export function coverage(
   entities: readonly Entity[],
   relationships: readonly Relationship[],
-  options: { readonly focus?: string | null } = {},
+  options: { readonly focus?: string | null; readonly order?: ModelOrder | null } = {},
 ): Coverage {
   const byName = new Map(entities.map((entity) => [entity.name, entity] as const));
   const compare = (left: string, right: string): number => {
@@ -80,7 +83,7 @@ export function coverage(
     primary.set(entity.name, first);
     (children.get(first) ?? children.set(first, []).get(first)!).push(entity.name);
   }
-  for (const list of children.values()) list.sort(compare);
+  for (const [parent, list] of children) children.set(parent, inOrder(list.sort(compare), options.order));
 
   const weights = new Map<string, number>();
   const weigh = (name: string, path: ReadonlySet<string>): number => {
@@ -94,7 +97,7 @@ export function coverage(
   };
   const rootNames = entities.map((entity) => entity.name).filter((name) => !primary.has(name)).sort(compare);
   const mainRoot = rootNames.reduce<string | null>((best, name) => (best === null || weigh(name, new Set()) > weigh(best, new Set()) ? name : best), null);
-  const others = rootNames.filter((name) => name !== mainRoot);
+  const others = inOrder(rootNames.filter((name) => name !== mainRoot), options.order);
 
   const cells: CoverageCell[] = [];
   const placed = new Set<string>();

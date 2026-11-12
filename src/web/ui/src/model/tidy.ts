@@ -1,6 +1,7 @@
 import { arrange } from "./arrange";
 import { healthBucket } from "./collapse";
 import { linkKey } from "./compare";
+import { ranksInOrder, sameRanks, type ModelOrder } from "./customOrder";
 import type { Point } from "./layout";
 import { HEALTH_SORT_ORDER } from "./ordering";
 import { routeSteps, type Rect } from "./stepRouter";
@@ -88,6 +89,8 @@ export interface TidyLayout {
   readonly edges: readonly TidyEdge[];
   /** Frames round the parts that are not connected to the root. */
   readonly shelves: readonly Rect[];
+  /** What stands side by side, row by row from the roots, left to right: what a drag reorders. */
+  readonly ranks: readonly (readonly string[])[];
   readonly bounds: Rect;
 }
 
@@ -111,8 +114,8 @@ export interface TidyInput {
    * is left; a frame round unconnected parts is drawn only where a tile of it is.
    */
   readonly only?: TidyOnly;
-  /** The order a viewer gave the hierarchy by dragging, as `arrange` keeps it: entity names per rank. */
-  readonly order?: readonly (readonly string[])[];
+  /** The order the viewer gave the model by dragging: siblings stand in it, and what hangs below them goes along. */
+  readonly order?: ModelOrder | null;
 }
 
 /** Which connected part of the whole model each entity belongs to; the root's part is the largest. */
@@ -144,7 +147,7 @@ function unionOf(rects: readonly Rect[]): Rect {
   return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
 }
 
-const EMPTY: TidyLayout = { nodes: [], edges: [], shelves: [], bounds: { x: 0, y: 0, width: 0, height: 0 } };
+const EMPTY: TidyLayout = { nodes: [], edges: [], shelves: [], ranks: [], bounds: { x: 0, y: 0, width: 0, height: 0 } };
 
 /**
  * Arranges the entities in rows with `arrange` (parents centred over children, few crossings),
@@ -175,12 +178,12 @@ export function tidyLayout(input: TidyInput): TidyLayout {
     ...drawn.map((entity) => [entity.name, TILE] as const),
     ...input.folds.map((fold) => [fold.id, sizeOfFold(fold)] as const),
   ]);
-  const arrangement = arrange(
-    [...sizes].map(([name, size]) => ({ name, ...size })),
-    edges.map((edge) => ({ parentEntityName: edge.from, childEntityName: edge.to, displayName: edge.text })),
-    "tb",
-    input.order ? { order: input.order } : {},
-  );
+  const arrangeNodes = [...sizes].map(([name, size]) => ({ name, ...size }));
+  const arrangeEdges = edges.map((edge) => ({ parentEntityName: edge.from, childEntityName: edge.to, displayName: edge.text }));
+  const own = arrange(arrangeNodes, arrangeEdges, "tb");
+  // The viewer's order is laid over the arrangement's own: only what was moved, and what hangs below it, changes place.
+  const wanted = ranksInOrder(own.ranks, arrangeEdges, input.order);
+  const arrangement = sameRanks(wanted, own.ranks) ? own : arrange(arrangeNodes, arrangeEdges, "tb", { order: wanted });
   const routing = routeSteps(
     [...sizes].map(([id, size]) => ({ id, ...(arrangement.positions.get(id) as Point), ...size })),
     edges.map((edge) => ({ id: edge.id, from: edge.from, to: edge.to, labelWidth: labelWidthOf(edge.text), weight: edge.weight })),
@@ -213,7 +216,8 @@ export function tidyLayout(input: TidyInput): TidyLayout {
       shelves.push({ x: box.x - SHELF_PAD.side, y: box.y - SHELF_PAD.top, width: box.width + 2 * SHELF_PAD.side, height: box.height + SHELF_PAD.top + SHELF_PAD.bottom });
     }
   }
-  return { nodes, edges: lines, shelves, bounds: unionOf([routing.bounds, ...shelves]) };
+  const ranks = arrangement.ranks.map((row) => row.filter((id) => present.has(id)));
+  return { nodes, edges: lines, shelves, ranks, bounds: unionOf([routing.bounds, ...shelves]) };
 }
 
 /** What the signal row of a tile shows: one glyph per signal, worst first, and how many did not fit. */

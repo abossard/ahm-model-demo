@@ -4,8 +4,13 @@ import {
   bandAt,
   bandsFromPoints,
   bandsFromTransitions,
+  bucketRange,
+  bucketSeries,
+  bucketSize,
+  changeFrom,
   clusterMarkers,
   decimateColumns,
+  firstAt,
   holdOf,
   lowerIsWorse,
   parseDuration,
@@ -184,6 +189,102 @@ describe("points", () => {
     const columns = decimateColumns(points, 0, 100, 10);
 
     expect(columns.state).toEqual([3, 0]);
+  });
+});
+
+describe("changeFrom", () => {
+  // Healthy, then Degraded, then nothing for a while, then Unhealthy.
+  const bands: Band[] = [
+    { a: 0, b: 100, state: 1 },
+    { a: 100, b: 200, state: 2 },
+    { a: 300, b: 400, state: 3 },
+  ];
+
+  it.each([
+    { name: "the next change after the start", t: 0, step: 1, expected: 100 },
+    { name: "the next change from inside a band", t: 150, step: 1, expected: 200 },
+    { name: "where the data stops is a change", t: 100, step: 1, expected: 200 },
+    { name: "where it comes back is one too", t: 200, step: 1, expected: 300 },
+    { name: "after the last change there is none", t: 300, step: 1, expected: null },
+    { name: "the change before", t: 350, step: -1, expected: 300 },
+    { name: "the change before one it stands on", t: 300, step: -1, expected: 200 },
+    { name: "the start of the history is no change", t: 100, step: -1, expected: null },
+    { name: "from beyond the end back to the last change", t: 900, step: -1, expected: 300 },
+  ] as const)("$name", ({ t, step, expected }) => {
+    expect(changeFrom(bands, t, step)).toBe(expected);
+  });
+
+  it("a history without bands has no change", () => {
+    expect(changeFrom([], 5, 1)).toBeNull();
+  });
+});
+
+describe("buckets", () => {
+  it.each([
+    { msPerPx: 0.2, expected: 1 },
+    { msPerPx: 1, expected: 1 },
+    { msPerPx: 3, expected: 2 },
+    { msPerPx: 4, expected: 4 },
+    { msPerPx: 600_000, expected: 524_288 },
+  ])("a pixel of $msPerPx ms takes buckets of $expected ms: between half a pixel and a pixel", ({ msPerPx, expected }) => {
+    expect(bucketSize(msPerPx)).toBe(expected);
+  });
+
+  it("folds the values of a bucket into its extremes, its first and last value and its worst state", () => {
+    const points: Point[] = [[0, 5, 1], [3, 9, 3], [7, 1, 2], [8, 4, 1], [20, 7, 1]];
+
+    const buckets = bucketSeries(points, 8);
+
+    expect(buckets.length).toBe(3);
+    expect([...buckets.from]).toEqual([0, 8, 20]);
+    expect([...buckets.to]).toEqual([7, 8, 20]);
+    expect([...buckets.lo]).toEqual([1, 4, 7]);
+    expect([...buckets.hi]).toEqual([9, 4, 7]);
+    expect([...buckets.first]).toEqual([5, 4, 7]);
+    expect([...buckets.last]).toEqual([1, 4, 7]);
+    expect([...buckets.state]).toEqual([3, 1, 1]);
+    expect([...buckets.values]).toEqual([3, 1, 1]);
+  });
+
+  it.each([
+    { name: "between two buckets", points: [[0, 1, 1], [10, null, 0], [20, 2, 1]] as Point[], cut: [0, 1] },
+    { name: "inside a bucket, which it splits", points: [[0, 1, 1], [1, null, 0], [2, 2, 1]] as Point[], cut: [0, 1] },
+    { name: "before the first value", points: [[0, null, 0], [1, 2, 1]] as Point[], cut: [1] },
+    { name: "nowhere", points: [[0, 1, 1], [9, 2, 1]] as Point[], cut: [0, 0] },
+  ])("an evaluation without a value $name marks the bucket after it", ({ points, cut }) => {
+    expect([...bucketSeries(points, 8).cut]).toEqual(cut);
+  });
+
+  it("the buckets are the same whatever window shows: they start at multiples of their size", () => {
+    const points: Point[] = Array.from({ length: 100 }, (_, i) => [1000 + i * 3, i, 1]);
+
+    const buckets = bucketSeries(points, 16);
+
+    for (let i = 1; i < buckets.length; i += 1) {
+      expect(Math.floor((buckets.from[i] as number) / 16)).toBe(Math.floor((buckets.to[i] as number) / 16));
+      expect(Math.floor((buckets.from[i] as number) / 16)).toBeGreaterThan(Math.floor((buckets.from[i - 1] as number) / 16));
+    }
+  });
+
+  it.each([
+    { times: [10, 20, 30], t: 20, above: false, expected: 1 },
+    { times: [10, 20, 30], t: 20, above: true, expected: 2 },
+    { times: [10, 20, 30], t: 5, above: false, expected: 0 },
+    { times: [10, 20, 30], t: 31, above: false, expected: 3 },
+    { times: [], t: 1, above: false, expected: 0 },
+  ])("the first of $times at $t (above: $above) is index $expected", ({ times, t, above, expected }) => {
+    expect(firstAt(times, t, above)).toBe(expected);
+  });
+
+  it.each([
+    { name: "a window in the middle takes one bucket either side", t0: 35, t1: 45, expected: [3, 6] },
+    { name: "a window before the series takes the first bucket", t0: -50, t1: -10, expected: [0, 1] },
+    { name: "a window after it takes the last", t0: 500, t1: 600, expected: [9, 10] },
+    { name: "a window over everything takes everything", t0: -5, t1: 500, expected: [0, 10] },
+  ])("$name", ({ t0, t1, expected }) => {
+    const buckets = bucketSeries(Array.from({ length: 10 }, (_, i): Point => [i * 10, i, 1]), 1);
+
+    expect(bucketRange(buckets, t0, t1)).toEqual(expected);
   });
 });
 

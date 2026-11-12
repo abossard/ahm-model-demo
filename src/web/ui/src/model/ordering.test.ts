@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { HEALTH_SORT_ORDER, SORT_CHOICES, orderEntities, orderWithinRanks, type SortKey } from "./ordering";
+import { HEALTH_SORT_ORDER, SORT_CHOICES, orderChoices, orderEntities, orderPicked, orderWithinRanks, type SortKey } from "./ordering";
+import { VIEW_IDS } from "./views";
 import type { GraphLayout, NodeSize, Point } from "./layout";
 import type { Entity, HealthState } from "./types";
 
@@ -155,5 +156,39 @@ describe("orderWithinRanks", () => {
     const ordered = orderWithinRanks(layout, ["alpha", "delta"], null, SIZES);
     expect(ordered.positions.get("delta")).toEqual({ x: 10, y: 20 });
     expect(ordered.positions.get("alpha")).toEqual({ x: 90, y: 60 });
+  });
+});
+
+describe("the Order control in each view", () => {
+  it.each([
+    ["swimlanes", "shortest"],
+    ["tidy", "shortest"],
+    ["cause", "shortest"],
+    ["outline", "health"],
+    ["coverage", "name"],
+  ] as const)("%s offers its own order, %s, and Custom", (view, own) => {
+    expect(orderChoices(view, "shortest").choices.map((choice) => choice.key)).toEqual([...new Set([own, "custom"])].sort((left, right) => SORT_CHOICES.findIndex((choice) => choice.key === left) - SORT_CHOICES.findIndex((choice) => choice.key === right)));
+    expect(orderChoices(view, "name").value).toBe(own);
+    expect(orderChoices(view, "custom").value).toBe("custom");
+    expect(orderChoices(view, "name").reversible).toBe(false);
+  });
+
+  it("the card graph offers every order, and turns round the ones that sort", () => {
+    expect(orderChoices("zoom", "health")).toEqual({ choices: SORT_CHOICES, value: "health", reversible: true });
+    expect(orderChoices("zoom", "shortest").reversible).toBe(false);
+    expect(orderChoices("zoom", "custom").reversible).toBe(false);
+  });
+
+  it("offers Custom in every view, under the same word", () => {
+    for (const view of VIEW_IDS) expect(orderChoices(view, "shortest").choices.find((choice) => choice.key === "custom")?.label).toBe("Custom");
+  });
+
+  it.each([
+    ["the card graph sets what is picked", "zoom", "shortest", "health", "health"],
+    ["any view enters Custom", "outline", "name", "custom", "custom"],
+    ["another view leaving Custom gives every view its own order back", "outline", "custom", "health", "shortest"],
+    ["another view picking its own order leaves the card graph's order alone", "coverage", "observed", "name", "observed"],
+  ] as const)("%s", (_name, view, sortKey, picked, expected) => {
+    expect(orderPicked(view, sortKey, picked)).toBe(expected);
   });
 });

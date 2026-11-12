@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_TIMELINE, mergeResponse, type EntityInfo, type TimelineResponse } from "./timeline";
+import type { EntityInfo, TimelineResponse } from "./timeline";
+import { heldFrom } from "./timelineFixture";
 import type { Band } from "./timelineBands";
-import { coveredSpan, detectIncidents, entityBands, incidentText, modelAt, planSignals } from "./timelineIncidents";
+import { coveredSpan, detectIncidents, entityBands, incidentText, modelAt } from "./timelineIncidents";
 
 const band = (a: number, b: number, state: 0 | 1 | 2 | 3): Band => ({ a, b, state });
 
@@ -70,7 +71,7 @@ describe("incidentText", () => {
 });
 
 describe("the model at an instant", () => {
-  const data = mergeResponse(EMPTY_TIMELINE, overview({}));
+  const { data } = heldFrom(overview({}));
   const bandsOf = (info: EntityInfo) => entityBands(data, info);
 
   it.each([
@@ -93,26 +94,5 @@ describe("the model at an instant", () => {
   it("covers the whole held range", () => {
     expect(coveredSpan(data.states.a?.covered ?? [], { from: 5, to: 6 })).toEqual({ from: 0, to: 1000 });
     expect(coveredSpan([], { from: 5, to: 6 })).toEqual({ from: 5, to: 6 });
-  });
-});
-
-describe("planSignals", () => {
-  const data = mergeResponse(EMPTY_TIMELINE, overview({}));
-  const held = mergeResponse(data, overview({
-    entities: [],
-    states: [],
-    series: [{ entity: "a", signal: "cpu", points: [[500, 1, 1]], complete: true, earliest: null }],
-    range: { from: new Date(0).toISOString(), to: new Date(1_000_000).toISOString() },
-  }));
-
-  it.each([
-    { name: "nothing is held", data, names: ["a", "b"], want: { from: 0, to: 1_000_000 }, expected: { entities: ["a", "b"], span: { from: 0, to: 1_000_000 } } },
-    { name: "one entity is held", data: held, names: ["a", "b"], want: { from: 0, to: 1_000_000 }, expected: { entities: ["b"], span: { from: 0, to: 1_000_000 } } },
-    { name: "everything asked is held", data: held, names: ["a"], want: { from: 0, to: 900_000 }, expected: null },
-    { name: "an unknown entity is ignored", data: held, names: ["ghost"], want: { from: 0, to: 10 }, expected: null },
-    { name: "only the new edge is missing and it is too small to matter", data: held, names: ["a"], want: { from: 0, to: 1_000_500 }, expected: null },
-    { name: "the old part is missing", data: held, names: ["a"], want: { from: -2_000_000, to: 1_000_000 }, expected: { entities: ["a"], span: { from: -2_000_000, to: 0 } } },
-  ])("plans $name", ({ data: subject, names, want, expected }) => {
-    expect(planSignals(subject, names, want)).toEqual(expected);
   });
 });

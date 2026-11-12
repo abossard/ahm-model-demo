@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { applyTimelineDelta, stateCode } from "./timelineLive";
-import { EMPTY_TIMELINE, mergeResponse, seriesKey, type EntityInfo, type TimelineData, type TimelineResponse } from "./timeline";
+import { applyLive, stateCode } from "./timelineLive";
+import { EMPTY_TIMELINE, seriesKey, type EntityInfo, type Point, type TimelineResponse } from "./timeline";
+import { EMPTY_STORE, mergeAnswer, toTimelineData, type TimeStore } from "./timeStore";
 
 const ENTITY: EntityInfo = { name: "a", displayName: "A", parents: [], state: 1, signals: [{ name: "cpu", displayName: "CPU", kind: null, unit: null, refreshInterval: null, rules: { degraded: null, unhealthy: null, dynamic: false } }] };
+const KEY = seriesKey("a", "cpu");
+const ALL = { parts: ["structure", "states", "annotations", "reports", "signals"], entities: null, signals: null, level: 0 } as const;
 
-function held(): TimelineData {
-  const response: TimelineResponse = {
+function answer(parts: Partial<TimelineResponse> = {}, from = 0, to = 1000): TimelineResponse {
+  return {
     model: "m",
     observedAt: "",
-    range: { from: new Date(0).toISOString(), to: new Date(1000).toISOString() },
+    range: { from: new Date(from).toISOString(), to: new Date(to).toISOString() },
     retentionDays: 30,
     resolution: 0,
     partial: false,
@@ -18,30 +21,42 @@ function held(): TimelineData {
     annotations: [],
     reports: [],
     failures: [],
+    ...parts,
   };
-  return mergeResponse(EMPTY_TIMELINE, response);
 }
 
+const held = (): TimeStore => mergeAnswer(EMPTY_STORE, answer(), ALL);
 const NONE = new Map<string, 0 | 1 | 2 | 3 | 4>();
 
-describe("applyTimelineDelta", () => {
+describe("applyLive", () => {
   it("adds a transition once, in time order, and moves the current state of the entity", () => {
     const delta = { transitions: [{ entity: "a", t: 1500, from: 1 as const, to: 3 as const, reason: "SignalTransition" }] };
 
-    const once = applyTimelineDelta(held(), delta, 2000, new Map([["a", 3 as const]]));
-    const twice = applyTimelineDelta(once, delta, 2100, new Map([["a", 3 as const]]));
+    const once = applyLive(held(), delta, 2000, new Map([["a", 3 as const]]));
+    const twice = applyLive(once, delta, 2100, new Map([["a", 3 as const]]));
 
-    expect(once.states.a?.transitions.map((row) => [row.t, row.to])).toEqual([[100, 1], [1500, 3]]);
-    expect(twice.states.a?.transitions).toHaveLength(2);
+    expect(once.states.a?.rows.map((row) => [row.t, row.to])).toEqual([[100, 1], [1500, 3]]);
+    expect(twice.states.a?.rows).toHaveLength(2);
     expect(once.entities[0]?.state).toBe(3);
     expect(once.now).toBe(2000);
   });
 
-  it("carries every held history forward to now, because no transition means no change", () => {
-    const next = applyTimelineDelta(held(), {}, 5000, NONE);
+  it("carries every current history forward to now, because no transition means no change", () => {
+    const next = applyLive(held(), {}, 5000, NONE);
 
     expect(next.states.a?.covered).toEqual([{ from: 0, to: 5000 }]);
-    expect(next.series[seriesKey("a", "cpu")]?.covered).toEqual([{ from: 0, to: 5000 }]);
+    expect(next.annotations.a?.covered).toEqual([{ from: 0, to: 5000 }]);
+    expect(next.series[KEY]?.[0]?.covered).toEqual([{ from: 0, to: 5000 }]);
+  });
+
+  it("a history that ended long before now keeps its gap: what happened in between was never read", () => {
+    const hour = 3600_000;
+    const old = mergeAnswer(mergeAnswer(EMPTY_STORE, answer({ series: [] }, 0, 10 * hour), ALL), answer({ entities: [], states: [], series: [{ entity: "a", signal: "cpu", points: [[900, 1, 1]], complete: true, earliest: null }] }, 0, hour), { ...ALL, parts: ["signals"] });
+
+    const next = applyLive(old, { points: [{ entity: "a", signal: "cpu", points: [[10 * hour + 10, 5, 1]] }] }, 10 * hour + 30_000, NONE);
+
+    expect(next.series[KEY]?.[0]).toBe(old.series[KEY]?.[0]);
+    expect(next.states.a?.covered).toEqual([{ from: 0, to: 10 * hour + 30_000 }]);
   });
 
   it("appends a new point, revises one with the same time, and ignores a series that is not held", () => {
@@ -52,14 +67,42 @@ describe("applyTimelineDelta", () => {
       ],
     };
 
-    const next = applyTimelineDelta(held(), delta, 1200, NONE);
+    const next = applyLive(held(), delta, 1200, NONE);
 
-    expect(next.series[seriesKey("a", "cpu")]?.points).toEqual([[900, 7, 2], [1100, 3, 1]]);
+    expect(next.series[KEY]?.[0]?.rows).toEqual([[900, 7, 2], [1100, 3, 1]]);
     expect(next.series[seriesKey("a", "mem")]).toBeUndefined();
   });
 
+  it("a new point goes onto every level of the series that is held and current", () => {
+    const coarse = mergeAnswer(held(), answer({ entities: [], states: [], resolution: 3600, series: [{ entity: "a", signal: "cpu", points: [[500, 2, 1]], complete: true, earliest: null }] }), { ...ALL, parts: ["signals"], level: 2 });
+
+    const next = applyLive(coarse, { points: [{ entity: "a", signal: "cpu", points: [[1100, 3, 1]] }] }, 1200, NONE);
+
+    expect(next.series[KEY]?.[0]?.rows.at(-1)).toEqual([1100, 3, 1]);
+    expect(next.series[KEY]?.[2]?.rows).toEqual([[500, 2, 1], [1100, 3, 1]]);
+  });
+
+  it("a delta without a point for a series leaves its points the same array, also where two levels are drawn as one", () => {
+    const dense: Point[] = Array.from({ length: 30 }, (_unused, index) => [index * 10, index, 1]);
+    const both = mergeAnswer(
+      mergeAnswer(EMPTY_STORE, answer({ series: [{ entity: "a", signal: "cpu", points: dense, complete: true, earliest: null }] }, 0, 400), ALL),
+      answer({ entities: [], states: [], resolution: 3600, series: [{ entity: "a", signal: "cpu", points: [[450, 2, 1]], complete: true, earliest: null }] }, 400, 1000),
+      { ...ALL, parts: ["signals"], level: 2 },
+    );
+    const shown = { level: 2, window: { from: 0, to: 1000 } };
+    const before = toTimelineData(both, shown, EMPTY_TIMELINE);
+
+    const after = toTimelineData(applyLive(both, {}, 1500, NONE), shown, before);
+
+    expect(after).not.toBe(before);
+    expect(after.series[KEY]?.points).toBe(before.series[KEY]?.points);
+    expect(after.series[KEY]?.covered).toEqual([{ from: 0, to: 1500 }]);
+    expect(after.states.a?.transitions).toBe(before.states.a?.transitions);
+    expect(after.entities[0]?.signals[0]?.rules).toBe(before.entities[0]?.signals[0]?.rules);
+  });
+
   it("a transition of an entity whose history was never read is left for when it is", () => {
-    const next = applyTimelineDelta(held(), { transitions: [{ entity: "z", t: 1500, from: 1, to: 2, reason: null }] }, 2000, NONE);
+    const next = applyLive(held(), { transitions: [{ entity: "z", t: 1500, from: 1, to: 2, reason: null }] }, 2000, NONE);
 
     expect(next.states.z).toBeUndefined();
   });
@@ -70,20 +113,20 @@ describe("applyTimelineDelta", () => {
       reports: [{ entity: "a", t: 1300, state: 2 as const, value: 0.5, reason: "x", reportId: "r1" }],
     };
 
-    const twice = applyTimelineDelta(applyTimelineDelta(held(), delta, 2000, NONE), delta, 2100, NONE);
+    const twice = applyLive(applyLive(held(), delta, 2000, NONE), delta, 2100, NONE);
 
-    expect(twice.annotations).toHaveLength(1);
-    expect(twice.reports).toHaveLength(1);
+    expect(twice.annotations.a?.rows).toHaveLength(1);
+    expect(twice.reports.a?.rows).toHaveLength(1);
   });
 
-  it("does nothing before the overview has been read", () => {
-    expect(applyTimelineDelta(EMPTY_TIMELINE, {}, 5000, NONE)).toBe(EMPTY_TIMELINE);
+  it("does nothing before the structure has been read", () => {
+    expect(applyLive(EMPTY_STORE, {}, 5000, NONE)).toBe(EMPTY_STORE);
   });
 
   it("leaves an entity object alone when its state did not change", () => {
     const before = held();
 
-    const next = applyTimelineDelta(before, {}, 2000, new Map([["a", 1 as const]]));
+    const next = applyLive(before, {}, 2000, new Map([["a", 1 as const]]));
 
     expect(next.entities).toBe(before.entities);
   });

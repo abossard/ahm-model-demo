@@ -9,6 +9,7 @@ import { SIDE_LABEL, linkKey, noEntitiesText } from "../model/compare";
 import { layerOf } from "../model/layerOf";
 import { chainSteps } from "../model/chainSteps";
 import { diffTokens, edgeAppearance, impactOf, impactStyle, tokensFor } from "../model/palette";
+import { drawnParents, type ReorderWorld } from "../model/reorder";
 import { LANE_GUTTER, contentKey, firstProblem, foldId, layoutSwimlanes, lineageOf, withParents, type SwimCard, type SwimFold, type SwimLane, type SwimlaneLayout } from "../model/swimlanes";
 import type { Entity } from "../model/types";
 import { actions, canvasFrame, useStore } from "../store/store";
@@ -17,6 +18,7 @@ import { StateGlyph } from "../components/StateGlyph";
 import { stepEdge, stepEdgeTypes, type StepRfEdge } from "../components/StepEdge";
 import { prefersReducedMotion } from "../components/Topology";
 import type { ViewProps } from "./types";
+import { DropSlot, moveClass, useReorder, withMoveNodes, type MoveMarks } from "./useReorder";
 import "./swimlanes.css";
 
 const MIN_ZOOM = 0.08;
@@ -64,7 +66,7 @@ interface LaneData extends Record<string, unknown> {
   readonly lane: SwimLane;
 }
 
-interface CardData extends Record<string, unknown> {
+interface CardData extends Record<string, unknown>, MoveMarks {
   readonly card: SwimCard;
   readonly entity: Entity;
   readonly laneKind: string;
@@ -110,7 +112,7 @@ function iconOf(name: string): string {
 }
 
 function CardImpl({ data }: NodeProps<Node<CardData, "card">>): JSX.Element {
-  const { card, entity, laneKind, selected, highlighted, step, badge, marked, onActivate } = data;
+  const { card, entity, laneKind, selected, highlighted, step, badge, marked, reorderable, ghost, onActivate } = data;
   const { spec, rect } = card;
   const token = tokensFor(entity.healthState);
   const impact = impactOf(entity.impact);
@@ -134,9 +136,9 @@ function CardImpl({ data }: NodeProps<Node<CardData, "card">>): JSX.Element {
           </span>
         )}
         <div
-          className={mergeClasses("swim-card", selected && "is-selected", highlighted && "is-highlighted", marked && "is-marked")}
-          data-testid="swim-card"
-          data-entity={entity.name}
+          className={mergeClasses("swim-card", selected && "is-selected", highlighted && "is-highlighted", marked && "is-marked", moveClass(data).trim())}
+          {...(ghost ? { "data-testid": "reorder-ghost", "aria-hidden": true } : { "data-testid": "swim-card", "data-entity": entity.name, tabIndex: 0 })}
+          aria-keyshortcuts={reorderable && !ghost ? "M" : undefined}
           data-state={entity.healthState}
           data-lane={laneKind}
           data-step={step ?? undefined}
@@ -144,7 +146,6 @@ function CardImpl({ data }: NodeProps<Node<CardData, "card">>): JSX.Element {
           data-badge={badge ?? undefined}
           data-marked={marked ? "true" : undefined}
           role="button"
-          tabIndex={0}
           aria-label={spoken}
           style={{
             width: rect.width,
@@ -256,7 +257,7 @@ const SwimNode = memo(function SwimNode(props: NodeProps<SwimRfNode>): JSX.Eleme
   return <CardImpl {...(props as NodeProps<Node<CardData, "card">>)} />;
 });
 
-const nodeTypes: NodeTypes = { lane: SwimNode, card: SwimNode, fold: SwimNode };
+const nodeTypes: NodeTypes = { lane: SwimNode, card: SwimNode, fold: SwimNode, slot: DropSlot };
 
 // ---- the view ----------------------------------------------------------------------------------------
 
@@ -351,16 +352,30 @@ function SwimlanesCanvas({ entities, relationships, selectedName, highlightedNam
   // Both sides size their cards for the same marks, so a mark never moves one side's cards but not the other's.
   const stableBadges = useStable(side ? side.marks : badges, badgeKeyOf(side ? side.marks : badges));
   const ownBadges = useStable(badges, badgeKeyOf(badges));
+  // The viewer's order, shared with every view; while a card is dragged, the order a drop would keep.
+  const reorder = useReorder({ labelOf: (id) => byName.get(id)?.displayName || id });
 
   // Labels follow the size of the model unless the viewer chose.
   const layout = useMemo(
     () =>
       layoutSwimlanes(
         { entities: filtered.entities, relationships: filtered.relationships, layering },
-        { signals, labels: labelChoice, open, keep, ...(stableBadges ? { badges: stableBadges } : {}), ...(only ? { only } : {}), ...(rival ? { rival } : {}) },
+        { signals, labels: labelChoice, open, keep, order: reorder.order, ...(stableBadges ? { badges: stableBadges } : {}), ...(only ? { only } : {}), ...(rival ? { rival } : {}) },
       ),
-    [filtered, layering, signals, labelChoice, open, keep, stableBadges, only, rival],
+    [filtered, layering, signals, labelChoice, open, keep, stableBadges, only, rival, reorder.order],
   );
+  // A card trades places with the cards of its row that share a parent with it; a chip holds its place. A compared model is laid out for both sides and is not dragged.
+  const world = useMemo<ReorderWorld | null>(() => {
+    if (compare !== undefined) return null;
+    const placed = [...layout.cards, ...layout.folds].sort((a, b) => a.row - b.row || a.rect.x - b.rect.x);
+    const rows = new Map<number, string[]>();
+    for (const thing of placed) rows.set(thing.row, [...(rows.get(thing.row) ?? []), thing.id]);
+    const cards = layout.cards.map((card) => card.id);
+    const links = layout.edges.filter((edge) => edge.relationship !== null).map((edge) => ({ parentEntityName: edge.from, childEntityName: edge.to }));
+    return { rows: [...rows.values()], rects: new Map(placed.map((thing) => [thing.id, thing.rect] as const)), parents: drawnParents(cards, new Set(cards), links) };
+  }, [compare, layout]);
+  reorder.offer(world);
+  const moving = reorder.move;
   const labels = layout.labels;
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
@@ -390,7 +405,7 @@ function SwimlanesCanvas({ entities, relationships, selectedName, highlightedNam
     const placed = [...layout.cards, ...layout.folds].sort((a, b) => a.lane - b.lane || a.row - b.row || a.rect.x - b.rect.x);
     const things: SwimRfNode[] = placed.map((thing) => {
       const fold = "members" in thing ? thing : null;
-      const common = { id: thing.id, position: { x: thing.rect.x, y: thing.rect.y }, width: thing.rect.width, height: thing.rect.height, measured: { width: thing.rect.width, height: thing.rect.height } };
+      const common = { id: thing.id, position: { x: thing.rect.x, y: thing.rect.y }, width: thing.rect.width, height: thing.rect.height, measured: { width: thing.rect.width, height: thing.rect.height }, draggable: world !== null && fold === null };
       if (fold) return { ...common, type: "fold", data: { fold, owner: byName.get(fold.owner)?.displayName || fold.owner, onToggle } };
       const card = thing as SwimCard;
       const entity = byName.get(card.id) as Entity;
@@ -406,12 +421,14 @@ function SwimlanesCanvas({ entities, relationships, selectedName, highlightedNam
           step: steps.get(card.id) ?? null,
           badge: ownBadges?.get(card.id.toLowerCase()) ?? null,
           marked: marked?.has(card.id.toLowerCase()) ?? false,
+          ...(world ? { reorderable: true } : {}),
+          ...(moving?.id === card.id ? { dragging: true } : {}),
           onActivate,
         },
       };
     });
-    return [...lanes, ...things];
-  }, [layout, byName, selectedName, highlightedName, steps, ownBadges, marked, onActivate, onToggle]);
+    return withMoveNodes([...lanes, ...things], moving) as SwimRfNode[];
+  }, [layout, byName, selectedName, highlightedName, steps, ownBadges, marked, world, moving, onActivate, onToggle]);
 
   // ---- where the viewport is: fitted, or opened on the problem when a fit would be too small to read ----
   const problem = useMemo(() => firstProblem(layout, byName), [layout, byName]);
@@ -497,7 +514,7 @@ function SwimlanesCanvas({ entities, relationships, selectedName, highlightedNam
   const zoomedName = zoomedTo === null ? null : (byName.get(zoomedTo)?.displayName || zoomedTo);
 
   return (
-    <div className={styles.root} data-testid="swimlanes-view" data-side={side?.side} data-dense={layout.dense ? "true" : undefined}>
+    <div className={mergeClasses(styles.root, moving !== null && "is-reordering")} data-testid="swimlanes-view" data-side={side?.side} data-dense={layout.dense ? "true" : undefined} {...reorder.root}>
       <div className={styles.banner} data-testid="swimlanes-summary">
         <span role="status">
           {zoomedName !== null
@@ -528,7 +545,10 @@ function SwimlanesCanvas({ entities, relationships, selectedName, highlightedNam
           nodeTypes={nodeTypes}
           edgeTypes={stepEdgeTypes}
           minZoom={MIN_ZOOM}
-          nodesDraggable={false}
+          nodesDraggable={world !== null}
+          nodeDragThreshold={4}
+          nodeClickDistance={4}
+          {...reorder.flow}
           nodesConnectable={false}
           nodesFocusable={false}
           edgesFocusable={false}

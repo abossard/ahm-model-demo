@@ -144,6 +144,11 @@ export function formatInstant(t: number, offsetMin: number): string {
   return `${formatDay(t, offsetMin)} ${formatClock(t, offsetMin, true)}`;
 }
 
+/** The selected moment in full: the day with its year, then the clock to the second. */
+export function formatMoment(t: number, offsetMin: number): string {
+  return `${formatDay(t, offsetMin)} ${local(t, offsetMin).getUTCFullYear()}, ${formatClock(t, offsetMin, true)}`;
+}
+
 /** The step between ticks: the smallest whose ticks are at least `minPx` apart. */
 export function tickStep(span: number, width: number, minPx: number): number {
   return STEPS.find((step) => (width * step) / Math.max(1, span) >= minPx) ?? DAY * 7;

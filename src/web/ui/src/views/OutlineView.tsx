@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { JSX } from "react";
+import type { JSX, PointerEvent as ReactPointerEvent } from "react";
 import { FlatTree, FlatTreeItem, TreeItemLayout, makeStyles, mergeClasses, tokens } from "@fluentui/react-components";
 import type { FlatTreeProps } from "@fluentui/react-components";
 import type { ChangeBadge } from "../model/changes";
@@ -20,6 +20,7 @@ import {
   type OutlineRow,
 } from "../model/outline";
 import { diffTokens, impactOf, impactStyle, tokensFor } from "../model/palette";
+import type { ReorderWorld } from "../model/reorder";
 import type { AsyncState, EntityDetail } from "../model/types";
 import { actions, useStore } from "../store/store";
 import { useWindowedRows } from "../components/useWindowedRows";
@@ -28,6 +29,7 @@ import { StateGlyph } from "../components/StateGlyph";
 import { OutlineRibbon } from "./OutlineRibbon";
 import { useOutlineState } from "./outlineState";
 import type { ViewProps } from "./types";
+import { useReorder } from "./useReorder";
 
 /** Rows drawn beyond the ones on screen, so a quick scroll shows no gap. */
 const OVERSCAN = 6;
@@ -128,8 +130,13 @@ interface ItemProps {
   readonly shownUnder: string | null;
   /** When the selected entity last changed state; only the selected row says so. */
   readonly lastChange: string | null;
+  /** The row can be moved among its siblings: M picks it up, and so does a drag. */
+  readonly reorderable: boolean;
+  /** It is being moved: it stays where its place would be, dimmed. */
+  readonly dragging: boolean;
   readonly onActivateRow: (row: OutlineRow) => void;
   readonly onFocusRow: (key: string) => void;
+  readonly onGrabRow: (key: string, event: ReactPointerEvent<Element>) => void;
 }
 
 function describe(row: OutlineRow, step: number | null, badge: ChangeBadge | null, shownUnder: string | null): string {
@@ -148,7 +155,7 @@ function describe(row: OutlineRow, step: number | null, badge: ChangeBadge | nul
   return parts.join(", ");
 }
 
-const Item = memo(function Item({ row, top, active, selected, highlighted, marked, step, badge, shownUnder, lastChange, onActivateRow, onFocusRow }: ItemProps): JSX.Element {
+const Item = memo(function Item({ row, top, active, selected, highlighted, marked, step, badge, shownUnder, lastChange, reorderable, dragging, onActivateRow, onFocusRow, onGrabRow }: ItemProps): JSX.Element {
   const styles = useStyles();
   const { entity } = row;
   const name = entity.displayName || entity.name;
@@ -166,8 +173,9 @@ const Item = memo(function Item({ row, top, active, selected, highlighted, marke
       aria-setsize={row.setSize}
       aria-selected={selected}
       aria-label={describe(row, step, badge, shownUnder)}
+      aria-keyshortcuts={reorderable ? "M" : undefined}
       tabIndex={active ? 0 : -1}
-      className={styles.item}
+      className={mergeClasses(styles.item, dragging && "is-dragging")}
       style={{ position: "absolute", top, left: 0, right: 0, height: row.height }}
       data-testid="outline-row"
       data-key={row.key}
@@ -190,6 +198,7 @@ const Item = memo(function Item({ row, top, active, selected, highlighted, marke
         onActivateRow(row);
       }}
       onFocus={() => onFocusRow(row.key)}
+      onPointerDown={(event) => onGrabRow(row.key, event)}
     >
       <TreeItemLayout className={mergeClasses(styles.layout, selected && styles.selected, highlighted && styles.highlighted, row.dimmed && styles.dimmed)}>
         <span className={styles.content}>
@@ -280,7 +289,7 @@ function latestChange(detail: AsyncState<EntityDetail>): { readonly name: string
   return { name: detail.value.entity.name, when: formatWhen(newest) };
 }
 
-export function OutlineView({ entities, relationships, selectedName, highlightedName, chainNames, badges, marked, onActivate }: ViewProps): JSX.Element {
+export function OutlineView({ entities, relationships, selectedName, highlightedName, chainNames, badges, marked, compare, onActivate }: ViewProps): JSX.Element {
   const styles = useStyles();
   const selectedHealth = useStore((state) => state.selectedHealth);
   const excludedEntityMode = useStore((state) => state.excludedEntityMode);
@@ -294,17 +303,38 @@ export function OutlineView({ entities, relationships, selectedName, highlighted
     () => visibleGraph(entities, relationships, new Set(), { selectedHealth: new Set(selectedHealth), excludedEntityMode }),
     [entities, relationships, selectedHealth, excludedEntityMode],
   );
-  const rows = useMemo(() => outlineRows(visible.entities, visible.relationships, overrides, visible.dotNames), [visible, overrides]);
   const byName = useMemo(() => new Map(visible.entities.map((entity) => [entity.name, entity] as const)), [visible]);
+  // The viewer's order, shared with every view; while a row is dragged, the order a drop would keep. A row's id is its key.
+  const rowsRef = useRef<readonly OutlineRow[]>([]);
+  const reorder = useReorder({ idAttribute: "key", labelOf: (key) => rowsRef.current.find((row) => row.key === key)?.entity.displayName || key });
+  const rows = useMemo(() => outlineRows(visible.entities, visible.relationships, overrides, visible.dotNames, reorder.order), [visible, overrides, reorder.order]);
   const steps = useMemo(() => chainSteps(chainNames, byName.keys()), [chainNames, byName]);
   const summary = useMemo(() => summarise(rows), [rows]);
   const offsets = useMemo(() => rowOffsets(rows), [rows]);
   const runs = useMemo(() => ribbonRuns(rows), [rows]);
   const openKeys = useMemo(() => rows.filter((row) => row.open).map((row) => row.key), [rows]);
-  const rowsRef = useRef(rows);
   rowsRef.current = rows;
   const offsetsRef = useRef(offsets);
   offsetsRef.current = offsets;
+  // A row trades places with the rows under the same parent; what is open below it goes along. The model's own root
+  // stays first, so it holds its place. A compared model is not dragged.
+  const world = useMemo<ReorderWorld | null>(() => {
+    if (compare !== undefined) return null;
+    const siblings = new Map<string, string[]>();
+    const entityOf = new Map<string, string>();
+    rows.forEach((row) => {
+      siblings.set(row.parentKey ?? "", [...(siblings.get(row.parentKey ?? "") ?? []), row.key]);
+      entityOf.set(row.key, row.entity.name);
+    });
+    return {
+      rows: [...siblings.values()],
+      rects: new Map(rows.map((row, index) => [row.key, { x: 0, y: offsets[index] as number, width: 0, height: row.height }] as const)),
+      parents: new Map(rows.slice(1).map((row) => [row.key, row.parentKey === null ? [] : [row.parentKey]] as const)),
+      entityOf: (key) => entityOf.get(key) ?? key,
+    };
+  }, [compare, rows, offsets]);
+  reorder.offer(world);
+  const moving = reorder.move;
   const overridesRef = useRef(overrides);
   overridesRef.current = overrides;
 
@@ -391,6 +421,22 @@ export function OutlineView({ entities, relationships, selectedName, highlighted
     scrollTo(index, "center");
   }, [rows, focusSeq, scrollTo]);
 
+  // A row moved with the keyboard stays in view as it goes.
+  const movedIndex = moving === null ? -1 : rows.findIndex((row) => row.key === moving.id);
+  useEffect(() => {
+    if (moving?.source === "keyboard" && movedIndex >= 0) scrollTo(movedIndex, "nearest");
+  }, [moving?.source, movedIndex, scrollTo]);
+
+  // The pointer takes a row up and down the list: where it is across the list does not matter.
+  const onGrabRow = useCallback(
+    (key: string, event: ReactPointerEvent<Element>): void => {
+      const element = containerRef.current;
+      if (!element) return;
+      reorder.onPointerDown(key, event, (client) => ({ x: 0, y: client.y - element.getBoundingClientRect().top + element.scrollTop }));
+    },
+    [containerRef, reorder.onPointerDown],
+  );
+
   const typed = useRef({ text: "", at: 0 });
   const onNavigation: NonNullable<FlatTreeProps["onNavigation"]> = (event, data) => {
     if (data.type === "Click") return;
@@ -437,7 +483,17 @@ export function OutlineView({ entities, relationships, selectedName, highlighted
   const labelOf = (name: string | null): string | null => (name === null ? null : (byName.get(name)?.displayName || name));
 
   return (
-    <div className={styles.root} data-testid="outline-view">
+    <div
+      className={mergeClasses(styles.root, moving !== null && "is-reordering")}
+      data-testid="outline-view"
+      data-moving={reorder.root["data-moving"]}
+      data-moving-to={reorder.root["data-moving-to"]}
+      onKeyDownCapture={(event) => {
+        // M picks a row up, unless it is a letter of a name being typed to find a row.
+        if (moving === null && Date.now() - typed.current.at < TYPE_AHEAD_MS) return;
+        reorder.root.onKeyDownCapture(event);
+      }}
+    >
       <div className={styles.summary} data-testid="outline-summary">
         {summary.rows} row{summary.rows === 1 ? "" : "s"}, {summary.needAttention} entit{summary.needAttention === 1 ? "y needs" : "ies need"} attention
         {summary.references > 0 ? `, ${summary.references} also under another parent` : ""}.
@@ -470,11 +526,28 @@ export function OutlineView({ entities, relationships, selectedName, highlighted
                   badge={badges?.get(lower) ?? null}
                   shownUnder={row.kind === "also" ? labelOf(row.shownUnder) : null}
                   lastChange={name === selectedName && change?.name === name ? change.when : null}
+                  reorderable={world !== null}
+                  dragging={moving?.id === row.key}
                   onActivateRow={onActivateRow}
                   onFocusRow={onFocusRow}
+                  onGrabRow={onGrabRow}
                 />
               );
             })}
+            {moving?.candidate && movedIndex >= 0 ? (
+              <div className="drop-indicator" data-testid="drop-indicator" aria-hidden="true" style={{ position: "absolute", left: 0, right: 0, top: offsets[movedIndex], height: rows[movedIndex]?.height }} />
+            ) : null}
+            {moving?.pointer && movedIndex >= 0 ? (
+              <div
+                className={mergeClasses("reorder-ghost-row", "is-ghost", moving.candidate === null && "is-blocked")}
+                data-testid="reorder-ghost"
+                aria-hidden="true"
+                style={{ top: moving.pointer.y, height: rows[movedIndex]?.height }}
+              >
+                <HealthBadge state={(rows[movedIndex] as OutlineRow).entity.healthState} />
+                <span>{(rows[movedIndex] as OutlineRow).entity.displayName || (rows[movedIndex] as OutlineRow).entity.name}</span>
+              </div>
+            ) : null}
           </FlatTree>
         </div>
         <OutlineRibbon runs={runs} total={windowed.total} viewTop={scroller?.scrollTop ?? 0} viewHeight={scroller?.clientHeight ?? 0} onJump={onJump} />

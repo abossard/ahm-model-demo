@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { JSX, KeyboardEvent } from "react";
-import { Button, makeStyles, tokens } from "@fluentui/react-components";
+import type { JSX, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import { Button, makeStyles, mergeClasses, tokens } from "@fluentui/react-components";
 import type { ChangeBadge } from "../model/changes";
 import { visibleGraph } from "../model/collapse";
 import { noEntitiesText } from "../model/compare";
 import { coverage, neighbour, type Direction } from "../model/coverage";
 import { layoutCoverage, type LaidCell } from "../model/coverageLayout";
 import { diffTokens, impactOf, impactStyle, tokensFor } from "../model/palette";
+import type { ReorderWorld } from "../model/reorder";
 import type { Entity } from "../model/types";
 import { StateGlyph } from "../components/StateGlyph";
 import { useStore } from "../store/store";
 import type { ViewProps } from "./types";
+import { useReorder } from "./useReorder";
 
 const FALLBACK_WIDTH = 1200;
 const PADDING = 16;
@@ -78,13 +80,20 @@ interface CellProps {
   readonly active: boolean;
   readonly strips: boolean;
   readonly otherParents: number;
+  /** The cell can be moved among its siblings: M picks it up, and so does a drag. */
+  readonly reorderable?: boolean;
+  /** It is being moved: it stays where its place would be, dimmed. */
+  readonly dragging?: boolean;
+  /** A see-through copy that follows the pointer, drawn at this corner; `blocked` while no place would take it. */
+  readonly ghost?: { readonly x: number; readonly y: number; readonly blocked: boolean };
   readonly onActivate: (name: string) => void;
   readonly onZoom: (name: string) => void;
   readonly onFocusCell: (name: string) => void;
   readonly onKeyDown: (event: KeyboardEvent<SVGGElement>, name: string) => void;
+  readonly onGrab?: (name: string, event: ReactPointerEvent<Element>) => void;
 }
 
-function Cell({ cell, entity, parts, step, badge, marked, selected, highlighted, active, strips, otherParents, onActivate, onZoom, onFocusCell, onKeyDown }: CellProps): JSX.Element {
+function Cell({ cell, entity, parts, step, badge, marked, selected, highlighted, active, strips, otherParents, reorderable, dragging, ghost, onActivate, onZoom, onFocusCell, onKeyDown, onGrab }: CellProps): JSX.Element {
   const token = tokensFor(entity.healthState);
   const impact = impactOf(entity.impact);
   const loud = entity.healthState === "Degraded" || entity.healthState === "Unhealthy";
@@ -96,23 +105,29 @@ function Cell({ cell, entity, parts, step, badge, marked, selected, highlighted,
   const spoken = `${name}, ${entity.healthState}${impact === "Standard" ? "" : `, ${impactStyle[impact].word}`}${parts > 0 ? `, ${parts} leaf parts below` : ""}${badge ? `, ${badge} in the proposed changes` : ""}${step === null ? "" : `, step ${step} of the chain`}`;
   return (
     <g
-      className="coverage-cell"
-      data-testid="coverage-cell"
-      data-entity={entity.name}
+      className={mergeClasses("coverage-cell", dragging && "is-dragging", ghost && "is-ghost", ghost?.blocked && "is-blocked")}
       data-state={entity.healthState}
       data-step={step ?? undefined}
       data-badge={badge ?? undefined}
       data-marked={marked ? "true" : undefined}
       data-selected={selected ? "true" : undefined}
-      transform={`translate(${cell.x} ${cell.y})`}
-      role="button"
-      tabIndex={active ? 0 : -1}
-      aria-label={spoken}
-      aria-pressed={selected}
-      onClick={() => onActivate(entity.name)}
-      onDoubleClick={() => onZoom(entity.name)}
-      onFocus={() => onFocusCell(entity.name)}
-      onKeyDown={(event) => onKeyDown(event, entity.name)}
+      transform={`translate(${ghost?.x ?? cell.x} ${ghost?.y ?? cell.y})`}
+      {...(ghost
+        ? { "data-testid": "reorder-ghost", "aria-hidden": true }
+        : {
+            "data-testid": "coverage-cell",
+            "data-entity": entity.name,
+            role: "button",
+            tabIndex: active ? 0 : -1,
+            "aria-label": spoken,
+            "aria-pressed": selected,
+            "aria-keyshortcuts": reorderable ? "M" : undefined,
+            onClick: () => onActivate(entity.name),
+            onDoubleClick: () => onZoom(entity.name),
+            onFocus: () => onFocusCell(entity.name),
+            onKeyDown: (event: KeyboardEvent<SVGGElement>) => onKeyDown(event, entity.name),
+            onPointerDown: (event: ReactPointerEvent<SVGGElement>) => onGrab?.(entity.name, event),
+          })}
     >
       <title>{`${name} · ${entity.healthState}${diff ? ` · ${diff.word}` : ""}`}</title>
       <rect
@@ -207,13 +222,43 @@ export function CoverageView({ entities, relationships, selectedName, highlighte
     [entities, relationships, selectedHealth],
   );
   const byName = useMemo(() => new Map(filtered.entities.map((entity) => [entity.name, entity] as const)), [filtered]);
-  const model = useMemo(() => coverage(filtered.entities, filtered.relationships, { focus: zoom }), [filtered, zoom]);
+  // The viewer's order, shared with every view; while a cell is dragged, the order a drop would keep.
+  const reorder = useReorder({ labelOf: (name) => byName.get(name)?.displayName || name });
+  const model = useMemo(() => coverage(filtered.entities, filtered.relationships, { focus: zoom, order: reorder.order }), [filtered, zoom, reorder.order]);
   const layout = useMemo(
     () => layoutCoverage(model, (name) => byName.get(name)?.displayName || name, width),
     [model, byName, width],
   );
   const laid = useMemo(() => new Map(layout.cells.map((cell) => [cell.name, cell] as const)), [layout]);
   const cellOf = useMemo(() => new Map(model.cells.map((cell) => [cell.name, cell] as const)), [model]);
+  // A cell trades places with the cells under the same parent, and a part that is not connected to the root with
+  // the other such parts; what is below a cell goes along. A compared model is not dragged.
+  const world = useMemo<ReorderWorld | null>(() => {
+    if (compare !== undefined) return null;
+    const siblings = new Map<string, string[]>();
+    for (const cell of model.cells) {
+      const group = cell.parent ?? `#band:${cell.band}`;
+      siblings.set(group, [...(siblings.get(group) ?? []), cell.name]);
+    }
+    return {
+      rows: [...siblings.values()],
+      rects: new Map(layout.cells.map((cell) => [cell.name, { x: cell.x, y: cell.y, width: cell.width, height: cell.height }] as const)),
+      parents: new Map(model.cells.map((cell) => [cell.name, cell.parent === null ? [] : [cell.parent]] as const)),
+    };
+  }, [compare, model, layout]);
+  reorder.offer(world);
+  const moving = reorder.move;
+  const onGrab = useCallback(
+    (name: string, event: ReactPointerEvent<Element>): void => {
+      reorder.onPointerDown(name, event, (client) => {
+        const matrix = svg.current?.getScreenCTM?.();
+        if (!matrix) return client;
+        const local = new DOMPoint(client.x, client.y).matrixTransform(matrix.inverse());
+        return { x: local.x, y: local.y };
+      });
+    },
+    [reorder.onPointerDown],
+  );
   const steps = useMemo(() => {
     const lower = new Map(filtered.entities.map((entity) => [entity.name.toLowerCase(), entity.name] as const));
     const names = chainNames.map((name) => lower.get(name.toLowerCase())).filter((name): name is string => name !== undefined).reverse();
@@ -293,7 +338,7 @@ export function CoverageView({ entities, relationships, selectedName, highlighte
   );
 
   return (
-    <div className={styles.root} data-testid="coverage-view">
+    <div className={mergeClasses(styles.root, moving !== null && "is-reordering")} data-testid="coverage-view" {...reorder.root}>
       <div className={styles.bar} data-testid="coverage-breadcrumb" role="navigation" aria-label="Zoom path">
         <Button size="small" appearance="subtle" disabled={zoom === null} onClick={() => zoomTo(null)} data-testid="coverage-zoom-out">
           Whole model
@@ -358,6 +403,9 @@ export function CoverageView({ entities, relationships, selectedName, highlighte
                   active={cell.name === current}
                   strips={strips}
                   otherParents={model_.otherParents.length}
+                  reorderable={world !== null}
+                  dragging={moving?.id === cell.name}
+                  onGrab={onGrab}
                   onActivate={onActivate}
                   onZoom={(name) => {
                     if (!cellOf.get(name)?.leaf) zoomTo(name);
@@ -367,6 +415,36 @@ export function CoverageView({ entities, relationships, selectedName, highlighte
                 />
               );
             })}
+            {(() => {
+              const moved = moving === null ? undefined : laid.get(moving.id);
+              const entity = moving === null ? undefined : byName.get(moving.id);
+              if (!moving || !moved || !entity) return null;
+              return (
+                <g aria-hidden="true" pointerEvents="none">
+                  {moving.candidate ? <rect className="drop-indicator--svg" data-testid="drop-indicator" x={moved.x} y={moved.y} width={moved.width} height={moved.height} rx={5} /> : null}
+                  {moving.pointer ? (
+                    <Cell
+                      cell={moved}
+                      entity={entity}
+                      parts={0}
+                      step={null}
+                      badge={null}
+                      marked={false}
+                      selected={false}
+                      highlighted={false}
+                      active={false}
+                      strips={strips}
+                      otherParents={0}
+                      ghost={{ ...moving.pointer, blocked: moving.candidate === null }}
+                      onActivate={onActivate}
+                      onZoom={zoomTo}
+                      onFocusCell={setActive}
+                      onKeyDown={onKeyDown}
+                    />
+                  ) : null}
+                </g>
+              );
+            })()}
             <g aria-hidden="true" pointerEvents="none">
               {arcs.map((arc) => (
                 <path key={arc.parent} data-testid="coverage-arc" data-parent={arc.parent} d={arc.d} fill="none" stroke="var(--colorBrandStroke1)" strokeWidth={2.4} strokeDasharray="6 4" />

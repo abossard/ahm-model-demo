@@ -230,8 +230,8 @@ describe("ui state views", () => {
 describe("custom order", () => {
   const MODEL: ModelRef = { id: null, name: "hm", resourceGroup: "rg", subscriptionId: "sub", location: null, provisioningState: null };
   const OTHER: ModelRef = { ...MODEL, name: "other" };
-  const RANKS = { kind: "ranks", ranks: [["r"], ["b", "a"]] } as const;
-  const SLOTS = { kind: "slots", slots: { a: { x: 1, y: 2 } } } as const;
+  const ORDER = { chains: [{ of: "r", names: ["b", "a"] }], places: {} } as const;
+  const PLACES = { chains: [{ of: "r", names: ["b", "a"] }], places: { "elk-radial": { a: { x: 1, y: 2 } } } } as const;
 
   // The test environment has no storage of its own: this is a browser's, as far as the store can tell.
   const kept = new Map<string, string>();
@@ -247,43 +247,47 @@ describe("custom order", () => {
   it("is chosen by the first drag, which keeps the order for the open model", () => {
     expect(useStore.getState().sortKey).toBe("shortest");
 
-    actions.commitCustomOrder("hierarchy", RANKS);
+    actions.commitCustomOrder(ORDER);
 
     expect(useStore.getState().sortKey).toBe("custom");
-    expect(useStore.getState().customOrders).toEqual({ "sub/rg/hm#hierarchy": RANKS });
+    expect(useStore.getState().customOrders).toEqual({ "sub/rg/hm": ORDER });
   });
 
   it("is kept when another order is chosen, so choosing Custom again brings it back", () => {
-    actions.commitCustomOrder("hierarchy", RANKS);
+    actions.commitCustomOrder(ORDER);
     actions.setSortKey("name");
     actions.setSortKey("custom");
 
-    expect(useStore.getState().customOrders["sub/rg/hm#hierarchy"]).toEqual(RANKS);
+    expect(useStore.getState().customOrders["sub/rg/hm"]).toEqual(ORDER);
   });
 
-  it("is kept apart per model and per family of layouts", () => {
-    actions.commitCustomOrder("hierarchy", RANKS);
-    actions.commitCustomOrder("elk-radial", SLOTS);
+  it("is one per model, whatever view or layout it was given in", () => {
+    actions.commitCustomOrder(ORDER);
+    actions.commitCustomOrder(PLACES);
     useStore.setState({ selected: OTHER });
-    actions.commitCustomOrder("hierarchy", { kind: "ranks", ranks: [["x"]] });
+    actions.commitCustomOrder({ chains: [{ of: "", names: ["x", "y"] }], places: {} });
 
-    expect(Object.keys(useStore.getState().customOrders).sort()).toEqual(["sub/rg/hm#elk-radial", "sub/rg/hm#hierarchy", "sub/rg/other#hierarchy"]);
+    expect(Object.keys(useStore.getState().customOrders).sort()).toEqual(["sub/rg/hm", "sub/rg/other"]);
+    expect(useStore.getState().customOrders["sub/rg/hm"]).toEqual(PLACES);
   });
 
-  it("is forgotten by a reset, which leaves Custom for the shortest connections and keeps the other orders", () => {
-    actions.commitCustomOrder("hierarchy", RANKS);
-    actions.commitCustomOrder("elk-radial", SLOTS);
-    actions.resetCustomOrder("hierarchy");
+  it("is forgotten by a reset, chains and places alike, which leaves Custom for the shortest connections and keeps the other models' orders", () => {
+    actions.commitCustomOrder(PLACES);
+    useStore.setState({ selected: OTHER });
+    actions.commitCustomOrder(ORDER);
+    useStore.setState({ selected: MODEL });
+    actions.resetCustomOrder();
 
-    expect(useStore.getState().customOrders).toEqual({ "sub/rg/hm#elk-radial": SLOTS });
+    expect(useStore.getState().customOrders).toEqual({ "sub/rg/other": ORDER });
     expect(useStore.getState().sortKey).toBe("shortest");
   });
 
   it("is not forgotten by a reset of an order that is not there, and a reset leaves an explicit order as it is", () => {
-    actions.commitCustomOrder("hierarchy", RANKS);
+    actions.resetCustomOrder();
+    expect(useStore.getState().sortKey).toBe("shortest");
+    actions.commitCustomOrder(ORDER);
     actions.setSortKey("name");
-    actions.resetCustomOrder("elk-layered");
-    actions.resetCustomOrder("hierarchy");
+    actions.resetCustomOrder();
 
     expect(useStore.getState().sortKey).toBe("name");
     expect(useStore.getState().customOrders).toEqual({});
@@ -291,32 +295,32 @@ describe("custom order", () => {
 
   it("needs a model: with none open a drag is not kept", () => {
     useStore.setState({ selected: null });
-    actions.commitCustomOrder("hierarchy", RANKS);
+    actions.commitCustomOrder(ORDER);
 
     expect(useStore.getState().customOrders).toEqual({});
     expect(useStore.getState().sortKey).toBe("shortest");
   });
 
   it("survives a state change pushed to the model on screen", () => {
-    actions.commitCustomOrder("hierarchy", RANKS);
+    actions.commitCustomOrder(ORDER);
     useStore.setState({ model: { kind: "success", value: { ...healthModel, observedAt: "2026-07-30T16:06:00Z" } } });
 
-    expect(useStore.getState().customOrders["sub/rg/hm#hierarchy"]).toEqual(RANKS);
+    expect(useStore.getState().customOrders["sub/rg/hm"]).toEqual(ORDER);
     expect(useStore.getState().sortKey).toBe("custom");
   });
 
   it("is kept in this browser and back, with Custom still chosen, after a reload", async () => {
-    actions.commitCustomOrder("hierarchy", RANKS);
+    actions.commitCustomOrder(ORDER);
     vi.resetModules();
     const { useStore: reloaded } = await import("./store");
 
     expect(reloaded.getState().sortKey).toBe("custom");
-    expect(reloaded.getState().customOrders).toEqual({ "sub/rg/hm#hierarchy": RANKS });
+    expect(reloaded.getState().customOrders).toEqual({ "sub/rg/hm": ORDER });
   });
 
   it("is gone after a reload once it is reset", async () => {
-    actions.commitCustomOrder("hierarchy", RANKS);
-    actions.resetCustomOrder("hierarchy");
+    actions.commitCustomOrder(ORDER);
+    actions.resetCustomOrder();
     vi.resetModules();
     const { useStore: reloaded } = await import("./store");
 
@@ -324,8 +328,18 @@ describe("custom order", () => {
     expect(reloaded.getState().customOrders).toEqual({});
   });
 
+  it("reads an order kept per family of layouts, as before every view shared one, as the model's order", async () => {
+    kept.set("ahm.customOrders.v1", JSON.stringify({ "sub/rg/hm#hierarchy": { kind: "ranks", ranks: [["r"], ["b", "a"]] }, "sub/rg/hm#force": { kind: "slots", slots: { a: { x: 1, y: 2 } } } }));
+    kept.set("ahm.sortKey.v1", "custom");
+    vi.resetModules();
+    const { useStore: reloaded } = await import("./store");
+
+    expect(reloaded.getState().customOrders).toEqual({ "sub/rg/hm": { chains: [{ of: "#hierarchy:1", names: ["b", "a"] }], places: { force: { a: { x: 1, y: 2 } } } } });
+    expect(reloaded.getState().sortKey).toBe("custom");
+  });
+
   it("starts with nothing when the stored text is not an order, or storage refuses", async () => {
-    kept.set("ahm.customOrders.v1", "{nope");
+    kept.set("ahm.customOrders.v2", "{nope");
     kept.set("ahm.sortKey.v1", "sideways");
     vi.resetModules();
     const { useStore: reloaded } = await import("./store");

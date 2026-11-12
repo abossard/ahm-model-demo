@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { JSX, KeyboardEvent } from "react";
+import type { JSX } from "react";
 import { makeStyles, mergeClasses, tokens } from "@fluentui/react-components";
 import { ReactFlow, ReactFlowProvider, Background, MiniMap, useReactFlow, useStore as useFlowStore } from "@xyflow/react";
-import type { EdgeTypes, Node, NodeChange, NodeProps, NodeTypes } from "@xyflow/react";
+import type { EdgeTypes, Node, NodeChange, NodeTypes } from "@xyflow/react";
 import type { Entity, HealthModelSnapshot, HealthState, Relationship } from "../model/types";
 import {
   LAYOUT_ENGINES,
@@ -20,29 +20,18 @@ import {
   type LayoutFlow,
   type Rect,
 } from "../model/edgeRouting";
-import { familyOf, kindOf, orderKey, ranksFromPositions } from "../model/customOrder";
+import { familyOf, forLayout, kindOf, ranksFromPositions, type CustomOrder, type PlaceFamily } from "../model/customOrder";
 import { orderEntities, orderWithinRanks } from "../model/ordering";
-import {
-  candidateAt,
-  candidatesOf,
-  currentCandidate,
-  describeMove,
-  orderAfter,
-  previewPositions,
-  stepCandidate,
-  type Axis,
-  type Candidate,
-  type DragWorld,
-  type StepKey,
-} from "../model/reorder";
+import { drawnParents, previewPositions, type ReorderWorld } from "../model/reorder";
 import type { ChangeBadge } from "../model/changes";
 import { collapseControls, visibleGraph } from "../model/collapse";
 import { emptyText } from "../model/compare";
 import { cardTokens, edgeAppearance, tokensFor } from "../model/palette";
 import { LEVEL_HEIGHT, zoomLevel } from "../model/zoomLevels";
 import { actions, canvasFrame, useStore } from "../store/store";
-import { EntityNode, estimateNodeSize, type EntityNodeData, type EntityRfNode } from "./EntityNode";
+import { EntityNode, estimateNodeSize, type EntityRfNode } from "./EntityNode";
 import { FloatingEdge, type FloatingRfEdge } from "./FloatingEdge";
+import { DropSlot, GHOST_ID, SLOT_ID, useReorder, withMoveNodes } from "../views/useReorder";
 
 interface TopologyProps {
   /** Prefix of this instance's DOM id and test id, so that two graphs can share a page. */
@@ -105,24 +94,7 @@ const useStyles = makeStyles({
   },
 });
 
-/** The empty place a dragged card would take, drawn where it would stand. */
-interface SlotData extends Record<string, unknown> {
-  readonly width: number;
-  readonly height: number;
-}
-
-type GhostNode = Node<EntityNodeData, "ghost">;
-type SlotNode = Node<SlotData, "slot">;
-type TopologyNode = EntityRfNode | GhostNode | SlotNode;
-
-const GHOST_ID = "__ghost__";
-const SLOT_ID = "__slot__";
-
-function DropSlot({ data }: NodeProps<SlotNode>): JSX.Element {
-  return <div className="drop-indicator" data-testid="drop-indicator" style={{ width: data.width, height: data.height }} />;
-}
-
-const nodeTypes: NodeTypes = { entity: EntityNode, ghost: EntityNode, slot: DropSlot };
+const nodeTypes: NodeTypes = { entity: EntityNode, slot: DropSlot };
 const edgeTypes: EdgeTypes = { floating: FloatingEdge };
 
 const DEFAULT_MIN_ZOOM = 0.5;
@@ -164,16 +136,6 @@ function useReducedMotionPreference(): boolean {
 
 function motionDuration(base: number): number {
   return prefersReducedMotion() ? 0 : base;
-}
-
-/** A card on its way to another place: where the pointer has it, and the place it would take. */
-interface Move {
-  readonly name: string;
-  /** The corner of the copy that follows the pointer, in flow coordinates; none for the keyboard. */
-  readonly ghost: Point | null;
-  /** The place the card would take; null where none would have it. */
-  readonly candidate: Candidate | null;
-  readonly source: "pointer" | "keyboard";
 }
 
 function layoutMaterialSignature(
@@ -309,8 +271,6 @@ function TopologyCanvas({
   const focusNames = useStore((state) => state.focusNames);
   const focusSeq = useStore((state) => state.focusSeq);
   const chainNames = useStore((state) => state.chainNames);
-  const selectedModel = useStore((state) => state.selected);
-  const customOrders = useStore((state) => state.customOrders);
   const { fitView } = useReactFlow();
   // What the zoom shows of a card: it changes only where the zoom crosses a floor, so nothing re-renders in between.
   const level = useFlowStore((state) => zoomLevel(state.transform?.[2])) ?? "card";
@@ -389,13 +349,22 @@ function TopologyCanvas({
   const fitOn = `${layoutId}|${sortKey === "custom" ? "shortest" : sortKey}|${String(sortReversed)}`;
   // What the arrangement on screen was made for: the same, and the custom order it keeps.
   const family = familyOf(layoutId);
-  const customKey = family ? orderKey(selectedModel, family) : null;
-  const custom = sortKey === "custom" && customKey ? customOrders[customKey] ?? null : null;
-  const orderStamp = useMemo(() => (custom ? JSON.stringify(custom) : ""), [custom]);
+  const nameOf = useCallback((name: string): string => entities.find((entity) => entity.name === name)?.displayName || name, [entities]);
+  // What a drop showed is kept on screen until the arrangement it asked for arrives.
+  const previewRef = useRef<ReadonlyMap<string, Point> | null>(null);
+  const reorder = useReorder({ labelOf: nameOf, onKeep: () => setHeld(previewRef.current) });
+  // The viewer's order of the model, as far as this layout can keep it: its chains, or its places.
+  const stored = reorder.stored;
+  const orderStamp = useMemo(
+    () => (stored && family ? JSON.stringify(kindOf(family) === "slots" ? (stored.places[family as PlaceFamily] ?? null) : stored.chains) : ""),
+    [stored, family],
+  );
   const settledKey = `${fitOn}|${orderStamp}`;
   const fitOnRef = useRef(settledKey);
   fitOnRef.current = settledKey;
+  // The ranks on screen, and the ranks the layout made by itself, which the viewer's order is laid over.
   const layoutRanks = useRef<readonly (readonly string[])[] | undefined>(undefined);
+  const ownRanks = useRef<readonly (readonly string[])[] | undefined>(undefined);
   const [fitToken, setFitToken] = useState(0);
   const lastFitOn = useRef<string | null>(null);
   // Collapsing must not move the graph either, so a run that keeps the same engine and order
@@ -533,14 +502,19 @@ function TopologyCanvas({
     staticGeneration.current += 1;
     const generation = staticGeneration.current;
 
-    void engine
-      .run(
-        arranged.visible.entities,
-        arranged.visible.relationships,
-        (item) => arranged.sizes.get(item.name) ?? estimateNodeSize(item),
-        { shortest, ...(custom ? { custom } : {}) },
-      )
-      .then((whole) => {
+    const links = arranged.visible.relationships;
+    const run = (custom: CustomOrder | null): Promise<GraphLayout> =>
+      engine.run(arranged.visible.entities, links, (item) => arranged.sizes.get(item.name) ?? estimateNodeSize(item), { shortest, ...(custom ? { custom } : {}) });
+    // A layout with ranks is asked twice when the viewer gave an order: once for its own ranks, then with the order laid over them.
+    const arrangeAll = async (): Promise<{ readonly unordered: GraphLayout; readonly whole: GraphLayout }> => {
+      const places = family && kindOf(family) === "slots" ? forLayout(family, stored, [], links) : null;
+      const unordered = await run(places);
+      const ranked = family && kindOf(family) === "ranks" ? forLayout(family, stored, unordered.ranks ?? [], links) : null;
+      return { unordered, whole: ranked ? await run(ranked) : unordered };
+    };
+
+    void arrangeAll()
+      .then(({ unordered, whole }) => {
         if (cancelled || generation !== staticGeneration.current) return;
         const own = new Map<string, Point>();
         for (const item of visible.entities) own.set(item.name, whole.positions.get(item.name) ?? { x: 0, y: 0 });
@@ -554,6 +528,7 @@ function TopologyCanvas({
           positions: new Map([...(remembered ?? []), ...placed.positions]),
         };
         layoutRanks.current = shortest ? whole.ranks : undefined;
+        ownRanks.current = shortest ? unordered.ranks : undefined;
         setLayout(placed);
         setHeld(null);
         if (lastFitOn.current !== fitOn) {
@@ -573,7 +548,7 @@ function TopologyCanvas({
     return () => {
       cancelled = true;
     };
-  }, [layoutId, sortKey, sortReversed, visible, sizes, arranged, basis, fitOn, settledKey, custom, reducedMotion]);
+  }, [layoutId, sortKey, sortReversed, visible, sizes, arranged, basis, fitOn, settledKey, stored, family, reducedMotion]);
 
   useEffect(
     () => () => {
@@ -632,7 +607,7 @@ function TopologyCanvas({
   // there a drag pulls on it, as it always did. A compared graph is arranged for both sides, so it is not dragged.
   const adaptive = layoutId === "d3-force-adaptive";
   const reorderable = family !== null && !adaptive && basis === undefined;
-  const axis: Axis = layoutId === "dagre-lr" || layoutId === "dagre-rl" ? "y" : "x";
+  const axis = layoutId === "dagre-lr" || layoutId === "dagre-rl" ? "y" : "x";
   const flow = LAYOUT_ENGINES[layoutId].flow;
 
   const rects = useMemo<ReadonlyMap<string, Rect>>(() => {
@@ -645,61 +620,28 @@ function TopologyCanvas({
     return map;
   }, [layout, sizes]);
 
-  const world = useMemo<DragWorld | null>(() => {
+  const world = useMemo<ReorderWorld | null>(() => {
     if (!reorderable || family === null) return null;
-    let ranks: readonly (readonly string[])[] = [];
-    if (kindOf(family) === "ranks") {
-      const read = layoutRanks.current ?? ranksFromPositions(layout.positions, axis);
-      // Rows read off the positions run from the top, or the left: the roots are at the other end when the ranks run up or left.
-      const ordered = layoutRanks.current === undefined && (flow === "bt" || flow === "rl") ? [...read].reverse() : read;
-      ranks = ordered.map((row) => row.filter((name) => rects.has(name)));
-    }
-    return { family, rects, links: visible.relationships, ranks, axis };
+    const parents = drawnParents(rects.keys(), new Set(rects.keys()), visible.relationships);
+    if (kindOf(family) === "slots") return { rows: [], rects, parents, places: family as PlaceFamily };
+    const read = layoutRanks.current ?? ranksFromPositions(layout.positions, axis);
+    // Rows read off the positions run from the top, or the left: the roots are at the other end when the ranks run up or left.
+    const ordered = layoutRanks.current === undefined && (flow === "bt" || flow === "rl") ? [...read].reverse() : read;
+    return { rows: ordered.map((row) => row.filter((name) => rects.has(name))), rects, parents };
   }, [reorderable, family, layout, rects, visible, axis, flow]);
+  reorder.offer(world);
+  const moving = reorder.move;
 
-  const [move, setMove] = useState<Move | null>(null);
-  const moveRef = useRef<Move | null>(null);
-  const cancelled = useRef(false);
-  const update = useCallback((next: Move | null): void => {
-    moveRef.current = next;
-    setMove(next);
-  }, []);
-
-  const nameOf = useCallback(
-    (name: string): string => {
-      const item = visible.entities.find((entity) => entity.name === name);
-      return item?.displayName || name;
-    },
-    [visible],
-  );
-
-  /** The order a drop on the candidate would keep, and where every card would stand under it. */
-  const dropOrder = useMemo(
-    () => (move?.candidate && world ? orderAfter(world, move.name, move.candidate, sizes) : null),
-    [move?.name, move?.candidate, world, sizes],
-  );
+  /** Where every card would stand under the order a drop on the place would keep. */
   const preview = useMemo(
-    () => (dropOrder ? previewPositions(layoutId, dropOrder, layout, arranged.visible.entities, arranged.visible.relationships, arranged.sizes) : null),
-    [dropOrder, layoutId, layout, arranged],
+    () =>
+      reorder.tentative && world && family
+        ? previewPositions(layoutId, family, reorder.tentative, (stored ? ownRanks.current : undefined) ?? world.rows, layout, arranged.visible.entities, arranged.visible.relationships, arranged.sizes)
+        : null,
+    [reorder.tentative, world, family, layoutId, stored, layout, arranged],
   );
+  previewRef.current = preview;
   const shown = preview ?? held ?? layout.positions;
-
-  const finish = useCallback(
-    (commit: boolean): void => {
-      const current = moveRef.current;
-      update(null);
-      if (!current || !commit || !current.candidate || !world || family === null) return;
-      const order = orderAfter(world, current.name, current.candidate, sizes);
-      if (!order) {
-        actions.announce(`${nameOf(current.name)} stays where it is.`);
-        return;
-      }
-      if (preview && customKey !== null) setHeld(preview);
-      actions.commitCustomOrder(family, order);
-      actions.announce(`${nameOf(current.name)} moved. The order is now Custom.`);
-    },
-    [update, world, family, sizes, preview, nameOf, customKey],
-  );
 
   // The held drop never stays longer than the arrangement it waits for takes.
   useEffect(() => {
@@ -707,87 +649,6 @@ function TopologyCanvas({
     const timer = window.setTimeout(() => setHeld(null), 2000);
     return () => window.clearTimeout(timer);
   }, [held]);
-
-  const cancel = useCallback((): void => {
-    if (moveRef.current === null) return;
-    cancelled.current = true;
-    update(null);
-    actions.announce("Move cancelled.");
-  }, [update]);
-
-  // Escape puts the card back, while it is dragged by the pointer too.
-  const moving = move !== null;
-  useEffect(() => {
-    if (!moving) return;
-    const onKey = (event: globalThis.KeyboardEvent): void => {
-      if (event.key === "Escape") cancel();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [moving, cancel]);
-
-  const onPointerDragStart = (name: string, corner: Point): void => {
-    if (!world || !world.rects.has(name)) return;
-    cancelled.current = false;
-    update({ name, ghost: corner, candidate: currentCandidate(world, name), source: "pointer" });
-  };
-
-  const onPointerDrag = (name: string, corner: Point): void => {
-    const current = moveRef.current;
-    if (!world || !current || current.name !== name || cancelled.current) return;
-    const size = sizes.get(name) ?? { width: 0, height: 0 };
-    const candidate = candidateAt(world, name, { x: corner.x + size.width / 2, y: corner.y + size.height / 2 });
-    update({ ...current, ghost: corner, candidate });
-  };
-
-  const onKeyDownCapture = (event: KeyboardEvent<HTMLDivElement>): void => {
-    if (!world || event.altKey || event.ctrlKey || event.metaKey) return;
-    const current = moveRef.current;
-    if (current?.source === "keyboard") {
-      const stop = (): void => {
-        event.preventDefault();
-        event.stopPropagation();
-      };
-      if (event.key === "Escape") {
-        stop();
-        cancel();
-      } else if (event.key === "Enter" || event.key === " ") {
-        stop();
-        finish(true);
-      } else if (event.key === "Tab") {
-        cancel();
-      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
-        stop();
-        const next = stepCandidate(world, current.name, current.candidate, event.key as StepKey);
-        if (next === null) {
-          actions.announce("No further place.");
-          return;
-        }
-        update({ ...current, candidate: next });
-        actions.announce(`${describeMove(world, current.name, next)}`);
-      } else {
-        stop();
-      }
-      return;
-    }
-    if (event.key !== "m" && event.key !== "M") return;
-    const holder = (event.target as HTMLElement).closest<HTMLElement>("[data-entity]");
-    const name = holder?.dataset.entity;
-    if (!name || !world.rects.has(name)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (candidatesOf(world, name).length === 0) {
-      actions.announce(`${nameOf(name)} has no other place.`);
-      return;
-    }
-    cancelled.current = false;
-    update({ name, ghost: null, candidate: currentCandidate(world, name), source: "keyboard" });
-    actions.announce(
-      `${nameOf(name)} picked up. Arrow keys choose a place, Enter drops it, Escape puts it back.${
-        currentCandidate(world, name) ? ` ${describeMove(world, name, currentCandidate(world, name) as Candidate)}` : ""
-      }`,
-    );
-  };
 
   const base = useMemo<EntityRfNode[]>(
     () =>
@@ -819,50 +680,15 @@ function TopologyCanvas({
             inChain: chain.has(entity.name.toLowerCase()),
             level,
             ...(reorderable ? { reorderable: true } : {}),
-            ...(move?.name === entity.name ? { dragging: true } : {}),
+            ...(moving?.id === entity.name ? { dragging: true } : {}),
           },
         };
       }),
-    [visible, shown, sizes, selectedName, highlightedName, collapsed, controls, badges, marked, chain, level, reorderable, move?.name],
+    [visible, shown, sizes, selectedName, highlightedName, collapsed, controls, badges, marked, chain, level, reorderable, moving?.id],
   );
 
   // The copy that follows the pointer, and the place the card would take.
-  const nodes = useMemo<TopologyNode[]>(() => {
-    if (!move) return base;
-    const moved = base.find((node) => node.id === move.name);
-    if (!moved) return base;
-    const extra: TopologyNode[] = [];
-    if (move.candidate) {
-      extra.push({
-        id: SLOT_ID,
-        type: "slot",
-        position: moved.position,
-        width: moved.width ?? 0,
-        height: moved.measured?.height ?? 0,
-        draggable: false,
-        selectable: false,
-        focusable: false,
-        zIndex: -1,
-        data: { width: moved.measured?.width ?? 0, height: moved.measured?.height ?? 0 },
-      });
-    }
-    if (move.ghost) {
-      extra.push({
-        id: GHOST_ID,
-        type: "ghost",
-        position: move.ghost,
-        width: moved.width ?? 0,
-        ...(moved.height === undefined ? {} : { height: moved.height }),
-        ...(moved.measured ? { measured: moved.measured } : {}),
-        draggable: false,
-        selectable: false,
-        focusable: false,
-        zIndex: 1000,
-        data: { ...moved.data, ghost: move.candidate ? "free" : "blocked", dragging: false },
-      });
-    }
-    return [...base, ...extra];
-  }, [base, move]);
+  const nodes = useMemo(() => withMoveNodes(base, moving), [base, moving]);
 
   const shownRects = useMemo<ReadonlyMap<string, Rect>>(() => {
     if (shown === layout.positions) return rects;
@@ -892,10 +718,8 @@ function TopologyCanvas({
     <div
       id={idPrefix}
       data-testid={idPrefix}
-      data-moving={move ? move.source : undefined}
-      data-moving-to={move?.candidate ? (move.candidate.kind === "swap" ? move.candidate.target : String(move.candidate.index)) : undefined}
-      className={mergeClasses("topology", styles.root, (level === "dot" || level === "speck") && "topology--far", move !== null && "topology--reordering")}
-      onKeyDownCapture={onKeyDownCapture}
+      className={mergeClasses("topology", styles.root, (level === "dot" || level === "speck") && "topology--far", moving !== null && "topology--reordering is-reordering")}
+      {...reorder.root}
     >
       {label ? <div className={styles.label}>{label}</div> : null}
       <div className={styles.canvas}>
@@ -913,7 +737,7 @@ function TopologyCanvas({
           nodesConnectable={false}
           nodesFocusable={false}
           elementsSelectable={false}
-          onNodesChange={(changes: NodeChange<TopologyNode>[]) => {
+          onNodesChange={(changes: NodeChange<Node>[]) => {
             setMeasuredCards((previous) => {
               let next: Map<string, NodeSize> | undefined;
               for (const change of changes) {
@@ -934,14 +758,14 @@ function TopologyCanvas({
               liveSession.current?.setDrag(node.id, { x: node.position.x, y: node.position.y });
               return;
             }
-            if (reorderable) onPointerDragStart(node.id, node.position);
+            if (reorderable) reorder.flow.onNodeDragStart(null, node);
           }}
           onNodeDrag={(_, node) => {
             if (adaptive) {
               liveSession.current?.setDrag(node.id, { x: node.position.x, y: node.position.y });
               return;
             }
-            if (reorderable) onPointerDrag(node.id, node.position);
+            if (reorderable) reorder.flow.onNodeDrag(null, node);
           }}
           onNodeDragStop={(_, node) => {
             if (adaptive) {
@@ -952,10 +776,7 @@ function TopologyCanvas({
               settled.current = { key: settledKey, positions: nextPositions };
               return;
             }
-            if (!reorderable) return;
-            const wasCancelled = cancelled.current;
-            cancelled.current = false;
-            if (!wasCancelled) finish(true);
+            if (reorderable) reorder.flow.onNodeDragStop();
           }}
           proOptions={{ hideAttribution: false }}
         >

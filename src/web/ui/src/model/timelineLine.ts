@@ -1,6 +1,6 @@
 import { describeRule } from "./timelineHover";
-import { lowerIsWorse } from "./timelineBands";
-import type { Rule, SignalInfo, StateCode } from "./timeline";
+import { bucketSeries, lowerIsWorse, type Buckets } from "./timelineBands";
+import type { Point, Rule, SignalInfo, StateCode } from "./timeline";
 
 /** How bad a measured value is: 0 Unknown or no data, 1 Healthy, 2 Degraded, 3 Unhealthy. */
 export type Level = 0 | 1 | 2 | 3;
@@ -117,6 +117,59 @@ export function colourRuns(vertices: Vertices, rules: Rules, maxGap: number): re
   }
   close();
   return out;
+}
+
+/**
+ * What a lane draws of a series at one bucket size, made once and read by every frame until the series or the zoom
+ * level changes. Its line is in time, not in pixels: a frame only places it.
+ */
+export interface Lane {
+  readonly buckets: Buckets;
+  /** The runs of the line by level, each list in time order; the x of a run is a time. */
+  readonly runs: readonly (readonly ColourRun[])[];
+  /** The level of each bucket: that of its worst end. */
+  readonly level: Uint8Array;
+  /** A bucket holds three values or more that differ: the line through its first and last value does not show its range. */
+  readonly ranges: boolean;
+  /** Every bucket is one evaluation: the lane shows the series as it was measured. */
+  readonly exact: boolean;
+}
+
+/** Folded buckets up to this many apart are joined, when the signal's own hold is shorter. */
+const GAP_BUCKETS = 8;
+
+export function laneOf(points: readonly Point[], size: number, rules: Rules, hold: number): Lane {
+  const buckets = bucketSeries(points, size);
+  const x: number[] = [];
+  const v: (number | null)[] = [];
+  const s: StateCode[] = [];
+  const level = new Uint8Array(buckets.length);
+  let ranges = false;
+  let exact = true;
+  for (let i = 0; i < buckets.length; i += 1) {
+    const state = buckets.state[i] as StateCode;
+    const many = (buckets.values[i] as number) > 1;
+    if (buckets.cut[i] === 1) {
+      x.push(buckets.from[i] as number);
+      v.push(null);
+      s.push(0);
+    }
+    x.push(buckets.from[i] as number);
+    v.push(buckets.first[i] as number);
+    s.push(state);
+    if (many) {
+      x.push(buckets.to[i] as number);
+      v.push(buckets.last[i] as number);
+      s.push(state);
+      exact = false;
+    }
+    level[i] = Math.max(levelOf(buckets.lo[i] as number, state, rules), levelOf(buckets.hi[i] as number, state, rules));
+    if ((buckets.values[i] as number) > 2 && (buckets.hi[i] as number) > (buckets.lo[i] as number)) ranges = true;
+  }
+  const runs: ColourRun[][] = [[], [], [], []];
+  // Folded buckets stand a pixel apart at most, so the line would break between any two of them if only the hold joined them.
+  for (const run of colourRuns({ x, v, s }, rules, exact ? hold : Math.max(hold, GAP_BUCKETS * size))) (runs[run.level] as ColourRun[]).push(run);
+  return { buckets, runs, level, ranges, exact };
 }
 
 export interface ThresholdLine {

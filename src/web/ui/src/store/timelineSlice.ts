@@ -1,29 +1,23 @@
 import type { StateCreator } from "zustand";
-import type { ApiError } from "../model/types";
-import {
-  EMPTY_TIMELINE,
-  mergeResponse,
-  seriesKey,
-  type TimelineData,
-  type TimelineResponse,
-} from "../model/timeline";
+import type { ApiError, HealthModel } from "../model/types";
+import { EMPTY_TIMELINE, type TimelineData } from "../model/timeline";
 import type { LiveTimeline } from "../model/live";
-import { batchEntities } from "../model/timelineIncidents";
-import { applyTimelineDelta, stateCode } from "../model/timelineLive";
-import { entityOfKey, rootKeys, type RowOrder } from "../model/timelineRows";
+import { applyLive, stateCode } from "../model/timelineLive";
+import { REPORT_SIGNAL, type Demand, type EntityHint, type TileRequest } from "../model/timelinePlan";
+import { rootKeys, type RowOrder } from "../model/timelineRows";
 import { DAY, MINUTE, clampView, presetView, type Bounds, type View } from "../model/timelineScale";
+import { LEVELS, RAW, levelFor, type Level } from "../model/timelineTiles";
+import { modelAt } from "../model/timeTravel";
+import { EMPTY_STORE, clearErrors, markFailed, toTimelineData, type Shown, type TimeStore } from "../model/timeStore";
 import { timelineFromSearch } from "../model/timelineUrl";
-import { createIndexedDbCache, type OverviewCache } from "../timeline/overviewCache";
+import { createTileCache, indexedDbStorage, type CacheScope, type TileCache } from "../timeline/tileCache";
+import { createTimelineLoader, type TimelineLoader } from "../timeline/timelineLoader";
 import * as api from "./api";
-import type { Store } from "./store";
+import type { State, Store } from "./store";
 
 export const TIMELINE_MIN_HEIGHT = 200;
 export const TIMELINE_MAX_HEIGHT = 720;
 export const TIMELINE_DEFAULT_HEIGHT = 360;
-/** The service reads at most 120 signals in a request; stay under it. */
-export const SIGNALS_PER_REQUEST = 100;
-const RETENTION = 30 * DAY;
-const OVERLAP = 10 * MINUTE;
 
 export type OverviewStatus = "idle" | "loading" | "ready" | "failed";
 
@@ -44,6 +38,14 @@ export interface TimelineState {
   readonly timelineHeight: number;
   /** The window on screen, committed when a gesture settles. Null until the history is known. */
   readonly timelineView: View | null;
+  /**
+   * Everything held about the model over time, keyed by what it is: the one place timeline data lives. The loader
+   * fills it, the live stream adds to it, and every view reads it through a selector.
+   */
+  readonly timelineSeries: TimeStore;
+  /** The level and window the plot is drawn at: what `timelineData` is made for. */
+  readonly timelineShown: Shown;
+  /** `timelineSeries` as the plot reads it. Derived in the same step as every change of the store: never set on its own. */
   readonly timelineData: TimelineData;
   readonly timelineStatus: OverviewStatus;
   readonly timelineError: ApiError | null;
@@ -52,10 +54,17 @@ export interface TimelineState {
   /** The rows that are open, by key: an open entity shows its signals as lanes, then its dependencies. */
   readonly timelineExpanded: readonly string[];
   readonly timelineOrder: RowOrder;
-  /** The instant the model is shown at, set by a click. */
+  /**
+   * The selected moment: the one clock of the page. Null is now, and live. Every view that shows the model at a moment
+   * reads it (`selectedMoment`, `selectModelAt`); a click in the timeline sets it.
+   */
   readonly timelinePinned: number | null;
+  /** The entities whose signal values other views show at the selected moment: their series are read around it. */
+  readonly timelineWatched: readonly string[];
   /** The window keeps its right edge at now while events and the clock move it. */
   readonly timelineFollow: boolean;
+  /** The window followed now when a moment was selected: it follows again when the selection is cleared. */
+  readonly timelineFollowPaused: boolean;
   /** What is shown was read from the browser's cache and the network has not answered yet. */
   readonly timelineStale: boolean;
   /** The live changes of the last minutes: they are applied to every answer of the network, which may not have them. */
@@ -78,45 +87,72 @@ export interface TimelineActions {
   readonly setTimelineHeight: (height: number) => void;
   readonly setTimelineView: (view: View) => void;
   readonly resetTimeline: () => void;
+  /** What the timeline shows now: the loader reads what is missing of it. */
+  readonly wantTimeline: (demand: Demand) => void;
+  /** Asks again for everything that failed. Resolves when nothing is being read. */
   readonly loadTimelineOverview: () => Promise<void>;
-  readonly loadTimelineSignals: (names: readonly string[], from: number, to: number) => Promise<void>;
+  /** Reads the tiles that are still open again. Resolves when nothing is being read. */
   readonly refreshTimeline: () => Promise<void>;
   readonly retryTimelineSignals: (names: readonly string[]) => void;
   readonly toggleTimelineEntity: (name: string) => void;
   readonly expandTimelineEntities: (names: readonly string[]) => void;
   readonly collapseTimelineEntities: () => void;
   readonly setTimelineOrder: (order: RowOrder) => void;
+  /** Selects a moment, or now with null. The same as `selectMoment`: the name the timeline's own controls use. */
   readonly pinTimeline: (t: number | null) => void;
+  /** Selects the moment the whole page shows, or now with null. */
+  readonly selectMoment: (t: number | null) => void;
+  /** Names the entities whose signal values are shown at the selected moment outside the timeline's lanes. */
+  readonly watchEntities: (names: readonly string[]) => void;
   readonly followTimeline: (follow: boolean) => void;
 }
 
-let overviewRequest: AbortController | null = null;
-/** The signal requests in flight, with the entities each one reads. */
-const signalRequests = new Map<AbortController, readonly string[]>();
-let generation = 0;
-let overviewCache: OverviewCache | null | undefined;
+let loader: TimelineLoader | null = null;
+let cache: TileCache | null | undefined;
+/** The view that was made from what the browser kept: it ends where the cache did, so the first answer moves it to now. */
+let hydratedView: View | null = null;
 
-/** Test hook: replaces the browser cache (null for none). */
-export function setOverviewCache(cache: OverviewCache | null): void {
-  overviewCache = cache;
+/** Test hook: replaces the browser's cache (null for none). */
+export function setTimelineCache(next: TileCache | null): void {
+  cache = next;
 }
 
-const cacheKey = (selected: { readonly subscriptionId: string; readonly resourceGroup: string; readonly name: string } | null): string =>
+function cacheOf(): TileCache | null {
+  if (cache === undefined) {
+    const storage = indexedDbStorage();
+    cache = storage ? createTileCache(storage) : null;
+  }
+  return cache;
+}
+
+const modelKey = (selected: { readonly subscriptionId: string; readonly resourceGroup: string; readonly name: string } | null): string =>
   selected ? `${selected.subscriptionId}/${selected.resourceGroup}/${selected.name}`.toLowerCase() : "";
 
-/** Cancels every request the timeline has in flight: the model it was made for is gone. */
-export function cancelTimelineSignals(): void {
-  for (const request of signalRequests.keys()) request.abort();
-  signalRequests.clear();
+/** Whose cache it is: the signed-in user in their directory, or the one local user of a development server. */
+export function cacheScope(state: Pick<State, "account" | "selected">): CacheScope | null {
+  if (state.selected === null) return null;
+  return { owner: state.account ? `${state.account.tenantId}/${state.account.username}` : "local", model: modelKey(state.selected) };
 }
 
-/** Cancels the requests none of whose entities shows any more; one that reads an entity still shown is left to finish. */
-export function cancelUnwantedSignals(wanted: ReadonlySet<string>): void {
-  for (const [request, names] of signalRequests) {
-    if (names.some((name) => wanted.has(name))) continue;
-    request.abort();
-    signalRequests.delete(request);
-  }
+/** Cancels every request the timeline has in flight: it closed, or the model it was made for is gone. */
+export function cancelTimelineSignals(): void {
+  loader?.stop();
+}
+
+/** Resolves when the timeline reads nothing, from the browser's cache or the app. */
+export function timelineIdle(): Promise<void> {
+  return loader?.idle() ?? Promise.resolve();
+}
+
+/** The selected moment, null for now: the one clock every view reads. */
+export const selectedMoment = (state: Pick<State, "timelinePinned">): number | null => state.timelinePinned;
+
+/**
+ * The health model as the views take it, at the selected moment: the live model itself while none is selected, and
+ * null until a model is loaded. Entities that did not change between two moments keep their identity.
+ */
+export function selectModelAt(state: Pick<State, "model" | "timelineSeries" | "timelinePinned">): HealthModel | null {
+  return state.model.kind === "success" ? modelAt(state.model.value, state.timelineSeries, state.timelinePinned) : null;
 }
 
 /** The oldest instant any entity's history starts at: the real beginning of "all". */
@@ -135,36 +171,104 @@ export function timelineBounds(data: TimelineData, now: number): Bounds {
   return { lo: Math.min(historyStart(data), data.now - DAY), hi: data.now };
 }
 
-function isAbort(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
-}
-
-function asApiError(error: unknown): ApiError {
-  if (typeof error === "object" && error !== null && "code" in error && "message" in error) return error as ApiError;
-  return { code: "unknown", message: error instanceof Error ? error.message : "The timeline could not be loaded.", retryable: true, operationId: null };
-}
-
 const without = (list: readonly string[], names: readonly string[]): readonly string[] => list.filter((name) => !names.includes(name));
+
+const sameList = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((item, index) => item === b[index]);
 
 /** The first time a model's rows are known they open to the roots; after that the viewer's choice stands. */
 const firstOpen = (state: TimelineState, next: TimelineData): readonly string[] =>
   state.timelineData.entities.length === 0 && state.timelineExpanded.length === 0 ? rootKeys(next.entities) : state.timelineExpanded;
 
+/** The store and what the plot reads of it, changed together. */
+function held(state: Pick<TimelineState, "timelineData" | "timelineShown">, series: TimeStore, shown: Shown = state.timelineShown): Pick<TimelineState, "timelineSeries" | "timelineShown" | "timelineData"> {
+  return { timelineSeries: series, timelineShown: shown, timelineData: toTimelineData(series, shown, state.timelineData) };
+}
+
+const currentStates = (state: Pick<State, "model">): ReadonlyMap<string, ReturnType<typeof stateCode>> =>
+  new Map((state.model.kind === "success" ? state.model.value.entities : []).map((entity) => [entity.name, stateCode(entity.healthState)]));
+
+/**
+ * What a live delta changes in the timeline: its rows go onto what is held, and it is kept for a while, because an
+ * answer of the app that is on its way may not have it yet.
+ */
+export function liveTimeline(state: State, delta: LiveTimeline | undefined, observed: number, current: ReadonlyMap<string, ReturnType<typeof stateCode>>, holdMs: number): Partial<TimelineState> {
+  return {
+    ...(state.timelineStatus === "ready" ? held(state, applyLive(state.timelineSeries, delta, observed, current)) : {}),
+    ...(delta ? { timelineHeld: [...state.timelineHeld.filter((item) => item.observed > observed - holdMs), { timeline: delta, observed }] } : {}),
+  };
+}
+
 export const timelineSlice: StateCreator<Store, [], [], TimelineState & TimelineActions> = (set, get) => {
-  /** A request that failed as a whole fails every series it asked for, so none is asked again until retried. */
-  const markFailed = (names: readonly string[], error: ApiError): void => {
-    const failure = { code: error.code, message: error.message, retryable: error.retryable };
+  const hint = (): readonly EntityHint[] | null => {
+    const shown = get().model;
+    if (shown.kind !== "success") return null;
+    return shown.value.entities.map((entity) => ({ name: entity.name, reports: entity.signals.some((signal) => signal.name === REPORT_SIGNAL) }));
+  };
+
+  /** An answer of the app or tiles from the browser's cache: into the store, and the first one makes the timeline ready. */
+  const merge = (change: (store: TimeStore) => TimeStore, source: "cache" | "network", request: TileRequest | null): void => {
     set((state) => {
-      const series = { ...state.timelineData.series };
-      for (const entity of state.timelineData.entities) {
-        if (!names.includes(entity.name)) continue;
-        for (const signal of entity.signals) {
-          const key = seriesKey(entity.name, signal.name);
-          series[key] = { points: series[key]?.points ?? [], covered: series[key]?.covered ?? [], error: failure };
-        }
+      const changed = change(state.timelineSeries);
+      // The live changes of the last minutes are applied again: an answer that was read before them does not have them.
+      const series = source === "network" ? state.timelineHeld.reduce((store, item) => applyLive(store, item.timeline, item.observed, currentStates(state)), changed) : changed;
+      const next = held(state, series);
+      if (series.entities.length === 0) return next;
+      const first = state.timelineStatus !== "ready";
+      const answered = source === "network" && request !== null && !request.parts.includes("signals");
+      const bounds = timelineBounds(next.timelineData, Date.now());
+      let view = state.timelineView;
+      if (view === null) {
+        view = presetView("24h", bounds);
+        hydratedView = source === "cache" ? view : null;
+      } else if (answered && state.timelineStale && view === hydratedView) {
+        // A view that came from the cache ends where the cache did: begin again from now.
+        view = presetView("24h", bounds);
+        hydratedView = null;
       }
-      return { timelineData: { ...state.timelineData, series }, timelineError: error };
+      return {
+        ...next,
+        timelineStatus: "ready",
+        timelineExpanded: firstOpen(state, next.timelineData),
+        timelineView: view,
+        timelineStale: first ? source === "cache" : state.timelineStale && !answered,
+        ...(answered ? { timelineError: null } : {}),
+      };
     });
+  };
+
+  const loaderOf = (): TimelineLoader => {
+    loader ??= createTimelineLoader({
+      fetch: (request, signal) =>
+        api.fetchTimeline(
+          get().selected,
+          {
+            from: request.from,
+            to: request.to,
+            include: request.parts,
+            entities: request.entities,
+            signals: request.signals,
+            resolution: request.parts.includes("signals") ? (LEVELS[request.level] as Level).slot / 1000 : 0,
+          },
+          signal,
+        ),
+      cache: cacheOf,
+      held: () => get().timelineSeries,
+      merge,
+      failed: (request, error) =>
+        set((state) => ({
+          ...held(state, markFailed(state.timelineSeries, request, { code: error.code, message: error.message, retryable: error.retryable })),
+          timelineError: error,
+          ...(state.timelineStatus === "ready" ? {} : { timelineStatus: "failed" as const }),
+        })),
+      reading: (entities, overview) => {
+        const state = get();
+        const status = overview && state.timelineStatus === "idle" ? "loading" : state.timelineStatus;
+        if (!sameList(entities, state.timelineLoading) || status !== state.timelineStatus) set({ timelineLoading: entities, timelineStatus: status });
+      },
+      hint,
+      now: () => Date.now(),
+    });
+    return loader;
   };
 
   return {
@@ -173,6 +277,8 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
   timelineFocus: null,
   timelineHeight: TIMELINE_DEFAULT_HEIGHT,
   timelineView: null,
+  timelineSeries: EMPTY_STORE,
+  timelineShown: { level: RAW, window: null },
   timelineData: EMPTY_TIMELINE,
   timelineStatus: "idle",
   timelineError: null,
@@ -180,13 +286,17 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
   timelineExpanded: [],
   timelineOrder: "structure",
   timelinePinned: null,
+  timelineWatched: [],
   timelineFollow: true,
+  timelineFollowPaused: false,
   timelineStale: false,
   timelineHeld: [],
 
   openTimeline: () => set({ timelineOpen: true }),
   closeTimeline: () => {
     cancelTimelineSignals();
+    // The selected moment is set and cleared in the timeline: closing it returns the page to now.
+    get().selectMoment(null);
     set({ timelineOpen: false, timelineFullscreen: false, timelineFocus: null });
   },
   toggleTimeline: () => (get().timelineOpen ? get().closeTimeline() : get().openTimeline()),
@@ -215,124 +325,54 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
     if (timelineView && timelineView.t0 === next.t0 && timelineView.t1 === next.t1) return;
     // A window that no longer ends at now is no longer followed: the viewer moved away on purpose.
     const atNow = next.t1 >= bounds.hi - Math.max(30_000, (next.t1 - next.t0) * 0.02);
-    set((state) => ({ timelineView: next, timelineFollow: state.timelineFollow && atNow }));
+    set((state) => ({ timelineView: next, timelineFollow: state.timelineFollow && atNow, timelineFollowPaused: state.timelineFollowPaused && atNow }));
   },
 
   resetTimeline: () => {
-    generation += 1;
-    overviewRequest?.abort();
-    overviewRequest = null;
-    cancelTimelineSignals();
+    hydratedView = null;
     set({
+      timelineSeries: EMPTY_STORE,
       timelineData: EMPTY_TIMELINE,
       timelineStatus: "idle",
       timelineError: null,
       timelineLoading: [],
       timelineExpanded: [],
       timelinePinned: null,
+      timelineFollowPaused: false,
       timelineStale: false,
       timelineHeld: [],
     });
+    loaderOf().open(cacheScope(get()));
   },
 
-  loadTimelineOverview: async () => {
-    const { selected } = get();
-    const mine = generation;
-    overviewRequest?.abort();
-    const request = new AbortController();
-    overviewRequest = request;
-    set((state) => ({ timelineStatus: state.timelineStatus === "ready" ? "ready" : "loading", timelineError: null }));
-    const now = Date.now();
-    const key = cacheKey(selected);
-    overviewCache ??= createIndexedDbCache();
-    let hydratedView: View | null = null;
-    if (get().timelineStatus !== "ready" && overviewCache && key !== "") {
-      // Paint what the browser kept at once; the network answer replaces it.
-      void overviewCache.read(key).then((cached) => {
-        if (!cached || mine !== generation || get().timelineStatus === "ready" || get().selected !== selected) return;
-        const data = mergeResponse(get().timelineData, cached);
-        const bounds = timelineBounds(data, now);
-        hydratedView = get().timelineView ?? presetView("24h", bounds);
-        set((state) => ({ timelineData: data, timelineExpanded: firstOpen(state, data), timelineStatus: "ready", timelineStale: true, timelineView: hydratedView }));
-      });
+  wantTimeline: (demand) => {
+    const shown: Shown = { level: levelFor(demand.view.to - demand.view.from, demand.width), window: demand.view };
+    const state = get();
+    if (shown.level !== state.timelineShown.level || shown.window?.from !== state.timelineShown.window?.from || shown.window?.to !== state.timelineShown.window?.to) {
+      set(held(state, state.timelineSeries, shown));
     }
-    let response: TimelineResponse;
-    try {
-      response = await api.fetchTimeline(selected, { from: now - RETENTION, to: now, include: ["states", "annotations", "reports"] }, request.signal);
-    } catch (error) {
-      if (isAbort(error) || mine !== generation) return;
-      set((state) => (state.timelineStatus === "ready" ? { timelineError: asApiError(error) } : { timelineStatus: "failed", timelineError: asApiError(error) }));
-      return;
-    }
-    if (mine !== generation || get().selected !== selected) return;
-    const stale = get().timelineStale;
-    const answered = mergeResponse(stale ? { ...get().timelineData, states: {}, series: {} } : get().timelineData, response);
-    const shown = get().model;
-    const current = new Map((shown.kind === "success" ? shown.value.entities : []).map((entity) => [entity.name, stateCode(entity.healthState)]));
-    const data = get().timelineHeld.reduce((held, item) => applyTimelineDelta(held, item.timeline, item.observed, current), answered);
-    const view = get().timelineView;
-    const bounds = timelineBounds(data, now);
-    // A view that came from the cache ends where the cache did: begin again from now.
-    const rebase = stale && view !== null && hydratedView !== null && view === hydratedView ? presetView("24h", bounds) : view;
-    set((state) => ({
-      timelineData: data,
-      timelineExpanded: firstOpen(state, data),
-      timelineStatus: "ready",
-      timelineStale: false,
-      timelineError: null,
-      timelineView: rebase ? clampView(rebase, bounds) : presetView("24h", bounds),
-    }));
-    overviewCache?.write(key, response);
+    loaderOf().want(demand);
   },
 
-  loadTimelineSignals: async (names, from, to) => {
-    const { selected, timelineData } = get();
-    const mine = generation;
-    const request = new AbortController();
-    signalRequests.set(request, names);
-    set((state) => ({ timelineLoading: [...new Set([...state.timelineLoading, ...names])] }));
-    const settled = (): void => {
-      signalRequests.delete(request);
-      if (mine === generation) set((state) => ({ timelineLoading: without(state.timelineLoading, names) }));
-    };
-    try {
-      for (const batch of batchEntities(timelineData, names, SIGNALS_PER_REQUEST)) {
-        const response = await api.fetchTimeline(selected, { from, to, include: ["signals"], entities: batch }, request.signal);
-        if (mine !== generation || get().selected !== selected) return;
-        set((state) => ({ timelineData: mergeResponse(state.timelineData, response) }));
-      }
-    } catch (error) {
-      if (isAbort(error) || mine !== generation) return;
-      markFailed(names, asApiError(error));
-    } finally {
-      settled();
-    }
+  loadTimelineOverview: () => {
+    set((state) => ({ ...held(state, clearErrors(state.timelineSeries, null)), timelineError: null, ...(state.timelineStatus === "failed" ? { timelineStatus: "loading" as const } : {}) }));
+    loaderOf().retry();
+    return loaderOf().idle();
   },
 
-  refreshTimeline: async () => {
+  refreshTimeline: () => {
     // A timeline that is closed holds nothing worth reading again: it is read afresh when it opens.
-    if (!get().timelineOpen) return;
-    await get().loadTimelineOverview();
-    const { timelineExpanded, timelineData } = get();
-    const withSignals = new Set(timelineData.entities.filter((entity) => entity.signals.length > 0).map((entity) => entity.name));
-    const names = [...new Set(timelineExpanded.map(entityOfKey))].filter((name) => withSignals.has(name));
-    if (names.length === 0) return;
-    const now = Date.now();
-    await get().loadTimelineSignals(names, Math.max(timelineData.floor, timelineData.now - OVERLAP), now);
+    if (!get().timelineOpen) return Promise.resolve();
+    // A history that was busy or late the last time is tried again with the rest.
+    set((state) => held(state, clearErrors(state.timelineSeries, null, true)));
+    loaderOf().refresh();
+    return loaderOf().idle();
   },
 
-  retryTimelineSignals: (names) =>
-    set((state) => {
-      const series = { ...state.timelineData.series };
-      for (const entity of state.timelineData.entities) {
-        if (!names.includes(entity.name)) continue;
-        for (const signal of entity.signals) {
-          const held = series[seriesKey(entity.name, signal.name)];
-          if (held?.error) series[seriesKey(entity.name, signal.name)] = { ...held, error: null };
-        }
-      }
-      return { timelineData: { ...state.timelineData, series } };
-    }),
+  retryTimelineSignals: (names) => {
+    set((state) => held(state, clearErrors(state.timelineSeries, names)));
+    loaderOf().retry();
+  },
 
   toggleTimelineEntity: (name) =>
     set((state) => ({
@@ -342,15 +382,40 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
     set((state) => ({ timelineExpanded: [...new Set([...state.timelineExpanded, ...names])] })),
   collapseTimelineEntities: () => set({ timelineExpanded: [] }),
   setTimelineOrder: (order) => set({ timelineOrder: order }),
-  pinTimeline: (t) => set({ timelinePinned: t }),
+  pinTimeline: (t) => get().selectMoment(t),
+  selectMoment: (t) => {
+    const { timelinePinned, timelineFollow, timelineView, timelineData } = get();
+    if (t === timelinePinned) return;
+    if (t === null) {
+      const resume = get().timelineFollowPaused;
+      set({ timelinePinned: null, timelineFollowPaused: false });
+      if (resume) get().followTimeline(true);
+      return;
+    }
+    if (!timelineFollow) {
+      set({ timelinePinned: t });
+      return;
+    }
+    // While a moment is selected nothing on screen moves: the window stops where it follows now, and remembers that it followed.
+    const hi = timelineBounds(timelineData, Date.now()).hi;
+    set({
+      timelinePinned: t,
+      timelineFollow: false,
+      timelineFollowPaused: true,
+      ...(timelineView === null ? {} : { timelineView: { t0: hi - (timelineView.t1 - timelineView.t0), t1: hi } }),
+    });
+  },
+  watchEntities: (names) => {
+    if (!sameList(names, get().timelineWatched)) set({ timelineWatched: names });
+  },
   followTimeline: (follow) => {
     const { timelineView, timelineData } = get();
     if (!follow || timelineView === null) {
-      set({ timelineFollow: follow });
+      set({ timelineFollow: follow, timelineFollowPaused: false });
       return;
     }
     const hi = timelineBounds(timelineData, Date.now()).hi;
-    set({ timelineFollow: true, timelineView: { t0: hi - (timelineView.t1 - timelineView.t0), t1: hi } });
+    set({ timelineFollow: true, timelineFollowPaused: false, timelineView: { t0: hi - (timelineView.t1 - timelineView.t0), t1: hi } });
   },
 };
 };

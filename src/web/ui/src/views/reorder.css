@@ -1,0 +1,67 @@
+/*
+ * A thing on its way to another place, in any view: it stays where its place would be, dimmed, a
+ * see-through copy follows the pointer, and a dashed mark (`.drop-indicator`) shows the place.
+ */
+.is-reordering {
+  user-select: none;
+}
+
+.is-reordering .is-dragging {
+  opacity: 0.35;
+}
+
+.is-reordering .is-ghost {
+  opacity: 0.6;
+  pointer-events: none;
+  cursor: grabbing;
+}
+
+.is-reordering .is-ghost.is-blocked {
+  opacity: 0.4;
+  outline: 2px dashed var(--colorPaletteRedBorder2);
+  outline-offset: 3px;
+}
+
+/* The others make room as the thing passes over the places; the copy follows the pointer without lag. */
+.is-reordering .react-flow__node {
+  transition: transform 160ms ease;
+}
+
+.is-reordering .react-flow__node[data-id="__ghost__"] {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-reordering .react-flow__node {
+    transition: none;
+  }
+}
+
+/* The place a cell of the coverage band would take: the same mark, drawn in SVG. */
+.drop-indicator--svg {
+  fill: color-mix(in srgb, var(--colorBrandBackground) 22%, transparent);
+  stroke: var(--colorBrandStroke1);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  pointer-events: none;
+}
+
+/* The copy of an outline row. */
+.reorder-ghost-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  column-gap: var(--spacingHorizontalS);
+  box-sizing: border-box;
+  padding: 0 var(--spacingHorizontalM);
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: var(--borderRadiusMedium);
+  background: var(--colorNeutralBackground1);
+  box-shadow: var(--shadow16);
+  font-size: var(--fontSizeBase300);
+  white-space: nowrap;
+  overflow: hidden;
+}

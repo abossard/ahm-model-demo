@@ -221,6 +221,57 @@ class ReaderCacheTests(unittest.TestCase):
         self.assertEqual(len(source.calls_of("states")) - calls, 1)
 
 
+class LargeModelTests(unittest.TestCase):
+    """The overview of a model: the states and annotations of every entity for the 30 days the service keeps."""
+
+    WEEK = 7 * DAY
+
+    def source(self, count):
+        return Windowed([entity(f"e{index}") for index in range(count)], [], {})
+
+    def tiles(self):
+        now_ms = timeline.to_ms(NOW)
+        first = (now_ms - 30 * DAY) // self.WEEK * self.WEEK
+        return [(start, start + self.WEEK) for start in range(first, now_ms, self.WEEK)]
+
+    def test_a_month_of_sixty_entities_is_cut_in_one_request_and_complete_week_by_week(self):
+        caller = SimpleNamespace(oid="ada", owner="ada")
+        table = [("a model of 20 entities fits one request", 20, False), ("a model of 60 entities does not", 60, True)]
+        for label, count, cut in table:
+            with self.subTest(label):
+                source = self.source(count)
+                params = {"include": "states,annotations", "from": (NOW - timedelta(days=30)).isoformat()}
+
+                whole = reader(history_store.LayeredHistory(history_store.MemoryHistory())).read(caller, source, ("sub", "rg", "hm"), params)
+
+                self.assertEqual(whole["partial"], cut)
+                self.assertLessEqual(len(source.calls), timeline.TIMELINE_MAX_CALLS)
+
+        source = self.source(60)
+        subject = reader(history_store.LayeredHistory(history_store.MemoryHistory()))
+        for start, end in self.tiles():
+            with self.subTest(tile=timeline.iso_ms(start)):
+                before = len(source.calls)
+
+                body = subject.read(caller, source, ("sub", "rg", "hm"), {"include": "states,annotations", "from": timeline.iso_ms(start), "to": timeline.iso_ms(end)})
+
+                self.assertFalse(body["partial"])
+                self.assertEqual((len(body["states"]), all(item["complete"] for item in body["states"]), body["failures"]), (60, True, []))
+                self.assertEqual(len(source.calls) - before, 120, "one read per entity and part")
+
+    def test_a_week_that_was_read_costs_the_next_viewer_no_call(self):
+        source = self.source(60)
+        history = history_store.LayeredHistory(history_store.MemoryHistory())
+        start, end = self.tiles()[2]
+        params = {"include": "states,annotations", "from": timeline.iso_ms(start), "to": timeline.iso_ms(end)}
+        reader(history).read(SimpleNamespace(oid="ada", owner="ada"), source, ("sub", "rg", "hm"), params)
+        calls = len(source.calls)
+
+        body = reader(history, Clock()).read(SimpleNamespace(oid="bob", owner="bob"), source, ("sub", "rg", "hm"), params)
+
+        self.assertEqual((len(source.calls) - calls, body["partial"]), (0, False))
+
+
 class StructureFromTheHubTests(unittest.TestCase):
     def test_a_warm_hub_supplies_the_structure_and_no_entity_list_is_read(self):
         source = backend()
@@ -229,7 +280,7 @@ class StructureFromTheHubTests(unittest.TestCase):
         structure = timeline.build_structure(source.items, source.links, "hm")
         subject = timeline.TimelineReader(clock=Clock(), now=lambda: NOW, structure=lambda selection: structure)
 
-        body = subject.read(SimpleNamespace(oid="ada", owner="ada"), source, ("sub", "rg", "hm"), {"include": "states", "from": (NOW - timedelta(hours=1)).isoformat()}, [])
+        body = subject.read(SimpleNamespace(oid="ada", owner="ada"), source, ("sub", "rg", "hm"), {"include": "structure,states", "from": (NOW - timedelta(hours=1)).isoformat()}, [])
 
         self.assertEqual(listings, [])
         self.assertEqual([item["name"] for item in body["entities"]], ["root", "api"])

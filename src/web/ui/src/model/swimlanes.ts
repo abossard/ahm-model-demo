@@ -4,6 +4,7 @@ import type { Rect } from "./edgeRouting";
 import type { Layering, LaneKind } from "./layerOf";
 import type { Point } from "./layout";
 import { linkKey } from "./compare";
+import { ranksInOrder, type ModelOrder } from "./customOrder";
 import { impactOf } from "./palette";
 import { FOLD_HEIGHT, foldWidth, measureCard, pillOf, type CardSpec, type SignalMode } from "./swimlaneCard";
 import { foldGroups, type FoldGroup } from "./swimlaneFold";
@@ -57,6 +58,12 @@ export interface SwimlaneOptions {
    * the same place, on both sides even when an impact chip or a signal makes one version bigger.
    */
   readonly rival?: readonly Entity[];
+  /**
+   * The order the viewer gave the model by dragging. It is laid over the order the sweeps give a
+   * lane: cards that share a parent stand in it, and what hangs below them goes along. No card
+   * changes lane for it.
+   */
+  readonly order?: ModelOrder | null;
 }
 
 /** What one side of a Compare draws of a layout made for both. */
@@ -263,7 +270,11 @@ export function layoutSwimlanes({ entities, relationships, layering }: SwimlaneI
     (lower.get(line.parent) ?? lower.set(line.parent, []).get(line.parent)!).push(line.child);
   }
   for (const list of [...upper.values(), ...lower.values()]) list.sort(byText);
-  const ordered = orderRows(laneNodes, upper, lower);
+  const ordered = ranksInOrder(
+    orderRows(laneNodes, upper, lower),
+    lines.map((line) => ({ parentEntityName: line.parent, childEntityName: line.child })),
+    options.order,
+  );
   const widthOf = (id: string): number => (drawn.get(id) as Drawn).width;
   const maxRow = options.maxRowWidth ?? MAX_ROW_WIDTH;
   const rows: string[][] = [];

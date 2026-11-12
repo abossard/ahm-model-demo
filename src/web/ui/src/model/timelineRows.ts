@@ -231,6 +231,22 @@ export function visibleRows(model: RowModel, top: number, height: number, oversc
   return [Math.max(0, lo - overscan), Math.min(rows.length, end + overscan)];
 }
 
+/** Rows kept ready either side of the viewport once the rows in the page are cut anew. */
+const READY_ROWS = 14;
+/** Rows that must stay ready either side before they are cut anew. */
+const SPARE_ROWS = 2;
+
+/**
+ * The rows to keep in the page while the viewport moves. The range that is held stays as long as it covers what shows
+ * and a little more; only then is it cut anew, with room either side. So a scroll changes the page once in a while, not
+ * at every row. Pass null for `held` when the rows themselves changed.
+ */
+export function heldRows(model: RowModel, top: number, height: number, held: readonly [number, number] | null): readonly [number, number] {
+  const [from, to] = visibleRows(model, top, height, SPARE_ROWS);
+  if (held !== null && held[0] <= from && held[1] >= to && held[1] <= model.rows.length) return held;
+  return visibleRows(model, top, height, READY_ROWS);
+}
+
 /** The scroll offset that brings a row into view with a little context above it; null when it already shows. */
 export function scrollToShow(row: Row, top: number, height: number): number | null {
   if (row.y >= top && row.y + row.h <= top + height) return null;

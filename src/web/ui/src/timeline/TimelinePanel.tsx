@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Button, MenuButton, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarActions, MessageBarBody, Spinner, ToggleButton, mergeClasses } from "@fluentui/react-components";
 import { Dismiss20Regular, FullScreenMaximize20Regular, FullScreenMinimize20Regular } from "@fluentui/react-icons";
@@ -6,8 +6,9 @@ import { formatDuration } from "../model/duration";
 import { seriesKey, type EntityInfo, type StateCode } from "../model/timeline";
 import { bandAt, holdOf, parseDuration, type Band } from "../model/timelineBands";
 import { signalFacts } from "../model/timelineTree";
+import { historyAt } from "../model/timeTravel";
 import { detectIncidents, entityBands, incidentText, modelAt, type Incident } from "../model/timelineIncidents";
-import { allKeys, buildRows, moveFocus, revealKeys, rootEntity, scrollToShow, visibleRows, type Row } from "../model/timelineRows";
+import { allKeys, buildRows, heldRows, moveFocus, revealKeys, rootEntity, scrollToShow, type Row } from "../model/timelineRows";
 import { PRESETS, formatClock, formatDay, formatInstant, padView, presetOf, presetView } from "../model/timelineScale";
 import { actions, useStore } from "../store/store";
 import { TIMELINE_MAX_HEIGHT, TIMELINE_MIN_HEIGHT, timelineBounds } from "../store/timelineSlice";
@@ -35,12 +36,12 @@ export function TimelinePanel(): JSX.Element {
   const liveStatus = useStore((state) => state.liveStatus);
   const stale = useStore((state) => state.timelineStale);
   const data = useStore((state) => state.timelineData);
+  const seriesStore = useStore((state) => state.timelineSeries);
   const status = useStore((state) => state.timelineStatus);
   const error = useStore((state) => state.timelineError);
   const loading = useStore((state) => state.timelineLoading);
   const expanded = useStore((state) => state.timelineExpanded);
   const order = useStore((state) => state.timelineOrder);
-  const pinned = useStore((state) => state.timelinePinned);
   const fullscreen = useStore((state) => state.timelineFullscreen);
   const focus = useStore((state) => state.timelineFocus);
   const theme = useStore((state) => state.theme);
@@ -56,10 +57,19 @@ export function TimelinePanel(): JSX.Element {
   const stageRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState(0);
   const [range, setRange] = useState<readonly [number, number]>([0, 0]);
+  const rangeRef = useRef(range);
+  // The selected moment moves once per frame while it is dragged. The plot draws it from the store by itself; what this
+  // panel derives from it (the tree as of then) follows as a transition, so a drag never waits for React.
+  const [pinned, setPinned] = useState(() => useStore.getState().timelinePinned);
+  useEffect(() => {
+    setPinned(useStore.getState().timelinePinned);
+    return useStore.subscribe((state, before) => {
+      if (state.timelinePinned !== before.timelinePinned) startTransition(() => setPinned(state.timelinePinned));
+    });
+  }, []);
   const [colors, setColors] = useState<TimelineColors | null>(null);
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const [live, setLive] = useState("");
-  const scrollRef = useRef(0);
   const resetRef = useRef<() => void>(() => undefined);
   const firstView = useRef(true);
   /** The row to bring into view once it is there. */
@@ -107,21 +117,27 @@ export function TimelinePanel(): JSX.Element {
       },
       signal: (entity, signal) => {
         const info = entities.get(entity)?.signals.find((item) => item.name === signal);
-        const held = data.series[seriesKey(entity, signal)];
+        // At a selected moment the evaluation itself is read, from the finest points held, not the thinned ones the plot draws.
+        const held = (pinned === null ? undefined : historyAt(seriesStore.series[seriesKey(entity, signal)], pinned)) ?? data.series[seriesKey(entity, signal)];
         return signalFacts(info, held, asOf, held ? holdOf(held.points, parseDuration(info?.refreshInterval ?? null)) : 300_000);
       },
     }),
-    [entities, bandsOf, pinned, impacts, data, asOf],
+    [entities, bandsOf, pinned, impacts, data, seriesStore, asOf],
   );
 
-  const rowModel = useMemo(() => {
-    const rank = (name: string): StateCode => {
-      const entity = entities.get(name);
-      if (!entity) return 0;
-      return pinned === null ? entity.state : (bandAt(entityBands(data, entity), pinned) ?? 0);
-    };
-    return buildRows({ entities: data.entities, order, open: new Set(expanded), rank });
-  }, [data, entities, order, expanded, pinned]);
+  // Only the worst-first order looks at states: in the order of the model the rows stay as they are while data arrives.
+  const rank = useMemo(
+    () =>
+      order !== "worst"
+        ? null
+        : (name: string): StateCode => {
+            const entity = entities.get(name);
+            if (!entity) return 0;
+            return pinned === null ? entity.state : (bandAt(bandsOf(entity), pinned) ?? 0);
+          },
+    [order, entities, bandsOf, pinned],
+  );
+  const rowModel = useMemo(() => buildRows({ entities: data.entities, order, open: new Set(expanded), rank: rank ?? (() => 1) }), [data.entities, order, expanded, rank]);
   const rowsRef = useRef(rowModel);
   rowsRef.current = rowModel;
 
@@ -147,6 +163,20 @@ export function TimelinePanel(): JSX.Element {
   const summaryRef = useRef(summaryAt);
   summaryRef.current = summaryAt;
 
+  /*
+   * The plot owns where the rows are scrolled to and says so in the frame it draws them: the tree and the scrollbar
+   * follow there. The rows of the tree are cut anew only once the held ones run out, so a scroll does not render per row.
+   */
+  const viewportRef = useRef(viewport);
+  viewportRef.current = viewport;
+  const cutRange = useCallback((top: number, fresh: boolean): void => {
+    const held = rangeRef.current;
+    const next = heldRows(rowsRef.current, top, viewportRef.current, fresh ? null : held);
+    if (next[0] === held[0] && next[1] === held[1]) return;
+    rangeRef.current = next;
+    setRange(next);
+  }, []);
+
   /* Plot lifetime */
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -155,6 +185,11 @@ export function TimelinePanel(): JSX.Element {
     const plot = new Plot(canvas, {
       view: (next) => actions.setTimelineView(next),
       pin: (t) => actions.pinTimeline(t),
+      scroll: (top) => {
+        if (bodyRef.current) bodyRef.current.scrollTop = top;
+        if (proxyRef.current) proxyRef.current.scrollTop = top;
+        cutRange(top, false);
+      },
       focus: (row) => setFocusKey(row.key),
       incident: (incident) => {
         const { bounds: limits, data: held } = latest.current;
@@ -181,26 +216,35 @@ export function TimelinePanel(): JSX.Element {
       announce: () => {
         window.clearTimeout(announceTimer);
         announceTimer = window.setTimeout(() => {
-          const t = plot.getCursor();
+          const t = plot.getMoment();
           if (t !== null) setLive(summaryRef.current(t));
         }, 300);
       },
     });
     plotRef.current = plot;
+    plot.setMoment(useStore.getState().timelinePinned);
+    const unsubscribe = useStore.subscribe((state, before) => {
+      if (state.timelinePinned !== before.timelinePinned) plot.setMoment(state.timelinePinned);
+    });
+    // One listener for the whole stage, the tree as well as the plot: the plot reads the gesture and nothing is left for the page.
+    const stage = stageRef.current;
+    const onWheel = (event: WheelEvent): void => plot.handleWheel(event);
+    stage?.addEventListener("wheel", onWheel, { passive: false });
     const observer = new ResizeObserver(() => {
       plot.resize();
-      const stage = stageRef.current;
       if (stage) setViewport(Math.max(0, stage.clientHeight - AXIS_HEIGHT));
     });
     observer.observe(canvas);
     plot.resize();
     return () => {
       observer.disconnect();
+      unsubscribe();
+      stage?.removeEventListener("wheel", onWheel);
       window.clearTimeout(announceTimer);
       plot.destroy();
       plotRef.current = null;
     };
-  }, []);
+  }, [cutRange]);
 
   const tipClasses = useRef<Record<string, string>>({});
   tipClasses.current = {
@@ -232,38 +276,25 @@ export function TimelinePanel(): JSX.Element {
             rows: rowModel,
             colors,
             selectedName: selectedEntity,
-            pinned,
             loading: new Set(loading),
             incidents,
             bounds,
             offsetMin: OFFSET_MIN,
             follow: follow && liveStatus !== "off" && liveStatus !== "paused" ? { skew } : null,
           },
-    [colors, data, rowModel, selectedEntity, pinned, loading, incidents, bounds, follow, liveStatus, skew],
+    [colors, data, rowModel, selectedEntity, loading, incidents, bounds, follow, liveStatus, skew],
   );
   useEffect(() => {
     if (model) plotRef.current?.setModel(model);
   }, [model]);
   useEffect(() => {
+    cutRange(plotRef.current?.getScroll() ?? 0, true);
+  }, [rowModel, viewport, cutRange]);
+  useEffect(() => {
     if (view === null || model === null) return;
     plotRef.current?.setView(view, !firstView.current);
     firstView.current = false;
   }, [view, model === null]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /* Rows scroll in a proxy; the labels and the canvas follow it. */
-  const onScroll = useCallback(() => {
-    const top = proxyRef.current?.scrollTop ?? 0;
-    scrollRef.current = top;
-    plotRef.current?.setScroll(top);
-    if (bodyRef.current && bodyRef.current.scrollTop !== top) bodyRef.current.scrollTop = top;
-    const next = visibleRows(rowsRef.current, top, viewportRef.current, 4);
-    setRange((held) => (held[0] === next[0] && held[1] === next[1] ? held : next));
-  }, []);
-  const viewportRef = useRef(viewport);
-  viewportRef.current = viewport;
-  useEffect(() => {
-    onScroll();
-  }, [rowModel, viewport, onScroll]);
 
   /* An entity picked anywhere: the way to it opens, its signals open, its row is focused and scrolled to. */
   useEffect(() => {
@@ -280,12 +311,13 @@ export function TimelinePanel(): JSX.Element {
     const key = wantScroll.current;
     const index = key === null ? undefined : rowModel.indexByKey.get(key);
     const row = index === undefined ? undefined : rowModel.rows[index];
-    const proxy = proxyRef.current;
-    if (!row || !proxy || viewport === 0) return;
+    const plot = plotRef.current;
+    // The plot scrolls as far as the rows it has go: it has them once it has a model.
+    if (!row || !plot || viewport === 0 || model === null) return;
     wantScroll.current = null;
-    const top = scrollToShow(row, proxy.scrollTop, viewport);
-    if (top !== null) proxy.scrollTop = top;
-  }, [focusKey, rowModel, viewport]);
+    const top = scrollToShow(row, plot.getScroll(), viewport);
+    if (top !== null) plot.scrollTo(top);
+  }, [focusKey, rowModel, viewport, model === null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* Keys: time keys belong to the plot, row keys to the tree. */
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
@@ -293,11 +325,11 @@ export function TimelinePanel(): JSX.Element {
     // Escape leaves full screen before it does anything else.
     if (event.key === "Escape" && fullscreen) return;
     const plot = plotRef.current;
-    if (plot?.handleKey(event.nativeEvent)) {
+    const current = focusKey === null ? -1 : (rowModel.indexByKey.get(focusKey) ?? -1);
+    if (plot?.handleKey(event.nativeEvent, rowModel.rows[current] ?? null)) {
       event.preventDefault();
       return;
     }
-    const current = focusKey === null ? -1 : (rowModel.indexByKey.get(focusKey) ?? -1);
     if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "PageDown" || event.key === "PageUp") {
       const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : event.key === "PageDown" ? 8 : -8;
       const next = rowModel.rows[moveFocus(rowModel, Math.max(0, current), current < 0 ? 0 : step)];
@@ -499,7 +531,7 @@ export function TimelinePanel(): JSX.Element {
           className={styles.stage}
           tabIndex={0}
           role="tree"
-          aria-label="Entities and their signals over time. Left and right move in time, up and down move between rows, Enter picks a row and opens it or closes it, plus and minus zoom, space pins a moment."
+          aria-label="Entities and their signals over time. Left and right move the selected moment, with Shift to the state change before or after it in the focused row; Escape returns to now. Up and down move between rows, Enter picks a row and opens it or closes it, plus and minus zoom, space selects the moment under the pointer. Scrolling moves through the rows, a pinch or Control and scrolling zooms, scrolling sideways or with Shift moves in time."
           aria-activedescendant={focusKey === null || rowModel.indexByKey.get(focusKey) === undefined ? undefined : `tl-row-${rowModel.indexByKey.get(focusKey)}`}
           onKeyDown={onKeyDown}
           data-testid="tl-stage"
@@ -514,17 +546,8 @@ export function TimelinePanel(): JSX.Element {
             </div>
             <div
               className={styles.labelsBody}
-              onWheel={(event) => {
-                if (proxyRef.current) proxyRef.current.scrollTop += event.deltaY;
-              }}
-              // A row the browser brings into view scrolls this box itself: the proxy follows, so the tree and the plot stay together.
-              onScroll={(event) => {
-                const proxy = proxyRef.current;
-                if (!proxy || proxy.scrollTop === event.currentTarget.scrollTop) return;
-                proxy.scrollTop = event.currentTarget.scrollTop;
-                // The proxy may stop earlier than this box: then this box comes back to it.
-                if (proxy.scrollTop !== event.currentTarget.scrollTop) event.currentTarget.scrollTop = proxy.scrollTop;
-              }}
+              // A row the browser brings into view scrolls this box itself: the plot follows, and brings the box back when it went too far.
+              onScroll={(event) => plotRef.current?.scrollTo(event.currentTarget.scrollTop)}
               ref={bodyRef}
               data-testid="tl-labels-body"
             >
@@ -535,7 +558,7 @@ export function TimelinePanel(): JSX.Element {
                   facts={facts}
                   selectedEntity={selectedEntity}
                   focusKey={focusKey}
-                  onToggle={(key) => actions.toggleTimelineEntity(key)}
+                  onToggle={actions.toggleTimelineEntity}
                   onSelect={onSelectRow}
                   onFocus={setFocusKey}
                 />
@@ -545,7 +568,7 @@ export function TimelinePanel(): JSX.Element {
           <div className={styles.plotWrap}>
             <canvas ref={canvasRef} className={styles.canvas} data-testid="tl-canvas" />
             <div ref={tipRef} className={styles.tip} hidden data-testid="tl-tip" role="presentation" />
-            <div ref={proxyRef} className={styles.scrollProxy} onScroll={onScroll} data-testid="tl-scroll">
+            <div ref={proxyRef} className={styles.scrollProxy} onScroll={(event) => plotRef.current?.scrollTo(event.currentTarget.scrollTop)} data-testid="tl-scroll">
               <div style={{ height: rowModel.height, width: 1 }} />
             </div>
             {status === "loading" && data.entities.length === 0 ? <div className={styles.empty}>Loading the history of the model…</div> : null}

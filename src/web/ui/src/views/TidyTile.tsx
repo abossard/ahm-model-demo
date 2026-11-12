@@ -9,6 +9,7 @@ import { tileSignals, SIGNAL_GLYPHS, type Fold } from "../model/tidy";
 import type { Entity } from "../model/types";
 import { ICONS, pickIcon } from "../components/EntityNode";
 import { StateGlyph } from "../components/StateGlyph";
+import { moveClass, type MoveMarks } from "./useReorder";
 
 const useStyles = makeStyles({
   shell: { position: "relative", pointerEvents: "none" },
@@ -158,7 +159,7 @@ function Chevron({ open }: { readonly open: boolean }): JSX.Element {
   );
 }
 
-export interface TidyTileData extends Record<string, unknown> {
+export interface TidyTileData extends Record<string, unknown>, MoveMarks {
   readonly entity: Entity;
   readonly selected: boolean;
   readonly highlighted: boolean;
@@ -202,7 +203,7 @@ function spoken(entity: Entity, step: number | null, badge: ChangeBadge | null, 
 
 function TileImpl({ data, id }: NodeProps<Node<TidyTileData, "tile">>): JSX.Element {
   const styles = useStyles();
-  const { entity, selected, highlighted, step, badge, marked, dimmed, collapse, onActivate, onToggle, onFocusNode } = data;
+  const { entity, selected, highlighted, step, badge, marked, dimmed, collapse, reorderable, ghost, onActivate, onToggle, onFocusNode } = data;
   const token = tokensFor(entity.healthState);
   const impact = impactOf(entity.impact);
   const name = entity.displayName || entity.name;
@@ -216,9 +217,9 @@ function TileImpl({ data, id }: NodeProps<Node<TidyTileData, "tile">>): JSX.Elem
       <Handle type="target" position={Position.Top} className="entity-node__handle" />
       <button
         type="button"
-        className={mergeClasses(styles.tile, selected && styles.selected, highlighted && styles.highlighted, marked && styles.marked, step !== null && styles.chain, dimmed && styles.dimmed)}
-        data-testid="tidy-tile"
-        data-entity={entity.name}
+        className={mergeClasses(styles.tile, selected && styles.selected, highlighted && styles.highlighted, marked && styles.marked, step !== null && styles.chain, dimmed && styles.dimmed, moveClass(data).trim())}
+        {...(ghost ? { "data-testid": "reorder-ghost", "aria-hidden": true, tabIndex: -1 } : { "data-testid": "tidy-tile", "data-entity": entity.name })}
+        aria-keyshortcuts={reorderable && !ghost ? "M" : undefined}
         data-state={entity.healthState}
         data-selected={selected ? "true" : undefined}
         data-highlighted={highlighted ? "true" : undefined}

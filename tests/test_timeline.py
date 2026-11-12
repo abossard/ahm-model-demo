@@ -201,23 +201,93 @@ class QueryTests(unittest.TestCase):
 
 
 class RowTests(unittest.TestCase):
-    def test_downsampling_keeps_the_worst_state_and_both_extremes_of_a_bucket(self):
+    def test_decimating_keeps_real_points_that_stay_evenly_spaced_with_both_extremes_and_the_worst_state(self):
         step = 60_000
+        ramp = [[index * 5000, float(index), 1] for index in range(12)]
         table = [
             ("no step keeps everything", 0, [[0, 1, 1], [1000, 2, 1]], [[0, 1, 1], [1000, 2, 1]]),
-            ("a small bucket is kept whole", step, [[0, 1, 1], [1000, 2, 1], [2000, 3, 1]], [[0, 1, 1], [1000, 2, 1], [2000, 3, 1]]),
+            ("a slot of five points is kept whole", step, [[index, index, 1] for index in range(5)], [[index, index, 1] for index in range(5)]),
+            ("a ramp keeps its first point, the last of each half and its top", step, ramp, [ramp[0], ramp[5], ramp[11]]),
             (
-                "a big bucket keeps min, max and worst",
+                "the lowest and the highest value are kept where they are",
                 step,
-                [[0, 5, 1], [1, 9, 1], [2, 1, 1], [3, 4, 3], [4, 5, 1]],
-                [[1, 9, 1], [2, 1, 1], [3, 4, 3]],
+                [[0, 5, 1], [10_000, 9, 1], [20_000, 1, 1], [29_000, 4, 1], [40_000, 5, 1], [59_000, 6, 1]],
+                [[10_000, 9, 1], [20_000, 1, 1], [29_000, 4, 1], [59_000, 6, 1]],
             ),
-            ("a bucket of gaps keeps the worst point", step, [[0, None, 0], [1, None, 0], [2, None, 0], [3, None, 3]], [[3, None, 3]]),
-            ("buckets stay separate", step, [[0, 1, 1], [step, 2, 1]], [[0, 1, 1], [step, 2, 1]]),
+            (
+                "a worse state than any kept point is kept too",
+                step,
+                [[0, 5, 1], [10_000, 5, 3], [20_000, 5, 1], [29_000, 5, 1], [40_000, 5, 1], [59_000, 5, 1]],
+                [[0, 5, 1], [10_000, 5, 3], [29_000, 5, 1], [59_000, 5, 1]],
+            ),
+            (
+                "a gap in the data outranks healthy points",
+                step,
+                [[0, 5, 1], [10_000, None, 0], [20_000, 5, 1], [29_000, 5, 1], [40_000, 5, 1], [59_000, 5, 1]],
+                [[0, 5, 1], [10_000, None, 0], [29_000, 5, 1], [59_000, 5, 1]],
+            ),
+            ("a slot of gaps keeps the last of each half", step, [[index * 10_000, None, 0] for index in range(6)], [[20_000, None, 0], [50_000, None, 0]]),
+            ("slots stay separate", step, [[0, 1, 1], [step, 2, 1]], [[0, 1, 1], [step, 2, 1]]),
         ]
         for label, size, points, expected in table:
             with self.subTest(label):
-                self.assertEqual(timeline.downsample(points, size), expected)
+                self.assertEqual(timeline.decimate(points, size), expected)
+
+    def test_decimated_points_are_never_further_apart_than_half_a_slot_of_regular_data(self):
+        table = [("one minute apart", 60_000), ("five minutes apart", 300_000)]
+        for label, every in table:
+            with self.subTest(label):
+                points = [[index * every, float((index * 7919) % 101), 1] for index in range(24 * 3600_000 // every)]
+
+                kept = timeline.decimate(points, 3600_000)
+
+                self.assertLessEqual(max(b[0] - a[0] for a, b in zip(kept, kept[1:])), 1800_000)
+                self.assertLessEqual(len(kept), 5 * 24)
+                self.assertEqual((max(row[1] for row in kept), min(row[1] for row in kept)), (max(row[1] for row in points), min(row[1] for row in points)))
+
+    def test_a_validator_names_a_closed_window_without_the_structure_and_nothing_else(self):
+        now_ms = timeline.to_ms(NOW)
+        closed = {"from": now_ms - 7_200_000, "to": now_ms - 3_600_000, "live": False}
+        query = {"parts": ("signals",), "resolution": 0, "asked": ("a", "b"), "only": frozenset()}
+        jobs = [("signal", "db", "cpu")]
+        scope = ("sub", "rg", "hm")
+        limit = now_ms - 900_000
+        base_tag = timeline.validator(scope, query, closed, jobs, limit)
+        table = [
+            ("a closed window has one", query, closed, jobs, True),
+            ("an open window has none", query, {**closed, "to": None, "live": True}, jobs, False),
+            ("a window inside the safety margin has none", query, {**closed, "to": limit + 1}, jobs, False),
+            ("an answer with the structure has none", {**query, "parts": ("structure", "signals")}, closed, jobs, False),
+            ("an answer that reads nothing has none", query, closed, [], False),
+        ]
+        for label, asked, window, wanted, expected in table:
+            with self.subTest(label):
+                self.assertEqual(timeline.validator(scope, asked, window, wanted, limit) is not None, expected)
+        different = [
+            ("another model", (("sub", "rg", "other"), query, closed, jobs)),
+            ("another window", (scope, query, {**closed, "from": closed["from"] - 1}, jobs)),
+            ("another resolution", (scope, {**query, "resolution": 900}, closed, jobs)),
+            ("another signal", (scope, query, closed, [("signal", "db", "memory")])),
+            ("a narrowed request", (scope, {**query, "only": frozenset({"cpu"})}, closed, jobs)),
+        ]
+        for label, arguments in different:
+            with self.subTest(label):
+                self.assertNotEqual(timeline.validator(*arguments, limit), base_tag)
+        self.assertEqual(timeline.validator(scope, query, closed, jobs, limit), base_tag)
+
+    def test_if_none_match_is_read_as_a_list_of_strong_or_weak_names(self):
+        table = [
+            ("the same name", '"abc"', True),
+            ("a weak name", 'W/"abc"', True),
+            ("one of several", '"x", W/"abc"', True),
+            ("any", "*", True),
+            ("another name", '"abd"', False),
+            ("no header", None, False),
+        ]
+        for label, header, expected in table:
+            with self.subTest(label):
+                self.assertEqual(timeline.matches(header, '"abc"'), expected)
+        self.assertFalse(timeline.matches('"abc"', None))
 
     def test_a_service_item_becomes_a_compact_row(self):
         report = {"occurredAt": stamp(5), "value": 0.5, "healthState": "Degraded", "additionalContext": '{"source": "health-pulse-web", "reportId": "r1", "reason": "Maintenance"}'}
@@ -277,7 +347,7 @@ class ReaderTests(unittest.TestCase):
     def test_every_part_is_read_once_per_entity_and_signal(self):
         backend = model()
 
-        body = read(reader(), backend, {"include": "states,annotations,signals"})
+        body = read(reader(), backend, {"include": "structure,states,annotations,signals"})
 
         self.assertEqual([item["entity"] for item in body["states"]], ["root", "api", "db"])
         self.assertEqual([(item["entity"], item["signal"]) for item in body["series"]], [("api", "errors"), ("api", "latency"), ("db", "cpu")])
@@ -292,6 +362,36 @@ class ReaderTests(unittest.TestCase):
 
         self.assertEqual(backend.calls_of("signal"), [])
         self.assertEqual(body["series"], [])
+        self.assertEqual(len(body["entities"]), 3)
+
+    def test_the_structure_comes_only_when_it_is_asked_for(self):
+        table = [("by default", {}, 3), ("named", {"include": "structure"}, 3), ("with other parts", {"include": "structure,signals"}, 3), ("left out", {"include": "states,signals"}, 0)]
+        for label, params, expected in table:
+            with self.subTest(label):
+                self.assertEqual(len(read(reader(), model(), params)["entities"]), expected)
+
+    def test_the_structure_alone_reads_no_history(self):
+        backend = model()
+
+        read(reader(), backend, {"include": "structure"})
+
+        self.assertEqual(backend.calls, [])
+
+    def test_signal_names_narrow_the_series_of_the_entities_asked_for(self):
+        table = [
+            ("no name reads every signal", (), [("api", "errors"), ("api", "latency"), ("db", "cpu")]),
+            ("one name", ("latency",), [("api", "latency")]),
+            ("names of several entities", ("errors", "cpu"), [("api", "errors"), ("db", "cpu")]),
+            ("a name nothing has", ("nope",), []),
+        ]
+        for label, signals, expected in table:
+            with self.subTest(label):
+                backend = model()
+
+                body = reader().read(CALLER, backend, SELECTION, {"from": (NOW - HOUR).isoformat(), "include": "signals"}, (), signals)
+
+                self.assertEqual([(item["entity"], item["signal"]) for item in body["series"]], expected)
+                self.assertEqual(len(backend.calls_of("signal")), len(expected))
 
     def test_a_service_page_is_followed_by_its_marker_without_the_window(self):
         first = {"history": [point(1, 9.0, "Unhealthy"), point(2, 8.0, "Unhealthy")]}
@@ -390,7 +490,7 @@ class ReaderTests(unittest.TestCase):
         thin = read(reader(), backend, {"include": "signals", "resolution": "600"}, ["db"])["series"][0]["points"]
 
         self.assertEqual(len(raw), 300)
-        self.assertLess(len(thin), 40)
+        self.assertLess(len(thin), 60)
         self.assertEqual((max(row[1] for row in thin), min(row[1] for row in thin)), (6.0, 0.0))
 
     def test_a_second_identical_request_costs_no_azure_call(self):
@@ -549,15 +649,16 @@ class TimelineApiTests(base.ApiCase):
     def test_signals_come_with_their_thresholds_and_a_value_per_point(self):
         body = self.get("?include=signals&entity=orders-db&from=" + (datetime.now(timezone.utc) - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")).json()
 
-        signal = body["entities"][0]["signals"][0]
+        signal = self.get("?include=structure&entity=orders-db").json()["entities"][0]["signals"][0]
         series = body["series"][0]
+        self.assertEqual(body["entities"], [])
         self.assertEqual((signal["name"], signal["rules"]["unhealthy"]), ("cpu", {"operator": "GreaterThan", "threshold": 95}))
         self.assertEqual((series["entity"], series["signal"], series["complete"]), ("orders-db", "cpu", True))
         self.assertGreater(len(series["points"]), 50)
         self.assertEqual(series["points"][-1][2], 3)
 
     def test_the_fixture_incident_is_visible_in_the_root_history(self):
-        body = self.get("?include=states&entity=" + MODEL).json()
+        body = self.get("?include=structure,states&entity=" + MODEL).json()
 
         states = [row["to"] for row in body["states"][0]["transitions"]]
         self.assertIn(2, states)
@@ -597,6 +698,63 @@ class TimelineApiTests(base.ApiCase):
             response = self.get("?include=states")
 
         self.assertEqual((response.status_code, response.json()["error"]["code"]), (403, "forbidden"))
+
+    def test_a_closed_window_is_kept_by_the_browser_and_checked_again_while_an_open_one_is_never_kept(self):
+        day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        closed = f"&from={(day - timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%SZ')}&to={(day - timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        table = [
+            ("a closed window of signals", "?include=signals&entity=orders-db" + closed, True),
+            ("a closed window of states", "?include=states,annotations,reports" + closed, True),
+            ("a closed window with the structure", "?include=structure,states" + closed, False),
+            ("a window that reaches now", "?include=signals&entity=orders-db", False),
+        ]
+        for label, query, kept in table:
+            with self.subTest(label):
+                response = self.get(query)
+
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.headers["cache-control"], "private, no-cache" if kept else "no-store")
+                self.assertEqual("etag" in response.headers, kept)
+
+    def test_a_window_the_browser_holds_is_answered_304_without_a_history_call_and_another_one_in_full(self):
+        day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        window = lambda back: f"?include=signals&entity=orders-db&from={(day - timedelta(days=back + 1)).strftime('%Y-%m-%dT%H:%M:%SZ')}&to={(day - timedelta(days=back)).strftime('%Y-%m-%dT%H:%M:%SZ')}"  # noqa: E731
+        with TestClient(self.module.app) as client:
+            first = client.get("/api/timeline" + window(1))
+            calls = mock.Mock(wraps=self.health.history.get_signal_history)
+            with mock.patch.object(self.health.history, "get_signal_history", calls):
+                same = client.get("/api/timeline" + window(1), headers={"If-None-Match": first.headers["etag"]})
+                other = client.get("/api/timeline" + window(2), headers={"If-None-Match": first.headers["etag"]})
+
+        self.assertEqual((same.status_code, same.content, same.headers["etag"], same.headers["cache-control"]), (304, b"", first.headers["etag"], "private, no-cache"))
+        self.assertEqual(other.status_code, 200)
+        self.assertNotEqual(other.headers["etag"], first.headers["etag"])
+        self.assertEqual(calls.call_count, 1, "only the other window was read")
+
+    def test_an_answer_with_a_failed_series_is_not_kept(self):
+        day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        closed = f"&from={(day - timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%SZ')}&to={(day - timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        original = self.health.history.get_signal_history
+
+        def flaky(entity, body):
+            if entity == "orders-api":
+                raise base.azure_error(500)
+            return original(entity, body)
+
+        with mock.patch.object(self.health.history, "get_signal_history", flaky):
+            response = self.get("?include=signals" + closed)
+
+        self.assertEqual((response.status_code, response.headers["cache-control"], "etag" in response.headers), (200, "no-store", False))
+
+    def test_a_model_the_caller_cannot_read_is_refused_whatever_the_browser_holds(self):
+        day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        closed = f"?include=signals&entity=orders-db&from={(day - timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%SZ')}&to={(day - timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        with TestClient(self.module.app) as client:
+            held = client.get("/api/timeline" + closed).headers["etag"]
+            refused = client.get(f"/api/timeline{closed}&model=nope&resourceGroup=rg&subscription={base.SUB}", headers={"If-None-Match": held})
+            star = client.get(f"/api/timeline{closed}&model=nope&resourceGroup=rg&subscription={base.SUB}", headers={"If-None-Match": "*"})
+
+        self.assertEqual([(response.status_code, response.json()["error"]["code"]) for response in (refused, star)], [(400, "unknown_model")] * 2)
 
     def test_the_route_does_not_run_on_the_event_loop(self):
         self.assertFalse(inspect.iscoroutinefunction(self.module.timeline_history))

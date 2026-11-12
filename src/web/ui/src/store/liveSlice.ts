@@ -2,9 +2,10 @@ import type { StateCreator } from "zustand";
 import { flashEntities } from "../live/flash";
 import { announcement, applyDelta, mergeSnapshot, stateChanges, type LiveDelta, type LiveEvent } from "../model/live";
 import type { ApiError, HealthModel } from "../model/types";
-import { applyTimelineDelta, stateCode } from "../model/timelineLive";
+import { stateCode } from "../model/timelineLive";
 import * as api from "./api";
 import type { Store } from "./store";
+import { liveTimeline } from "./timelineSlice";
 
 /** How the model on screen is kept current: `live` is the stream, `polling` the fallback when the stream is refused. */
 export type LiveStatus = "off" | "connecting" | "live" | "reconnecting" | "paused" | "polling";
@@ -68,11 +69,8 @@ export const liveSlice: StateCreator<Store, [], [], LiveState & LiveActions> = (
             liveAnnouncement: announcement(changes),
             liveChanged: { ...state.liveChanged, ...Object.fromEntries(changes.map((change) => [change.name, observed])) },
           }),
-      timelineData: state.timelineStatus === "ready" ? applyTimelineDelta(state.timelineData, delta?.timeline, observed, current) : state.timelineData,
-      // A read of the timeline that is on its way may not have this change: recent ones are kept and applied to its answer.
-      ...(delta?.timeline
-        ? { timelineHeld: [...state.timelineHeld.filter((item) => item.observed > observed - TIMELINE_HOLD_MS), { timeline: delta.timeline, observed }] }
-        : {}),
+      // The timeline's store takes the new rows; a read of the timeline that is on its way gets them applied to its answer.
+      ...liveTimeline(state, delta?.timeline, observed, current, TIMELINE_HOLD_MS),
     }));
     if (changes.length > 0) flashEntities(changes.map((change) => change.name));
   };

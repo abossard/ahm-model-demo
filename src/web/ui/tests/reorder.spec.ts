@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 import { SUBSCRIPTION_A, healthModel, installStubs, wideHealthModel } from "./fixture";
@@ -6,6 +7,7 @@ import { denseModel } from "./denseModel";
 import { delta, installStream, snapshot, withState } from "./liveStub";
 import { portViolations } from "./portOrder";
 import type { HealthModel } from "../src/model/types";
+import type { ViewId } from "../src/model/views";
 
 // Dragging a card to another place of its layout, and the order that leaves: Custom.
 
@@ -600,4 +602,252 @@ test("a card is dragged at the zoom where cards are name pills", async ({ page }
 
   expect(await shards(page)).toEqual(moved(before, 0, 2));
   expect(await portViolations(page, EDGES)).toEqual([]);
+});
+
+// ---- every view: the same drag, the same keys, one order ---------------------------------------------
+
+/** How a view draws an entity that can be moved, and what there is to know to drag it. */
+interface ViewCase {
+  readonly id: ViewId;
+  /** The element that says a move is under way (`data-moving`). */
+  readonly root: string;
+  readonly thing: string;
+  /** The arrow key to the next place: rows of cards read across, the rows of the outline down. */
+  readonly next: "ArrowRight" | "ArrowDown";
+  /** What the Order control shows when the order is the view's own. */
+  readonly own: string;
+}
+
+const CASES: readonly ViewCase[] = [
+  { id: "swimlanes", root: "swimlanes-view", thing: '[data-testid="swim-card"]', next: "ArrowRight", own: "shortest" },
+  { id: "tidy", root: "tidy-view", thing: '[data-testid="tidy-tile"]', next: "ArrowRight", own: "shortest" },
+  { id: "cause", root: "cause-view", thing: '[data-testid="cause-node"]', next: "ArrowRight", own: "shortest" },
+  { id: "zoom", root: "topology", thing: ".entity-node:not(.is-ghost)", next: "ArrowRight", own: "shortest" },
+  { id: "outline", root: "outline-view", thing: '[data-testid="outline-row"]', next: "ArrowDown", own: "health" },
+  { id: "coverage", root: "coverage-view", thing: '[data-testid="coverage-cell"]', next: "ArrowRight", own: "name" },
+];
+
+/** The chain of the wide model's incident: in Cause path it keeps its place, as the cause order has it. */
+const ON_CHAIN = "shard-3";
+const REORDER_SHOTS = process.env.REORDER_SHOTS ? fileURLToPath(new URL("../../../../.playwright-mcp/viz-app/", import.meta.url)) : "";
+
+const thingOf = (page: Page, view: ViewCase, name: string): Locator => page.getByTestId(view.root).locator(`${view.thing}[data-entity="${name}"]`);
+
+async function openIn(page: Page, view: ViewCase): Promise<void> {
+  await installStubs(page, { healthModelFails: false, model: wideHealthModel });
+  await page.goto(`/?view=${view.id}`);
+  await thingOf(page, view, "shard-2").waitFor();
+  await page.waitForTimeout(700);
+}
+
+/** The shards a view draws, in reading order: row by row, left to right. */
+async function shardsIn(page: Page, view: ViewCase): Promise<string[]> {
+  return page.getByTestId(view.root).locator(`${view.thing}[data-entity^="shard-"]`).evaluateAll((items) =>
+    items
+      .map((item) => ({ name: item.getAttribute("data-entity") ?? "", box: item.getBoundingClientRect() }))
+      .sort((left, right) => Math.round(left.box.top / 12) - Math.round(right.box.top / 12) || left.box.left - right.box.left)
+      .map((item) => item.name),
+  );
+}
+
+/** The shards a view lets go where the others are: all it draws, but for the one on the chain of a cause. */
+const movableOf = (view: ViewCase, drawn: readonly string[]): string[] => drawn.filter((name) => view.id !== "cause" || name !== ON_CHAIN);
+
+async function dragOnto(page: Page, view: ViewCase, name: string, target: string): Promise<void> {
+  const from = await centre(thingOf(page, view, name));
+  const to = await centre(thingOf(page, view, target));
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x + (to.x - from.x) * 0.1, from.y + (to.y - from.y) * 0.1, { steps: 6 });
+  await page.mouse.move(to.x, to.y, { steps: 14 });
+  await page.waitForTimeout(350);
+}
+
+for (const [index, view] of CASES.entries()) {
+  test.describe(`in the ${view.id} view`, () => {
+    test("a drag shows a see-through copy and the place, a drop keeps the order, and a reload still has it", async ({ page }) => {
+      await openIn(page, view);
+      const before = movableOf(view, await shardsIn(page, view));
+      expect(before.length).toBeGreaterThan(2);
+
+      await dragOnto(page, view, before[0] as string, before[2] as string);
+      const ghost = page.getByTestId(view.root).locator(".is-ghost");
+      await expect(ghost).toHaveCount(1);
+      expect(Number(await ghost.evaluate((item) => getComputedStyle(item).opacity))).toBeLessThan(1);
+      await expect(page.getByTestId("drop-indicator")).toHaveCount(1);
+      await expect(page.getByTestId(view.root)).toHaveAttribute("data-moving", "pointer");
+      // The others have made room: the dimmed thing stands where it would land.
+      expect(movableOf(view, await shardsIn(page, view))).toEqual(moved(before, 0, 2));
+      await expect(sortKey(page)).not.toHaveValue("custom");
+      if (REORDER_SHOTS) await page.screenshot({ path: `${REORDER_SHOTS}reorder-${view.id}.png` });
+
+      await page.mouse.up();
+      await expect(sortKey(page)).toHaveValue("custom");
+      await expect(sortKey(page).locator("option:checked")).toHaveText("Custom");
+      await expect(page.getByTestId("graph-announcement")).toContainText("moved");
+      await expect(page.getByTestId("drop-indicator")).toHaveCount(0);
+      await expect(page.getByTestId(view.root).locator(".is-ghost")).toHaveCount(0);
+      await page.waitForTimeout(600);
+      expect(movableOf(view, await shardsIn(page, view))).toEqual(moved(before, 0, 2));
+
+      await page.reload();
+      await thingOf(page, view, "shard-2").waitFor();
+      await page.waitForTimeout(700);
+      await expect(sortKey(page)).toHaveValue("custom");
+      expect(movableOf(view, await shardsIn(page, view))).toEqual(moved(before, 0, 2));
+    });
+
+    test("the order given here is the order of the next view", async ({ page }) => {
+      const other = CASES[(index + 1) % CASES.length] as ViewCase;
+      await openIn(page, view);
+      const before = movableOf(view, await shardsIn(page, view));
+      await dragOnto(page, view, before[0] as string, before[2] as string);
+      await page.mouse.up();
+      await expect(sortKey(page)).toHaveValue("custom");
+      await page.waitForTimeout(500);
+      const given = await shardsIn(page, view);
+
+      await page.goto(`/?view=${other.id}`);
+      await thingOf(page, other, "shard-2").waitFor();
+      await page.waitForTimeout(700);
+      const there = await shardsIn(page, other);
+
+      await expect(sortKey(page)).toHaveValue("custom");
+      expect(there.filter((name) => given.includes(name)), `${other.id} draws the shards in the order ${view.id} left them`).toEqual(given.filter((name) => there.includes(name)));
+    });
+
+    test("Escape puts a dragged thing back", async ({ page }) => {
+      await openIn(page, view);
+      const before = await shardsIn(page, view);
+      const movable = movableOf(view, before);
+      await dragOnto(page, view, movable[0] as string, movable[2] as string);
+      await expect(page.getByTestId("drop-indicator")).toHaveCount(1);
+
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("drop-indicator")).toHaveCount(0);
+      await expect(page.getByTestId(view.root).locator(".is-ghost")).toHaveCount(0);
+      await page.mouse.up();
+      await page.waitForTimeout(400);
+
+      expect(await shardsIn(page, view)).toEqual(before);
+      await expect(sortKey(page)).toHaveValue(view.own);
+      await expect(page.getByTestId("graph-announcement")).toContainText("cancelled");
+      await expect(page.getByTestId("entity-details")).toHaveCount(0);
+    });
+
+    test("M picks a thing up, an arrow key chooses a place, Enter drops it, and a reset forgets the order", async ({ page }) => {
+      await openIn(page, view);
+      const before = await shardsIn(page, view);
+      const movable = movableOf(view, before);
+      const name = movable[0] as string;
+      const item = thingOf(page, view, name);
+      await expect(item).toHaveAttribute("aria-keyshortcuts", "M");
+      await expect(page.getByTestId("custom-order-reset")).toBeDisabled();
+
+      await item.focus();
+      await page.keyboard.press("m");
+      await expect(page.getByTestId(view.root)).toHaveAttribute("data-moving", "keyboard");
+      await expect(page.getByTestId("graph-announcement")).toContainText("picked up");
+      await expect(page.getByTestId("graph-announcement")).toContainText(`Place 1 of ${movable.length}`);
+      await expect(page.getByTestId("drop-indicator")).toHaveCount(1);
+      await page.keyboard.press(view.next);
+      await expect(page.getByTestId("graph-announcement")).toContainText(`Place 2 of ${movable.length}`);
+      await page.keyboard.press("Enter");
+
+      await expect(sortKey(page)).toHaveValue("custom");
+      await expect(page.getByTestId(view.root)).not.toHaveAttribute("data-moving", /.+/);
+      await expect(page.getByTestId("graph-announcement")).toContainText("moved");
+      await page.waitForTimeout(600);
+      expect(movableOf(view, await shardsIn(page, view))).toEqual(moved(movable, 0, 1));
+      await expect(item).toBeFocused();
+      await expect(page.getByTestId("entity-details")).toHaveCount(0);
+
+      await page.getByTestId("custom-order-reset").click();
+      await expect(sortKey(page)).toHaveValue(view.own);
+      await expect(page.getByTestId("graph-announcement")).toContainText("Custom order reset");
+      await page.waitForTimeout(600);
+      expect(await shardsIn(page, view)).toEqual(before);
+      await expect(page.getByTestId("custom-order-reset")).toBeDisabled();
+    });
+
+    test("Escape puts a thing picked up with the keyboard back, and the arrow keys stop at the last place", async ({ page }) => {
+      await openIn(page, view);
+      const before = await shardsIn(page, view);
+      const movable = movableOf(view, before);
+      await thingOf(page, view, movable[movable.length - 1] as string).focus();
+      await page.keyboard.press("m");
+      await page.keyboard.press(view.next);
+      await expect(page.getByTestId("graph-announcement")).toContainText("No further place");
+      await page.keyboard.press("Escape");
+
+      await expect(page.getByTestId(view.root)).not.toHaveAttribute("data-moving", /.+/);
+      await expect(page.getByTestId("graph-announcement")).toContainText("cancelled");
+      expect(await shardsIn(page, view)).toEqual(before);
+      await expect(sortKey(page)).toHaveValue(view.own);
+    });
+  });
+}
+
+test("the Order control offers the view's own order and Custom, and the card graph every order", async ({ page }) => {
+  const options = (): Promise<(string | null)[]> => sortKey(page).locator("option").evaluateAll((items) => items.map((item) => item.getAttribute("value")));
+  for (const view of CASES) {
+    await openIn(page, view);
+    expect(await options(), view.id).toEqual(view.id === "zoom" ? ["shortest", "name", "observed", "health", "custom"] : [view.own, "custom"].sort((left, right) => (left === "custom" ? 1 : right === "custom" ? -1 : 0)));
+    await expect(page.getByTestId("sort-reverse")).toHaveCount(view.id === "zoom" ? 1 : 0);
+    await expect(page.getByTestId("custom-order-reset")).toHaveText("Reset custom order");
+  }
+});
+
+test("in Cause path a card on the chain keeps its place: the chain is the cause order", async ({ page }) => {
+  const view = CASES.find((item) => item.id === "cause") as ViewCase;
+  await openIn(page, view);
+  const before = await shardsIn(page, view);
+  const chained = thingOf(page, view, ON_CHAIN);
+  await expect(chained).toHaveAttribute("data-step", "1");
+  await expect(chained).not.toHaveAttribute("aria-keyshortcuts", "M");
+
+  await chained.focus();
+  await page.keyboard.press("m");
+  await expect(page.getByTestId("graph-announcement")).toContainText("is on the chain to the root");
+  await expect(page.getByTestId(view.root)).not.toHaveAttribute("data-moving", /.+/);
+
+  // The others go round it: the chain card stays in its place as a sibling passes.
+  const movable = movableOf(view, before);
+  await dragOnto(page, view, movable[0] as string, movable[movable.length - 1] as string);
+  await page.mouse.up();
+  await expect(sortKey(page)).toHaveValue("custom");
+  await page.waitForTimeout(600);
+  const after = await shardsIn(page, view);
+  expect(after.indexOf(ON_CHAIN)).toBe(before.indexOf(ON_CHAIN));
+  expect(movableOf(view, after)).toEqual(moved(movable, 0, movable.length - 1));
+});
+
+for (const id of ["swimlanes", "tidy", "cause"] as const) {
+  test(`${id}: the lines leave a card in the order of its children after a reorder`, async ({ page }) => {
+    const view = CASES.find((item) => item.id === id) as ViewCase;
+    await openIn(page, view);
+    // The line to shard-2 is drawn in each of these views: the check below reads real lines.
+    await expect(page.locator(`[id="${id}"] .react-flow__edge[data-id="rw1"] .react-flow__edge-path`)).toHaveCount(1);
+    expect(await portViolations(page, EDGES, id)).toEqual([]);
+    const movable = movableOf(view, await shardsIn(page, view));
+
+    await dragOnto(page, view, movable[0] as string, movable[movable.length - 1] as string);
+    expect(await portViolations(page, EDGES, id), "while the thing is held").toEqual([]);
+    await page.mouse.up();
+    await expect(sortKey(page)).toHaveValue("custom");
+    await page.waitForTimeout(600);
+
+    expect(movableOf(view, await shardsIn(page, view))).toEqual(moved(movable, 0, movable.length - 1));
+    expect(await portViolations(page, EDGES, id)).toEqual([]);
+  });
+}
+
+test("in the outline a letter typed to find a row is not a pick-up", async ({ page }) => {
+  const view = CASES.find((item) => item.id === "outline") as ViewCase;
+  await openIn(page, view);
+  await thingOf(page, view, "shard-3").focus();
+  await page.keyboard.press("p");
+  await page.keyboard.press("m");
+
+  await expect(page.getByTestId(view.root)).not.toHaveAttribute("data-moving", /.+/);
 });

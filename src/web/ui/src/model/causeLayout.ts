@@ -1,5 +1,6 @@
 import { arrange } from "./arrange";
 import type { CausePath, FoldedGroup } from "./causePath";
+import { ranksInOrder, sameRanks, type ModelOrder } from "./customOrder";
 import type { Rect } from "./edgeRouting";
 import type { Point } from "./layout";
 import { impactOf } from "./palette";
@@ -54,6 +55,8 @@ export interface CauseLayout {
   readonly nodes: readonly Placement[];
   readonly edges: readonly PlacedEdge[];
   readonly bounds: Rect;
+  /** What stands side by side, row by row from the root, left to right: what a drag reorders. */
+  readonly ranks: readonly (readonly string[])[];
 }
 
 export const chipId = (group: FoldedGroup): string => `fold:${group.id}`;
@@ -99,6 +102,8 @@ export function layoutCause(
   path: CausePath,
   labelWidth: (text: string) => number,
   changed: ReadonlySet<string> = new Set(),
+  /** The order the viewer gave the model by dragging: siblings stand in it, and what hangs below them goes along. */
+  order: ModelOrder | null = null,
 ): CauseLayout {
   const byName = new Map(entities.map((entity) => [entity.name, entity] as const));
   const steps = new Map(path.chain.map((name, index) => [name, index + 1] as const));
@@ -126,11 +131,11 @@ export function layoutCause(
   ];
 
   const ids = [...sizes.keys()];
-  const arrangement = arrange(
-    ids.map((id) => ({ name: id, ...sizes.get(id)! })),
-    links.map((link) => ({ parentEntityName: link.from, childEntityName: link.to, displayName: link.text })),
-    "tb",
-  );
+  const arrangeNodes = ids.map((id) => ({ name: id, ...sizes.get(id)! }));
+  const arrangeEdges = links.map((link) => ({ parentEntityName: link.from, childEntityName: link.to, displayName: link.text }));
+  const own = arrange(arrangeNodes, arrangeEdges, "tb");
+  const wanted = ranksInOrder(own.ranks, arrangeEdges, order);
+  const arrangement = sameRanks(wanted, own.ranks) ? own : arrange(arrangeNodes, arrangeEdges, "tb", { order: wanted });
   const nodes: RouteNode[] = ids.map((id) => ({ id, ...arrangement.positions.get(id)!, ...sizes.get(id)! }));
   const weight = (link: (typeof links)[number]): number => {
     const child = byName.get(link.to);
@@ -152,5 +157,6 @@ export function layoutCause(
       relationship: textOf.get(edge.id)!.relationship,
     })),
     bounds: routing.bounds,
+    ranks: arrangement.ranks,
   };
 }

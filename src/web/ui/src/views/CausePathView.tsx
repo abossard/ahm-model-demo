@@ -9,6 +9,7 @@ import { layoutCause, type CauseLayout, type Placement } from "../model/causeLay
 import { visibleGraph } from "../model/collapse";
 import { noEntitiesText } from "../model/compare";
 import { cardTokens, diffTokens, edgeAppearance, impactOf, impactStyle, tokensFor, type DiffMark } from "../model/palette";
+import { drawnParents, type ReorderWorld } from "../model/reorder";
 import { formatSignalValue } from "../model/signalValue";
 import type { Entity } from "../model/types";
 import { actions, canvasFrame, useStore } from "../store/store";
@@ -17,6 +18,7 @@ import { StateGlyph } from "../components/StateGlyph";
 import { stepEdge, stepEdgeTypes, type StepRfEdge } from "../components/StepEdge";
 import { prefersReducedMotion } from "../components/Topology";
 import type { ViewProps } from "./types";
+import { DropSlot, moveClass, useReorder, withMoveNodes, type MoveMarks } from "./useReorder";
 
 const MIN_ZOOM = 0.1;
 const MAX_FIT_ZOOM = 1;
@@ -59,7 +61,7 @@ const useStyles = makeStyles({
 
 // ---- nodes -------------------------------------------------------------------------------------
 
-interface CauseNodeData extends Record<string, unknown> {
+interface CauseNodeData extends Record<string, unknown>, MoveMarks {
   readonly placement: Placement;
   readonly entity: Entity | null;
   readonly owner: string | null;
@@ -131,7 +133,7 @@ function CauseChipImpl({ data }: NodeProps<CauseRfNode>): JSX.Element {
 }
 
 function CauseCardImpl({ data }: NodeProps<CauseRfNode>): JSX.Element | null {
-  const { placement, entity, selected, highlighted, badge, marked, onActivate } = data;
+  const { placement, entity, selected, highlighted, badge, marked, reorderable, ghost, onActivate } = data;
   if (!entity) return null;
   const token = tokensFor(entity.healthState);
   const impact = impactOf(entity.impact);
@@ -151,9 +153,9 @@ function CauseCardImpl({ data }: NodeProps<CauseRfNode>): JSX.Element | null {
     <div className="cause-node-shell" style={{ width: rect.width, height: rect.height }}>
       <Handle type="target" position={Position.Top} className="entity-node__handle" />
       <div
-        className={mergeClasses("cause-node", `cause-node--${kind}`, selected && "is-selected", highlighted && "is-highlighted", marked && "is-marked", step !== null && "is-chain")}
-        data-testid="cause-node"
-        data-entity={entity.name}
+        className={mergeClasses("cause-node", `cause-node--${kind}`, selected && "is-selected", highlighted && "is-highlighted", marked && "is-marked", step !== null && "is-chain", moveClass(data).trim())}
+        {...(ghost ? { "data-testid": "reorder-ghost", "aria-hidden": true } : { "data-testid": "cause-node", "data-entity": entity.name, tabIndex: 0 })}
+        aria-keyshortcuts={reorderable && !ghost ? "M" : undefined}
         data-state={entity.healthState}
         data-kind={kind}
         data-step={step ?? undefined}
@@ -161,7 +163,6 @@ function CauseCardImpl({ data }: NodeProps<CauseRfNode>): JSX.Element | null {
         data-badge={badge ?? undefined}
         data-marked={marked ? "true" : undefined}
         role="button"
-        tabIndex={0}
         aria-label={spoken}
         style={{
           width: rect.width,
@@ -254,7 +255,7 @@ const CauseNode = memo(function CauseNode(props: NodeProps<CauseRfNode>): JSX.El
 
 // ---- edges ---------------------------------------------------------------------------------------
 
-const nodeTypes: NodeTypes = { cause: CauseNode, chip: CauseNode };
+const nodeTypes: NodeTypes = { cause: CauseNode, chip: CauseNode, slot: DropSlot };
 
 /** Close enough to the 10.5 px label font: the router only needs room for the pill, not its exact width. */
 const labelWidthOf = (text: string): number => text.length * 5.9;
@@ -308,9 +309,24 @@ function CausePathCanvas({ entities, relationships, selectedName, highlightedNam
     () => causePath(filtered.entities, filtered.relationships, { explainChain: chainNames, open: new Set(openChips), ...(changed ? { changed } : {}) }),
     [filtered, chainNames, openChips, changed],
   );
-  const layout = useMemo(() => layoutCause(filtered.entities, filtered.relationships, path, labelWidthOf, changed), [filtered, path, changed]);
   const byName = useMemo(() => new Map(filtered.entities.map((entity) => [entity.name, entity] as const)), [filtered]);
   const steps = useMemo(() => new Map(path.chain.map((name, index) => [name, index + 1] as const)), [path]);
+  // The viewer's order, shared with every view; while a card is dragged, the order a drop would keep.
+  const reorder = useReorder({
+    labelOf: (id) => byName.get(id)?.displayName || id,
+    whyFixed: (id) => (steps.has(id) ? `${byName.get(id)?.displayName || id} is on the chain to the root. The chain follows the cause, so it keeps its place.` : null),
+  });
+  const layout = useMemo(() => layoutCause(filtered.entities, filtered.relationships, path, labelWidthOf, changed, reorder.order), [filtered, path, changed, reorder.order]);
+  // Cards beside each other under one parent trade places. The chain is a fixed sequence, the cause order, and a chip
+  // stands for what is folded: both hold their place. A compared model is not dragged.
+  const world = useMemo<ReorderWorld | null>(() => {
+    if (compare !== undefined) return null;
+    const cards = layout.nodes.filter((node) => node.kind !== "chip").map((node) => node.id);
+    const movable = cards.filter((id) => !steps.has(id));
+    return { rows: layout.ranks, rects: new Map(layout.nodes.map((node) => [node.id, node.rect] as const)), parents: drawnParents(movable, new Set(cards), filtered.relationships) };
+  }, [compare, layout, steps, filtered]);
+  reorder.offer(world);
+  const moving = reorder.move;
 
   // Opening a chip re-arranges; the clicked chip stays where it was on screen.
   const anchor = useRef<{ readonly id: string; readonly x: number; readonly y: number } | null>(null);
@@ -337,8 +353,11 @@ function CausePathCanvas({ entities, relationships, selectedName, highlightedNam
           height: placement.rect.height,
           // Carried so React Flow keeps the measured handle bounds when a new layout swaps the node objects.
           measured: { width: placement.rect.width, height: placement.rect.height },
+          draggable: world?.parents.has(placement.id) ?? false,
           data: {
             placement,
+            ...(world?.parents.has(placement.id) ? { reorderable: true } : {}),
+            ...(moving?.id === placement.id ? { dragging: true } : {}),
             entity,
             owner: placement.group ? (byName.get(placement.group.owner)?.displayName ?? placement.group.owner) : null,
             selected: placement.id === selectedName,
@@ -350,8 +369,9 @@ function CausePathCanvas({ entities, relationships, selectedName, highlightedNam
           },
         };
       }),
-    [layout, byName, selectedName, highlightedName, badges, marked, onToggle, onActivate],
+    [layout, byName, selectedName, highlightedName, badges, marked, world, moving?.id, onToggle, onActivate],
   );
+  const shownNodes = useMemo(() => withMoveNodes(nodes, moving), [nodes, moving]);
   const edges = useMemo(() => edgesOf(layout, byName, steps, badges), [layout, byName, steps, badges]);
 
   // The first layout fits the screen. When that would be too small to read, the chain is what the
@@ -418,7 +438,7 @@ function CausePathCanvas({ entities, relationships, selectedName, highlightedNam
   };
 
   return (
-    <div className={styles.root} data-testid="cause-view">
+    <div className={mergeClasses(styles.root, moving !== null && "is-reordering")} data-testid="cause-view" {...reorder.root}>
       <div className={styles.banner} data-testid="cause-summary">
         {changed ? (
           <span role="status" data-testid="cause-compare">
@@ -463,13 +483,16 @@ function CausePathCanvas({ entities, relationships, selectedName, highlightedNam
       <div className={styles.canvas}>
         <ReactFlow
           id="cause"
-          nodes={nodes}
+          nodes={shownNodes}
           edges={edges}
           nodeOrigin={[0, 0]}
           nodeTypes={nodeTypes}
           edgeTypes={stepEdgeTypes}
           minZoom={MIN_ZOOM}
-          nodesDraggable={false}
+          nodesDraggable={world !== null}
+          nodeDragThreshold={4}
+          nodeClickDistance={4}
+          {...reorder.flow}
           nodesConnectable={false}
           nodesFocusable={false}
           elementsSelectable={false}

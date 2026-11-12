@@ -193,3 +193,45 @@ test("a Design targets the design model and proposes its entities as a diff", as
   await expect(page.getByTestId("apply-dialog-target")).toHaveText("hm-local-design (rg-local)");
   await page.getByTestId("apply-cancel").click();
 });
+
+test("the timeline reads the model's history through the real app in tiles, and a tile that closed is confirmed instead of sent again", async ({ page }) => {
+  const answers: { url: URL; status: number }[] = [];
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (url.pathname === "/api/timeline") answers.push({ url, status: response.status() });
+  });
+  await boot(page);
+  await page.getByTestId("timeline-toggle").click();
+  await expect(page.getByTestId("tl-label-entity").first()).toBeVisible();
+  await page.getByTestId("tl-expand-all").click();
+  await expect(page.getByTestId("tl-label-signal").first()).toBeVisible();
+  await expect.poll(() => answers.some((answer) => answer.url.searchParams.get("include") === "signals" && answer.status === 200)).toBe(true);
+
+  // Every window begins and ends on a day (a week for the states), so the same window is always the same address.
+  const DAY = 86_400_000;
+  for (const { url } of answers) {
+    expect(Date.parse(url.searchParams.get("from") ?? "") % DAY, url.search).toBe(0);
+    expect(Date.parse(url.searchParams.get("to") ?? "") % DAY, url.search).toBe(0);
+  }
+  expect(answers.every((answer) => answer.status === 200)).toBe(true);
+  await expect(page.getByTestId("tl-retry")).toHaveCount(0);
+
+  // A day that is over: the app says the browser may keep it, and the second time only confirms it.
+  const today = Math.floor(Date.now() / DAY) * DAY;
+  const closed = `/api/timeline?model=${LIVE_MODEL}&resourceGroup=rg-local&subscription=00000000-0000-0000-0000-000000000000&from=${new Date(today - 2 * DAY).toISOString()}&to=${new Date(today - DAY).toISOString()}&include=signals&entity=orders-db`;
+  const read = await page.evaluate(async (target) => {
+    const first = await fetch(target);
+    const one = await first.text();
+    const second = await fetch(target);
+    const same = (await second.text()) === one;
+    const asked = await fetch(target, { headers: { "If-None-Match": first.headers.get("etag") ?? "" } });
+    const sizes = (performance.getEntriesByType("resource") as PerformanceResourceTiming[]).filter((entry) => entry.name.endsWith(target)).map((entry) => entry.transferSize);
+    return { caching: first.headers.get("cache-control"), tagged: first.headers.get("etag") !== null, same, asked: asked.status, sizes, points: (JSON.parse(one) as { series: { points: unknown[] }[] }).series[0]?.points.length ?? 0 };
+  }, closed);
+
+  expect(read).toMatchObject({ caching: "private, no-cache", tagged: true, same: true, asked: 304 });
+  expect(read.points).toBeGreaterThan(10);
+  // The browser's own second read went to the app and came back without a body: a few hundred bytes of headers.
+  expect(read.sizes[1]).toBeGreaterThan(0);
+  expect(read.sizes[1]).toBeLessThan((read.sizes[0] ?? 0) / 5);
+});
