@@ -174,14 +174,14 @@ test("a question about a past moment reaches the app and the assistant with that
   await expect(page.getByTestId("tl-label-entity").first()).toBeVisible();
   await expect(page.getByTestId("tl-busy")).toHaveCount(0);
   // Now the database is Unhealthy. Twelve hours ago, in the history of the fixture model, it was Healthy.
-  await expect(page.getByTestId("explain-entity")).toHaveText("Why is this Unhealthy?");
+  await expect(page.getByTestId("explain-entity")).toHaveText("Why is Orders database Unhealthy?");
   const plot = await page.getByTestId("tl-canvas").boundingBox();
   if (!plot) throw new Error("no plot");
   await page.mouse.click(plot.x + plot.width / 2, plot.y + 110);
   await expect(page.getByTestId("moment-bar")).toBeVisible();
   await expect(page.getByTestId("moment-shown")).toHaveText(/^Showing .*, (11|12) h( \d{1,2} min)? ago$/);
   await expect(node(page, "topology", "orders-db")).toHaveAttribute("aria-label", /\(Healthy/);
-  await expect(page.getByTestId("explain-entity")).toHaveText(/^Why was this Healthy at (\d{1,2} \w{3} )?\d{2}:\d{2}\?$/);
+  await expect(page.getByTestId("explain-entity")).toHaveText(/^Why was Orders database Healthy at (\d{1,2} \w{3} )?\d{2}:\d{2}\?$/);
   await expect.poll(() => new URL(page.url()).searchParams.get("at")).not.toBeNull();
   const at = Date.parse(new URL(page.url()).searchParams.get("at") ?? "");
 

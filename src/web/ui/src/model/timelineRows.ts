@@ -231,6 +231,13 @@ export function visibleRows(model: RowModel, top: number, height: number, oversc
   return [Math.max(0, lo - overscan), Math.min(rows.length, end + overscan)];
 }
 
+/** A row of an entity, its own or one of its signals', shows in a viewport `height` tall scrolled by `top`. */
+export function entityShown(model: RowModel, name: string, top: number, height: number): boolean {
+  const [from, to] = visibleRows(model, top, height, 0);
+  for (let i = from; i < to; i += 1) if ((model.rows[i] as Row).entity === name) return true;
+  return false;
+}
+
 /** Rows kept ready either side of the viewport once the rows in the page are cut anew. */
 const READY_ROWS = 14;
 /** Rows that must stay ready either side before they are cut anew. */

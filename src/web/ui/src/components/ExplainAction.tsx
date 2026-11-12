@@ -12,9 +12,13 @@ import { useAtMoment } from "../timeline/useAtMoment";
 const useStyles = makeStyles({
   root: { display: "flex", flexWrap: "wrap", alignItems: "center", columnGap: tokens.spacingHorizontalM, rowGap: tokens.spacingVerticalXS },
   hint: { fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground2 },
+  // A long name is cut with an ellipsis: the full question is the tooltip and the accessible name.
+  button: { maxWidth: "min(100%, 560px)" },
+  label: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
 });
 
 const selectState = (state: Store): HealthState | null => selectEntityAt(state)?.healthState ?? null;
+const selectLabel = (state: Store): string | null => selectEntityAt(state)?.displayName ?? state.selectedName;
 
 /**
  * The action area of the selected entity: one click asks why the entity has its state. While that question starts or runs
@@ -37,14 +41,19 @@ export function ExplainAction(): JSX.Element {
   // The question names the state the entity has on screen, now or at the selected moment, because that is what the user is looking at.
   const state = useAtMoment(selectState);
   const minute = useAtMoment(selectMomentMinute);
-  const question = whyQuestion(state, null, minute === null ? null : momentWords(minute, Date.now()));
+  const subject = useAtMoment(selectLabel);
+  const question = whyQuestion(state, subject, minute === null ? null : momentWords(minute, Date.now()));
+  const text = starting ? "Asking the assistant" : running ? "Show what the assistant is doing" : question;
 
   return (
     <div className={styles.root} data-testid="entity-actions">
       <Button
         icon={starting || running ? <Spinner size="tiny" /> : <Lightbulb20Regular />}
+        className={styles.button}
         disabledFocusable={starting}
         aria-busy={starting}
+        aria-label={text}
+        title={text}
         onClick={() => {
           if (!running) return void actions.startTask({ type: "explain" });
           actions.setWorkspaceOpen(true);
@@ -53,7 +62,7 @@ export function ExplainAction(): JSX.Element {
         data-task-launcher=""
         data-testid="explain-entity"
       >
-        {starting ? "Asking the assistant" : running ? "Show what the assistant is doing" : question}
+        <span className={styles.label}>{text}</span>
       </Button>
       {starting || running ? null : (
         <Link as="button" onClick={() => actions.prefillTask("explain")} data-testid="explain-add-instruction">

@@ -345,7 +345,7 @@ test.describe("when the start cannot go ahead", () => {
     await expect(message).toContainText("is saved in History as");
     await expect(page.getByTestId("session-title-heading")).toHaveText(TITLE);
     expect(stub.emptySessions()).toHaveLength(1);
-    await expect(page.getByTestId("explain-entity")).toHaveText("Why is this Unhealthy?");
+    await expect(page.getByTestId("explain-entity")).toHaveText("Why is Service C Unhealthy?");
 
     // Another entity is selected by then, and the Explain still asks about the one that was clicked.
     await node(page, "topology", "svc-a").click();

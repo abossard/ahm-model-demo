@@ -8,7 +8,7 @@ import { holdOf, parseDuration } from "../model/timelineBands";
 import { signalFacts } from "../model/timelineTree";
 import { historyAt, stateAt, troubledAt } from "../model/timeTravel";
 import { detectIncidents, entityBands, incidentText, type Incident } from "../model/timelineIncidents";
-import { allKeys, buildRows, heldRows, moveFocus, revealKeys, rootEntity, scrollToShow, type Row } from "../model/timelineRows";
+import { allKeys, buildRows, entityShown, heldRows, moveFocus, revealKeys, rootEntity, scrollToShow, type Row } from "../model/timelineRows";
 import { PRESETS, formatClock, formatDay, formatInstant, padView, presetOf, presetView } from "../model/timelineScale";
 import { actions, useStore } from "../store/store";
 import { TIMELINE_MAX_HEIGHT, TIMELINE_MIN_HEIGHT, selectedMoment, timelineBounds } from "../store/timelineSlice";
@@ -73,11 +73,16 @@ export function TimelinePanel(): JSX.Element {
 
   useInertElsewhere(rootRef, fullscreen);
 
-  // Escape leaves full screen from wherever the focus is, unless it is closing something that opened over the timeline.
+  // Escape leaves full screen from wherever the focus is, unless it is closing something that opened over the timeline:
+  // a dialog, a menu, or the assistant's panel, which closes first and hands the focus back.
   useEffect(() => {
     if (!fullscreen) return;
     const leave = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.defaultPrevented || document.querySelector('[role="dialog"], [role="menu"]')) return;
+      if (event.target instanceof Element && event.target.closest("#session-workspace") !== null) {
+        actions.setWorkspaceOpen(false);
+        return;
+      }
       actions.setTimelineFullscreen(false);
     };
     window.addEventListener("keydown", leave);
@@ -163,6 +168,17 @@ export function TimelinePanel(): JSX.Element {
     rangeRef.current = next;
     setRange(next);
   }, []);
+  /** The selected entity has a row in the viewport: when it has none, the strip says so and offers it. */
+  const [rowHidden, setRowHidden] = useState(false);
+  const checkShown = useCallback((top: number): void => {
+    const name = useStore.getState().selectedName;
+    setRowHidden(name !== null && viewportRef.current > 0 && !entityShown(rowsRef.current, name, top, viewportRef.current));
+  }, []);
+
+  /** What the user works on is what the strip is about: the entity of a row they click or move the focus to. */
+  const pickEntity = useCallback((name: string): void => {
+    if (useStore.getState().selectedName !== name) void actions.selectEntity(name);
+  }, []);
 
   /* Plot lifetime */
   useEffect(() => {
@@ -176,8 +192,14 @@ export function TimelinePanel(): JSX.Element {
         if (bodyRef.current) bodyRef.current.scrollTop = top;
         if (proxyRef.current) proxyRef.current.scrollTop = top;
         cutRange(top, false);
+        checkShown(top);
       },
-      focus: (row) => setFocusKey(row.key),
+      // A click on a lane is work on its entity: a strip that is there follows it, as it does for a click on a label. A click
+      // that only selects a moment opens no strip: it would push the plot down under the pointer.
+      focus: (row) => {
+        setFocusKey(row.key);
+        if (useStore.getState().selectedName !== null) pickEntity(row.entity);
+      },
       incident: (incident) => {
         const { bounds: limits, data: held } = latest.current;
         const next = padView(incident.from, incident.to ?? held.now, limits);
@@ -231,7 +253,7 @@ export function TimelinePanel(): JSX.Element {
       plot.destroy();
       plotRef.current = null;
     };
-  }, [cutRange]);
+  }, [cutRange, pickEntity, checkShown]);
 
   const tipClasses = useRef<Record<string, string>>({});
   tipClasses.current = {
@@ -278,6 +300,9 @@ export function TimelinePanel(): JSX.Element {
     cutRange(plotRef.current?.getScroll() ?? 0, true);
   }, [rowModel, viewport, cutRange]);
   useEffect(() => {
+    checkShown(plotRef.current?.getScroll() ?? 0);
+  }, [rowModel, viewport, selectedName, checkShown]);
+  useEffect(() => {
     if (view === null || model === null) return;
     plotRef.current?.setView(view, !firstView.current);
     firstView.current = false;
@@ -323,6 +348,7 @@ export function TimelinePanel(): JSX.Element {
       if (next) {
         wantScroll.current = next.key;
         setFocusKey(next.key);
+        pickEntity(next.entity);
       }
       event.preventDefault();
     } else if (event.key === "Enter") {
@@ -509,7 +535,7 @@ export function TimelinePanel(): JSX.Element {
       ) : null}
       <TimelineLegend standby={data.entities.some((entity) => entity.state === 4)} />
       {selectedName !== null && graphModel.kind === "success" ? (
-        <TimelineEntity options={graphModel.value.reportOptions} changes={data.states[selectedName]?.transitions ?? []} offsetMin={OFFSET_MIN} />
+        <TimelineEntity options={graphModel.value.reportOptions} changes={data.states[selectedName]?.transitions ?? []} offsetMin={OFFSET_MIN} rowHidden={rowHidden} />
       ) : null}
       <div className={styles.body}>
         <div

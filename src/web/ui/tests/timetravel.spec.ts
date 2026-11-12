@@ -110,7 +110,7 @@ test.describe("a selected moment shows the model as it was, in every view", () =
       await expect.poll(() => stateIn(page, view, "svc-a")).toBe("Healthy");
       await expect.poll(() => stateIn(page, view, "svc-b")).toBe("Degraded");
       await expect(stripState(page)).toHaveAttribute("data-state", "Healthy");
-      await expect(page.getByTestId("explain-entity")).toHaveText("Why is this Healthy?");
+      await expect(page.getByTestId("explain-entity")).toHaveText("Why is Service A Healthy?");
       await expect(page.getByTestId("model-observed")).toContainText("Updated");
       await expect(bar(page)).toHaveCount(0);
 
@@ -122,7 +122,7 @@ test.describe("a selected moment shows the model as it was, in every view", () =
       await expect(stripState(page)).toHaveAttribute("data-state", then);
       await expect(modelState(page)).toHaveAttribute("data-state", then);
       await expect(row(page, "svc-a").getByTestId("tl-state-word")).toHaveAttribute("data-state", then);
-      await expect(page.getByTestId("explain-entity")).toHaveText(new RegExp(`^Why was this ${then} at (\\d{1,2} \\w{3} )?\\d{2}:\\d{2}\\?$`));
+      await expect(page.getByTestId("explain-entity")).toHaveText(new RegExp(`^Why was Service A ${then} at (\\d{1,2} \\w{3} )?\\d{2}:\\d{2}\\?$`));
       await expect(page.getByTestId("model-observed")).toContainText("As of");
       await expect(page.getByTestId("moment-shown")).toHaveText(/^Showing \d{1,2} \w{3} \d{2}:\d{2}:\d{2}, 5 h \d{1,2} min ago$/);
       // A health report is about now: there is none to send for a moment that has passed.
@@ -136,13 +136,13 @@ test.describe("a selected moment shows the model as it was, in every view", () =
       // Cause path folds what is healthy behind a chip: there the card is gone, everywhere else it is Healthy.
       await expect.poll(() => stateIn(page, view, "svc-b")).toBe(view === "cause" ? null : "Healthy");
       await expect(stripState(page)).toHaveAttribute("data-state", "Healthy");
-      await expect(page.getByTestId("explain-entity")).toHaveText(/^Why was this Healthy at /);
+      await expect(page.getByTestId("explain-entity")).toHaveText(/^Why was Service A Healthy at /);
 
       await page.getByTestId("moment-now").click();
       await expect(bar(page)).toHaveCount(0);
       await expect.poll(() => stateIn(page, view, "svc-a")).toBe("Healthy");
       await expect.poll(() => stateIn(page, view, "svc-b")).toBe("Degraded");
-      await expect(page.getByTestId("explain-entity")).toHaveText("Why is this Healthy?");
+      await expect(page.getByTestId("explain-entity")).toHaveText("Why is Service A Healthy?");
       await expect(page.getByTestId("model-observed")).toContainText("Updated");
       await expect(page.getByTestId("report-open")).not.toHaveAttribute("aria-disabled", "true");
     });
@@ -236,9 +236,10 @@ test.describe("the assistant at a past moment", () => {
 
   async function bootAtMoment(page: Page, hoursAgo: number, options: WorkspaceOptions = {}): Promise<WorkspaceStub> {
     const stub = await boot(page, options);
+    // The moment first: a click on a lane picks the entity of the lane when a strip is open.
+    await selectMoment(page, hoursAgo);
     await node(page, "topology", "svc-c").click();
     await expect(page.getByTestId("entity-details")).toBeVisible();
-    await selectMoment(page, hoursAgo);
     return stub;
   }
 
@@ -247,7 +248,7 @@ test.describe("the assistant at a past moment", () => {
     const stub = await bootAtMoment(page, QUIET_HOURS, { scripts: { explain: UNKNOWN_THEN } });
     const at = await momentInAddress(page);
     // Service C has no signal of its own in the simulated history: twelve hours ago its state was unknown.
-    await expect(page.getByTestId("explain-entity")).toHaveText(/^Why was the state unknown at (\d{1,2} \w{3} )?\d{2}:\d{2}\?$/);
+    await expect(page.getByTestId("explain-entity")).toHaveText(/^Why was the state of Service C unknown at (\d{1,2} \w{3} )?\d{2}:\d{2}\?$/);
 
     await page.getByTestId("explain-entity").click();
     await expect(page.getByTestId("explain-result")).toBeVisible();
@@ -273,7 +274,7 @@ test.describe("the assistant at a past moment", () => {
 
     // The same question about now names no moment.
     await page.getByTestId("moment-now").click();
-    await expect(page.getByTestId("explain-entity")).toHaveText("Why is this Unhealthy?");
+    await expect(page.getByTestId("explain-entity")).toHaveText("Why is Service C Unhealthy?");
     await page.getByTestId("explain-entity").click();
     await expect.poll(() => stub.posts.length).toBe(2);
     expect(stub.posts[1]?.body).not.toHaveProperty("asOf");

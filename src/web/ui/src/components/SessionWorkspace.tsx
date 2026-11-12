@@ -1,6 +1,6 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { CSSProperties, JSX, KeyboardEvent, PointerEvent } from "react";
-import { makeStyles, tokens } from "@fluentui/react-components";
+import { makeStyles, mergeClasses, tokens } from "@fluentui/react-components";
 import { actions, useStore } from "../store/store";
 import {
   WORKSPACE_DEFAULT_WIDTH,
@@ -11,6 +11,7 @@ import { LaunchNotice } from "./LaunchNotice";
 import { NewTaskView } from "./NewTaskView";
 import { SessionList } from "./SessionList";
 import { SessionView } from "./SessionView";
+import { OVER_TIMELINE } from "../timeline/useInertElsewhere";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
 const KEY_STEP = 16;
@@ -34,6 +35,17 @@ const useStyles = makeStyles({
       maxWidth: "100%",
       borderRight: "none",
     },
+  },
+  // Over the full-screen timeline, which fills the body: the panel is a sheet on its left edge, above it.
+  over: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 40,
+    maxWidth: "100%",
+    boxShadow: tokens.shadow28,
+    borderRight: `1px solid ${tokens.colorNeutralStroke1}`,
   },
   panel: {
     display: "flex",
@@ -130,13 +142,38 @@ export function SessionWorkspace(): JSX.Element {
   const inSession = useStore((state) => state.sessionId !== null);
   const launching = useStore((state) => state.launch.kind !== "idle");
   const form = useStore((state) => state.workspaceTab === "new");
+  const over = useStore((state) => state.timelineOpen && state.timelineFullscreen);
   const asideRef = useRef<HTMLElement | null>(null);
+  const opener = useRef<HTMLElement | null>(null);
+
+  // Over the full-screen timeline the panel takes the focus when it opens and gives it back when it closes: the keyboard
+  // and a screen reader meet it where it appears, and leave it where they were.
+  useEffect(() => {
+    const aside = asideRef.current;
+    if (!over || !open || !aside) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !aside.contains(active)) {
+      // A toast fades: the timeline is where to come back to, not the link that opened the panel.
+      opener.current = active.closest(".fui-Toaster, .fui-Toast") === null ? active : null;
+      aside.focus({ preventScroll: true });
+    }
+    return () => {
+      const back = opener.current;
+      opener.current = null;
+      if (document.activeElement !== document.body && !aside.contains(document.activeElement)) return;
+      // What opened it may be gone (a toast) or be the page itself: the timeline is where the user was.
+      const target = back !== null && back !== document.body && back.isConnected ? back : document.querySelector<HTMLElement>('#timeline-panel [data-testid="tl-stage"]');
+      target?.focus({ preventScroll: true });
+    };
+  }, [over, open]);
 
   return (
     <aside
       id="session-workspace"
       ref={asideRef}
-      className={styles.root}
+      className={mergeClasses(styles.root, over && styles.over)}
+      tabIndex={-1}
+      {...(over ? { [OVER_TIMELINE]: "" } : {})}
       style={{ "--workspace-width": `${width}px` } as CSSProperties}
       aria-label="Assistant"
       hidden={!open}

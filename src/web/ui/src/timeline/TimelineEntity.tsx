@@ -35,6 +35,8 @@ interface Props {
   /** Every state change of the selected entity, oldest first. */
   readonly changes: readonly Transition[];
   readonly offsetMin: number;
+  /** None of the entity's rows is in the viewport of the tree. */
+  readonly rowHidden: boolean;
 }
 
 /**
@@ -44,7 +46,7 @@ interface Props {
  * Its state is the one the graph shows: the live model's now, the one it had at a selected moment. The detail that is
  * read when it is selected adds what the model does not carry: whether it takes health reports, and the reports it got.
  */
-export function TimelineEntity({ options, changes, offsetMin }: Props): JSX.Element {
+export function TimelineEntity({ options, changes, offsetMin, rowHidden }: Props): JSX.Element {
   const styles = useStyles();
   const selectedName = useStore((state) => state.selectedName);
   const detail = useStore((state) => state.detail);
@@ -56,12 +58,17 @@ export function TimelineEntity({ options, changes, offsetMin }: Props): JSX.Elem
   const known = shown !== undefined && (past || detail.kind === "success");
 
   return (
-    <section className={styles.entity} aria-label="Selected entity" data-testid="entity-details">
+    <section className={styles.entity} aria-label={`Selected entity: ${title}`} data-testid="entity-details">
       {known ? <HealthBadge state={shown.healthState} /> : null}
       <span className={styles.entityName} data-testid="entity-name">
         {title}
       </span>
       {known ? <Text size={200}>Impact: {shown.impact}</Text> : null}
+      {rowHidden ? (
+        <Button size="small" appearance="transparent" onClick={() => actions.showInTimeline(selectedName ?? "")} data-testid="entity-show-row">
+          Its row is out of view: show it
+        </Button>
+      ) : null}
       {!past && detail.kind === "loading" ? <Spinner size="tiny" label="Loading entity…" labelPosition="after" /> : null}
       {!past && detail.kind === "failure" ? (
         <MessageBar intent="error" role="alert">

@@ -262,10 +262,10 @@ test.describe("the interface speaks in questions and answers", () => {
     await boot(page);
     // svc-a is Healthy, svc-b Degraded, svc-c Unhealthy, svc-d Unknown in the fixtures.
     for (const [name, question] of [
-      ["svc-a", "Why is this Healthy?"],
-      ["svc-b", "Why is this Degraded?"],
-      ["svc-c", "Why is this Unhealthy?"],
-      ["svc-d", "Why is the state unknown?"],
+      ["svc-a", "Why is Service A Healthy?"],
+      ["svc-b", "Why is Service B Degraded?"],
+      ["svc-c", "Why is Service C Unhealthy?"],
+      ["svc-d", "Why is the state of Service D unknown?"],
     ] as const) {
       await pick(page, name);
       await expect(page.getByTestId("explain-entity")).toHaveText(question);

@@ -9,7 +9,7 @@ const COLOURS = [
   { state: "Unknown", word: "Unknown or no data" },
 ] as const;
 
-/** What the colours and marks of the plot mean. The bars of an entity and the line of a signal share one set of colours. */
+/** What the colours and marks of the plot mean. The bars of an entity and the line of a signal share one set of colours, the bars fainter for a quiet state. */
 export function TimelineLegend({ standby }: { readonly standby: boolean }): JSX.Element {
   const styles = useStyles();
   return (
@@ -26,8 +26,14 @@ export function TimelineLegend({ standby }: { readonly standby: boolean }): JSX.
           Standby
         </li>
       ) : null}
+      <li className={styles.legendItem} data-testid="tl-legend-bars">
+        An entity's bar fills its row: faint while Healthy or Unknown, strong while Degraded or Unhealthy.
+      </li>
       <li className={styles.legendItem} data-testid="tl-legend-line">
         A signal's line turns orange past its Degraded threshold and red past its Unhealthy one.
+      </li>
+      <li className={styles.legendItem} data-testid="tl-legend-zones">
+        Behind it the value ranges are shaded green, orange and red, and the one it was in is stronger.
       </li>
       <li className={styles.legendItem} data-testid="tl-legend-annotation">
         <span className="tl-mark" data-mark="annotation" aria-hidden="true">{MARK.annotation}</span>
@@ -42,7 +48,7 @@ export function TimelineLegend({ standby }: { readonly standby: boolean }): JSX.
         State change (selected entity)
       </li>
       <li className={styles.legendItem} data-testid="tl-legend-incident">
-        <span className="tl-swatch" data-state="Unhealthy" aria-hidden="true" />
+        <span className="tl-swatch" data-state="Unhealthy" data-solid aria-hidden="true" />
         Incident (model Degraded or Unhealthy)
       </li>
       <li className={styles.legendItem} data-testid="tl-legend-pinned">

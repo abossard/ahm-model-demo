@@ -1,7 +1,7 @@
 import type { Annotation, Report, SignalInfo, SeriesHistory, StateCode, Transition } from "../model/timeline";
 import { formatValue } from "../model/timelineHover";
 import { thresholdLines, type ColourRun, type Lane, type Level, type ThresholdLine } from "../model/timelineLine";
-import { ruleZones } from "../model/timelineTree";
+import { emphasisOf, ruleZones, type Zone } from "../model/timelineTree";
 import { bucketRange, clusterMarkers, firstAt, pixelBands, valueDomain, visibleRange, type Band, type MarkerAt, type PixelBand } from "../model/timelineBands";
 import type { Incident } from "../model/timelineIncidents";
 import type { EntityRow, SignalRow } from "../model/timelineRows";
@@ -86,17 +86,19 @@ export function drawGrid(frame: Frame, ticks: readonly Tick[]): void {
   ctx.globalAlpha = 1;
 }
 
-/** The bar of an entity: it gets taller as the state gets worse, and Unknown is the thinnest. */
-const STRIP_HEIGHT: Readonly<Record<StateCode, number>> = { 0: 4, 1: 6, 2: 12, 3: 18, 4: 6 };
+/** The bar of an entity fills its row; quiet states are faint so that Degraded and Unhealthy stand out. */
+export const STRIP_ALPHA: Readonly<Record<StateCode, number>> = { 0: 0.16, 1: 0.2, 2: 0.6, 3: 0.75, 4: 0.2 };
+const STRIP_INSET = 3;
 
-function fillStrip(frame: Frame, bands: readonly PixelBand[], centre: number): void {
+function fillStrip(frame: Frame, bands: readonly PixelBand[], top: number, height: number): void {
   const { ctx, colors } = frame;
   for (const band of bands) {
-    const h = STRIP_HEIGHT[band.state];
     const x = Math.floor(band.x0);
+    ctx.globalAlpha = STRIP_ALPHA[band.state];
     ctx.fillStyle = colors.state[band.state];
-    ctx.fillRect(x, centre - h / 2, Math.max(1, Math.ceil(band.x1) - x), h);
+    ctx.fillRect(x, top, Math.max(1, Math.ceil(band.x1) - x), height);
   }
+  ctx.globalAlpha = 1;
 }
 
 export function drawEntityRow(
@@ -112,7 +114,9 @@ export function drawEntityRow(
   ctx.globalAlpha = 0.5;
   ctx.fillRect(0, y + row.h - 1, width, 1);
   ctx.globalAlpha = 1;
-  fillStrip(frame, pixelBands(bands, view.t0, view.t1, width), y + row.h - 12);
+  const top = y + STRIP_INSET;
+  const height = row.h - 2 * STRIP_INSET;
+  fillStrip(frame, pixelBands(bands, view.t0, view.t1, width), top, height);
   if (markers.annotations.length + markers.reports.length > 0) {
     const items: MarkerAt<MarkerItem>[] = [
       ...markers.annotations.map((item): MarkerAt<MarkerItem> => ({ x: scale.x(item.t), item: { kind: "annotation", state: 1 } })),
@@ -132,8 +136,8 @@ export function drawEntityRow(
   for (const change of changes) {
     const x = Math.round(scale.x(change.t));
     if (x < -2 || x > width + 2) continue;
-    ctx.strokeRect(x - 1.5, y + row.h - 12 - 11, 3, 22);
-    ctx.fillRect(x - 1, y + row.h - 12 - 10, 2, 20);
+    ctx.strokeRect(x - 1.5, top - 0.5, 3, height + 1);
+    ctx.fillRect(x - 1, top, 2, height);
   }
 }
 
@@ -280,6 +284,40 @@ function fillRanges(frame: Frame, lane: Lane, i0: number, i1: number, yOf: (valu
 }
 
 /**
+ * The background of a lane says what state the signal exposed, in two layers. Each range of values the rule cuts (the
+ * healthy one green, the degraded one amber, the unhealthy one red) is a faint band as tall as its values are on the
+ * lane. Where the signal had a state, the band of that state is stronger in that stretch of time: green where it was
+ * healthy, red only where it was unhealthy. Unknown, and a signal without a rule, are washed over the whole lane height.
+ * Both layers stay fainter than the line and its dots.
+ */
+const ZONE_ALPHA = 0.06;
+const WASH_ALPHA: Readonly<Record<StateCode, number>> = { 0: 0.14, 1: 0.14, 2: 0.2, 3: 0.22, 4: 0 };
+const NO_ZONES: readonly Zone[] = [];
+
+function fillZones(frame: Frame, zones: readonly Zone[], yOf: (value: number) => number): void {
+  const { ctx, colors, width } = frame;
+  ctx.globalAlpha = ZONE_ALPHA;
+  for (const zone of zones) {
+    ctx.fillStyle = colors.state[zone.state];
+    ctx.fillRect(0, yOf(zone.to), width, yOf(zone.from) - yOf(zone.to));
+  }
+  ctx.globalAlpha = 1;
+}
+
+function washSpans(frame: Frame, spans: readonly PixelBand[], zones: readonly Zone[], top: number, height: number, yOf: (value: number) => number): void {
+  const { ctx, colors } = frame;
+  for (const wash of emphasisOf(spans, zones)) {
+    const x = Math.floor(wash.x0);
+    const y0 = wash.to === null ? top : yOf(wash.to);
+    const y1 = wash.from === null ? top + height : yOf(wash.from);
+    ctx.globalAlpha = WASH_ALPHA[wash.state];
+    ctx.fillStyle = colors.state[wash.state];
+    ctx.fillRect(x, y0, Math.max(1, Math.ceil(wash.x1) - x), y1 - y0);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/**
  * A lane of one signal: the measured value is the line, green while it is healthy, orange past the degraded threshold,
  * red past the unhealthy one and grey where the state is Unknown. The thresholds are drawn and named. A signal without
  * numbers shows its states as marks. `lane` is the series folded for this zoom level, null while there is none.
@@ -311,12 +349,7 @@ export function drawSignalRow(
     return;
   }
 
-  ctx.fillStyle = colors.state[0];
-  ctx.globalAlpha = 0.22;
-  for (const band of pixelBands(bands, view.t0, view.t1, width)) {
-    if (band.state === 0) ctx.fillRect(Math.floor(band.x0), chartTop, Math.max(1, Math.ceil(band.x1) - Math.floor(band.x0)), chartH);
-  }
-  ctx.globalAlpha = 1;
+  const spans = pixelBands(bands, view.t0, view.t1, width);
 
   const rules = info?.rules ?? NO_RULES;
   const unit = info?.unit ?? null;
@@ -331,6 +364,7 @@ export function drawSignalRow(
 
   if (!Number.isFinite(lo)) {
     const [p0, p1] = visibleRange(history.points, view.t0, view.t1);
+    washSpans(frame, spans, NO_ZONES, chartTop, chartH, () => chartTop);
     drawStateMarks(frame, history, p0, p1, chartTop, chartH);
     axisText(frame, "reported states, no measured value", 6, chartTop + 2, "left", "top");
     return;
@@ -346,12 +380,9 @@ export function drawSignalRow(
   ctx.beginPath();
   ctx.rect(0, chartTop, width, chartH);
   ctx.clip();
-  for (const zone of ruleZones(rules, domain)) {
-    ctx.globalAlpha = zone.state === 3 ? 0.16 : 0.12;
-    ctx.fillStyle = colors.state[zone.state];
-    ctx.fillRect(0, yOf(zone.to), width, yOf(zone.from) - yOf(zone.to));
-  }
-  ctx.globalAlpha = 1;
+  const zones = ruleZones(rules, domain);
+  fillZones(frame, zones, yOf);
+  washSpans(frame, spans, zones, chartTop, chartH, yOf);
   ctx.setLineDash(DASH as number[]);
   ctx.lineWidth = 1;
   for (const line of lines) {

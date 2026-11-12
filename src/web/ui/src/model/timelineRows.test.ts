@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EntityInfo, SignalInfo, StateCode } from "./timeline";
-import { ROW_HEIGHT, allKeys, buildRows, entityKey, entityOfKey, heldRows, moveFocus, revealKeys, rootEntity, rootKeys, scrollToShow, signalKey, visibleRows, type RowInput } from "./timelineRows";
+import { ROW_HEIGHT, allKeys, buildRows, entityKey, entityShown, entityOfKey, heldRows, moveFocus, revealKeys, rootEntity, rootKeys, scrollToShow, signalKey, visibleRows, type RowInput } from "./timelineRows";
 
 const signal = (name: string): SignalInfo => ({ name, displayName: name, kind: null, unit: null, refreshInterval: null, rules: { degraded: null, unhealthy: null, dynamic: false } });
 const entity = (name: string, parents: string[] = [], signals: string[] = []): EntityInfo => ({ name, displayName: name.toUpperCase(), parents, state: 1, signals: signals.map(signal) });
@@ -232,5 +232,20 @@ describe("virtualization", () => {
     [5, 10, 15],
   ])("moves focus from %d by %d to %d", (index, step, expected) => {
     expect(moveFocus(model, index, step)).toBe(expected);
+  });
+});
+
+describe("entityShown", () => {
+  const model = buildRows(input());
+  const at = (name: string, kind: "entity" | "signal" = "entity"): number => (model.rows.find((row) => row.entity === name && row.kind === kind) as { y: number }).y;
+
+  it.each([
+    { name: "its own row shows", entity: "comp-a", top: () => at("comp-a"), shown: true },
+    { name: "the row of one of its signals shows", entity: "res-a", top: () => at("res-a", "signal"), shown: true },
+    { name: "a row above the viewport does not", entity: "root", top: () => at("res-b"), shown: false },
+    { name: "a row below the viewport does not", entity: "stray", top: () => 0, shown: false },
+    { name: "an entity the model does not have does not", entity: "gone", top: () => 0, shown: false },
+  ])("$name", ({ entity: name, top, shown }) => {
+    expect(entityShown(model, name, top(), ROW_HEIGHT.entity * 2)).toBe(shown);
   });
 });

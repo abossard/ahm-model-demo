@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 import { DAY, HOUR } from "../src/model/timelineScale";
 import { buildFixture } from "../src/model/timelineFixture";
+import { STRIP_ALPHA } from "../src/timeline/draw";
 import { SUBSCRIPTION_A } from "./fixture";
 import { bootWith, installTimeline, modelOf, stubbedHistory } from "./timelineStub";
 import { installStubs } from "./fixture";
@@ -101,25 +102,34 @@ async function shotBoth(page: Page, name: string): Promise<void> {
 type Family = "healthy" | "degraded" | "unhealthy" | "unknown";
 
 /**
- * How many pixels of a band of the canvas are in each state colour of the theme (within a small distance), without the
- * rows that hold a threshold line: those are as wide as the lane and say nothing about the measured line.
+ * How many pixels of a band of the canvas are in each state colour of the theme (within a small distance). A `line` is
+ * drawn in the colour itself, and the rows that hold a threshold line are left out: they are as wide as the lane and say
+ * nothing about the measured line. A `bar` of an entity fills its row at the strength of its state (`STRIP_ALPHA`), so
+ * its pixels are the state colour blended with the panel.
  */
-async function coloursIn(page: Page, rowBox: { y: number; height: number }): Promise<Record<Family, number>> {
+async function coloursIn(page: Page, rowBox: { y: number; height: number }, kind: "line" | "bar" = "line"): Promise<Record<Family, number>> {
   const box = await plotBox(page);
   return page.evaluate(
-    ({ top, height }) => {
+    ({ top, height, bar, alpha }) => {
       const canvas = document.querySelector<HTMLCanvasElement>('[data-testid="tl-canvas"]') as HTMLCanvasElement;
       const style = getComputedStyle(canvas);
       const rgb = (name: string): number[] => {
         const hex = style.getPropertyValue(name).trim().replace("#", "");
         return [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
       };
-      const wanted: Record<string, number[]> = { healthy: rgb("--healthy-dot"), degraded: rgb("--degraded-dot"), unhealthy: rgb("--unhealthy-dot"), unknown: rgb("--unknown-dot") };
+      const panel = rgb("--canvas-bg");
+      const paint = (name: string, strength: number): number[] => {
+        const colour = rgb(name);
+        return bar ? colour.map((channel, i) => Math.round((panel[i] ?? 0) * (1 - strength) + channel * strength)) : colour;
+      };
+      const wanted: Record<string, number[]> = { healthy: paint("--healthy-dot", alpha[1] ?? 1), degraded: paint("--degraded-dot", alpha[2] ?? 1), unhealthy: paint("--unhealthy-dot", alpha[3] ?? 1), unknown: paint("--unknown-dot", alpha[0] ?? 1) };
       const scale = canvas.width / canvas.getBoundingClientRect().width;
       const y0 = Math.round(top * scale);
       const rows = Math.round(height * scale);
       const data = (canvas.getContext("2d") as CanvasRenderingContext2D).getImageData(0, y0, canvas.width, rows).data;
-      const near = (i: number, want: number[]): boolean => Math.abs((data[i] ?? 0) - (want[0] ?? 0)) + Math.abs((data[i + 1] ?? 0) - (want[1] ?? 0)) + Math.abs((data[i + 2] ?? 0) - (want[2] ?? 0)) < 36;
+      // A blended bar is an exact colour, and the faint ones lie close together: a line may be a little off, a bar may not.
+      const limit = bar ? 9 : 36;
+      const near = (i: number, want: number[]): boolean => Math.abs((data[i] ?? 0) - (want[0] ?? 0)) + Math.abs((data[i + 1] ?? 0) - (want[1] ?? 0)) + Math.abs((data[i + 2] ?? 0) - (want[2] ?? 0)) < limit;
       const counts: Record<string, number> = { healthy: 0, degraded: 0, unhealthy: 0, unknown: 0 };
       for (let y = 0; y < rows; y += 1) {
         const perRow: Record<string, number> = { healthy: 0, degraded: 0, unhealthy: 0, unknown: 0 };
@@ -128,12 +138,12 @@ async function coloursIn(page: Page, rowBox: { y: number; height: number }): Pro
           for (const [name, want] of Object.entries(wanted)) if (near(i, want)) perRow[name] = (perRow[name] ?? 0) + 1;
         }
         const wide = (perRow.degraded ?? 0) > canvas.width * 0.3 || (perRow.unhealthy ?? 0) > canvas.width * 0.3;
-        if (wide) continue;
+        if (wide && !bar) continue;
         for (const name of Object.keys(counts)) counts[name] = (counts[name] ?? 0) + (perRow[name] ?? 0);
       }
       return counts;
     },
-    { top: rowBox.y - box.y, height: rowBox.height },
+    { top: rowBox.y - box.y, height: rowBox.height, bar: kind === "bar", alpha: STRIP_ALPHA },
   ) as Promise<Record<Family, number>>;
 }
 
@@ -818,13 +828,14 @@ test("the legend names every colour and mark, and the bars and lines are drawn i
   expect(swatches[0]).toBe(`rgb(${[1, 3, 5].map((i) => parseInt(healthy.slice(i, i + 2), 16)).join(", ")})`);
 
   // Entity bars: the root was Healthy, Degraded and Unhealthy in the last day; an entity with nothing to measure is Unknown.
-  const root = await coloursIn(page, await bandOf(row(page, "svc-a")));
+  const root = await coloursIn(page, await bandOf(row(page, "svc-a")), "bar");
   expect(root.healthy).toBeGreaterThan(40);
   expect(root.degraded + root.unhealthy).toBeGreaterThan(10);
   expect(root.unhealthy).toBeGreaterThan(0);
-  const none = await coloursIn(page, await bandOf(row(page, "svc-e")));
+  const none = await coloursIn(page, await bandOf(row(page, "svc-e")), "bar");
   expect(none.unknown).toBeGreaterThan(40);
   expect(none.healthy + none.degraded + none.unhealthy).toBe(0);
+  await shotBoth(page, "zones-entity-rows");
 });
 
 test("a signal's line is green while it is healthy, orange past the degraded threshold and red past the unhealthy one", async ({ page }) => {
@@ -852,6 +863,14 @@ test("a signal's line is green while it is healthy, orange past the degraded thr
   expect(crossing.degraded).toBeGreaterThan(5);
   expect(crossing.unhealthy).toBeGreaterThan(5);
   await shotBoth(page, "overhaul-thresholds");
+  if (SHOTS) {
+    // The whole lane in view: the window of the screenshots is taller, and the timeline fills it.
+    await page.setViewportSize({ width: 1360, height: 900 });
+    await page.getByTestId("tl-fullscreen").click();
+    await settled(page);
+    await page.waitForTimeout(600);
+    await shotBoth(page, "zones-signal-lane");
+  }
 });
 
 test("a row the browser scrolls into view moves the plot with the tree", async ({ page }) => {

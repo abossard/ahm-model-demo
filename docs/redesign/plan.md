@@ -270,7 +270,7 @@ flowchart LR
 | Top bar | The model's state then. "As of 11 Nov 23:40:00" in place of "Updated" | `selectModelState`, `selectedMoment` |
 | Indicator (`MomentBar`) | "Showing 11 Nov 23:40:00, 2 h 10 min ago" with **Back to now**, under the top bar: above the graph, and above a timeline that fills the window. Escape returns to now after everything else that closes with Escape | `selectedMoment` |
 | Strip of the selected entity | State and impact then. The detail of now is not waited for and its failure is not shown. **Send a health report** is disabled: a report is about now | `selectEntityAt` |
-| The question | "Why was this Unhealthy at 23:40?" (the day too when it is not today), and the Task carries `asOf` | `selectEntityAt`, `selectMomentMinute` |
+| The question | "Why was Service A Unhealthy at 23:40?" (the day too when it is not today), and the Task carries `asOf` | `selectEntityAt`, `selectMomentMinute` |
 | Outline, "Last change" | The last change at or before the moment | `selectLastChange` |
 | Timeline tree | State and value of every row then, by the same `stateAt` | `stateAt`, `historyAt` |
 | Live changes | Kept in the store and neither announced nor flashed, since the page does not show them | `liveSlice` |

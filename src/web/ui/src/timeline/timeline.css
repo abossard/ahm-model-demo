@@ -7,7 +7,12 @@
 .tl-state[data-state="None"] { color: var(--colorNeutralForeground3); }
 
 /* The legend's swatches and marks: the colours the canvas draws, from the same custom properties. */
-.tl-swatch { display: inline-block; width: 16px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+/* The left half is the colour of a line and its dots, the right half the bar of an entity: faint for a quiet state, strong for trouble (STRIP_ALPHA). */
+.tl-swatch { --quiet: 80%; display: inline-block; width: 16px; height: 8px; border-radius: 2px; flex-shrink: 0; background-image: linear-gradient(to right, transparent 50%, color-mix(in srgb, var(--canvas-bg) var(--quiet), transparent) 50%); }
+.tl-swatch[data-state="Degraded"] { --quiet: 40%; }
+.tl-swatch[data-state="Unhealthy"] { --quiet: 25%; }
+.tl-swatch[data-state="Unknown"] { --quiet: 84%; }
+.tl-swatch[data-solid] { background-image: none; }
 .tl-swatch[data-state="Healthy"] { background: var(--healthy-dot); }
 .tl-swatch[data-state="Degraded"] { background: var(--degraded-dot); }
 .tl-swatch[data-state="Unhealthy"] { background: var(--unhealthy-dot); }
