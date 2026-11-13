@@ -509,6 +509,7 @@ class RefreshTests(HubCase):
 
                 self.assertFalse(await refreshing)
                 self.assertIsNone(hubs.warm(SELECTION), "what the early read showed is the model before the write")
+                azure.errors["cy"] = http_error(status)
                 with self.assertRaises(model_hub.Refusal) as refused:
                     await self.join(person("cy"))
                 self.assertEqual((refused.exception.status, refused.exception.code, refused.exception.retryable), (503, "live_unavailable", True))
@@ -517,20 +518,37 @@ class RefreshTests(HubCase):
                 self.assertIsNotNone(hubs.warm(SELECTION))
                 await self.stop_all()
 
-    async def test_a_viewer_is_not_started_from_a_snapshot_while_a_write_is_not_read_back_yet(self):
+    async def test_a_viewer_is_not_started_from_a_snapshot_while_a_write_is_not_read_back_yet_and_is_served_after_a_read(self):
         hubs = self.make(poll_seconds=30)
         first = await self.join(person("ada"))
         self.azure.errors["bob"] = http_error(500)
         await hubs.refresh(SELECTION, person("bob"))
+        self.azure.change(entity("a", "Unhealthy"), entity("b"))
         cases = [("without an id", None), ("with an id of this hub", first.initial[0]["id"])]
 
         for label, last_id in cases:
             with self.subTest(label):
-                with self.assertRaises(model_hub.Refusal) as refused:
-                    await self.join(person("cy"), last_id=last_id)
+                self.azure.reads.clear()
 
-                self.assertEqual(refused.exception.code, "live_unavailable")
-        self.assertEqual(len(hubs._hubs[model_hub.key_of(SELECTION)].members), 1, "a refused viewer leaves nothing behind")
+                joined = await self.join(person("cy"), last_id=last_id)
+
+                self.assertEqual(self.azure.reads, ["cy"], "the joining viewer reads the model before it is served")
+                self.assertFalse(hubs._hubs[model_hub.key_of(SELECTION)].dirty)
+                self.assertIsNotNone(joined.initial)
+                await hubs.refresh(SELECTION, person("bob"))  # dirty again for the next case
+
+    async def test_a_viewer_whose_own_read_fails_while_a_write_is_not_read_back_yet_is_refused_and_leaves_nothing_behind(self):
+        hubs = self.make(poll_seconds=30)
+        await self.join(person("ada"))
+        self.azure.errors["bob"] = http_error(500)
+        await hubs.refresh(SELECTION, person("bob"))
+        self.azure.errors["cy"] = http_error(500)
+
+        with self.assertRaises(model_hub.Refusal) as refused:
+            await self.join(person("cy"))
+
+        self.assertEqual(refused.exception.code, "live_unavailable")
+        self.assertEqual(len(hubs._hubs[model_hub.key_of(SELECTION)].members), 1)
 
     async def test_a_model_nobody_watches_has_nothing_to_refresh(self):
         hubs = self.make()

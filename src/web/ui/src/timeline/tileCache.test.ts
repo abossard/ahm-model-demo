@@ -1,10 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EntityInfo, Point } from "../model/timeline";
 import { overviewCell, seriesCell } from "../model/timelinePlan";
 import { DAY, MINUTE } from "../model/timelineScale";
 import { CLOSE_SAFETY, WEEK } from "../model/timelineTiles";
 import type { KeptTile } from "../model/timeStore";
-import { CACHE_SCHEMA, createTileCache, evictions, idsOfCell, keepable, memoryStorage, tileBytes, tileId, type CacheScope } from "./tileCache";
+import { CACHE_SCHEMA, OPEN_TIMEOUT_MS, createTileCache, evictions, idsOfCell, indexedDbStorage, keepable, memoryStorage, tileBytes, tileId, type CacheScope } from "./tileCache";
 
 const ADA: CacheScope = { owner: "tenant-a/ada@example.test", model: "sub/rg/hm" };
 const BOB: CacheScope = { owner: "tenant-a/bob@example.test", model: "sub/rg/hm" };
@@ -163,5 +163,78 @@ describe("the cache", () => {
 
     expect(await cache.read(ADA, [cell])).toEqual([]);
     expect(await cache.readStructure(ADA)).toBeNull();
+  });
+});
+
+describe("the browser's database", () => {
+  type Handler = (() => void) | null;
+  interface Opening {
+    onupgradeneeded: Handler;
+    onblocked: Handler;
+    onsuccess: Handler;
+    onerror: Handler;
+    result: unknown;
+    error: unknown;
+  }
+  let openings: Opening[];
+  const database = () => ({
+    close: vi.fn(),
+    onversionchange: null as Handler,
+    transaction: () => {
+      throw new Error("no store in a test");
+    },
+  });
+  const opened = (at: number, db: ReturnType<typeof database>): void => {
+    const opening = openings[at] as Opening;
+    opening.result = db;
+    opening.onsuccess?.();
+  };
+
+  beforeEach(() => {
+    openings = [];
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.stubGlobal("indexedDB", {
+      open: () => {
+        const opening: Opening = { onupgradeneeded: null, onblocked: null, onsuccess: null, onerror: null, result: null, error: null };
+        openings.push(opening);
+        return opening;
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it.each([
+    { name: "a tab of an older build holds it at its schema", stall: async (opening: Opening) => opening.onblocked?.() },
+    { name: "it does not answer", stall: async () => void (await vi.advanceTimersByTimeAsync(OPEN_TIMEOUT_MS)) },
+  ])("the timeline goes on without it when $name, and lets go of it should it open later", async ({ stall }) => {
+    const storage = indexedDbStorage()!;
+    const reading = expect(storage.get(["id"])).rejects.toThrow();
+
+    await stall(openings[0] as Opening);
+    await reading;
+    expect(await createTileCache(storage).readStructure(ADA)).toBeNull();
+
+    const late = database();
+    opened(0, late);
+    expect(late.close).toHaveBeenCalled();
+    expect(openings).toHaveLength(1);
+  });
+
+  it("lets a tab of a newer build upgrade it, and opens it again when it next needs it", async () => {
+    const storage = indexedDbStorage()!;
+    const reading = expect(storage.get(["id"])).rejects.toThrow("no store in a test");
+    const first = database();
+    opened(0, first);
+    await reading;
+
+    first.onversionchange?.();
+    void storage.get(["id"]).catch(() => undefined);
+
+    expect(first.close).toHaveBeenCalled();
+    expect(openings).toHaveLength(2);
   });
 });

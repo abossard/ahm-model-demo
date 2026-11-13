@@ -552,6 +552,19 @@ describe("the selected moment", () => {
     expect(useStore.getState()).toMatchObject({ timelinePinned: null, timelineFollowPaused: false });
   });
 
+  it.each([
+    { name: "the same model and user", selected: MODEL, account: null, kept: true },
+    { name: "another model", selected: { ...MODEL, id: "/b", name: "hm-b" }, account: null, kept: false },
+    { name: "another user", selected: MODEL, account: { name: "Bob", username: "bob@example.test", tenantId: "tenant-a" }, kept: false },
+  ])("a timeline set up again for $name keeps the moment selected before: $kept", ({ selected, account, kept }) => {
+    actions.selectMoment(AT);
+
+    useStore.setState({ selected, account });
+    actions.resetTimeline(true);
+
+    expect(useStore.getState().timelinePinned).toBe(kept ? AT : null);
+  });
+
   it("a comparison is about now: selecting a moment closes it, and opening one returns to now", () => {
     useStore.setState({ compare: true });
 
@@ -720,6 +733,25 @@ describe("the browser's cache", () => {
 
     expect(useStore.getState().timelineStale).toBe(false);
     expect(useStore.getState().timelineView).toEqual({ t0: NOW + 2 * HOUR - DAY, t1: NOW + 2 * HOUR });
+  });
+
+  it.each([
+    { name: "a refresh", act: () => (vi.setSystemTime(NOW + MINUTE), actions.refreshTimeline()) },
+    { name: "a lane that opens", act: () => show({ lanes: [RESOURCE.name] }) },
+  ])("$name while another model is chosen asks for the model whose scope its answer is kept under", async ({ act }) => {
+    setTimelineCache(createTileCache(memoryStorage(), { delayMs: 0 }));
+    serve();
+    await open();
+    actions.openTimeline();
+    await settle();
+    vi.mocked(api.fetchTimeline).mockClear();
+
+    useStore.setState({ selected: { ...MODEL, id: "/b", name: "hm-b" } });
+    await act();
+
+    const asked = vi.mocked(api.fetchTimeline).mock.calls.map((call) => call[0]);
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.every((selection) => selection === MODEL)).toBe(true);
   });
 
   it("is never shown to another user: they start empty and read from the app", async () => {

@@ -15,6 +15,7 @@ import {
   panBy,
   sameView,
   timeTicks,
+  type OffsetOf,
   zoomAt,
   type Bounds,
   type View,
@@ -45,8 +46,8 @@ export interface PlotModel {
   readonly loading: ReadonlySet<string>;
   readonly incidents: readonly Incident[];
   readonly bounds: Bounds;
-  /** Minutes behind UTC, as `Date.getTimezoneOffset` gives it. */
-  readonly offsetMin: number;
+  /** Minutes behind UTC at an instant, as `Date.getTimezoneOffset` gives it. */
+  readonly offsetOf: OffsetOf;
   /** The window follows now: the server's clock is `skew` ms ahead of the browser's. Null when it stays where it is. */
   readonly follow: { readonly skew: number } | null;
 }
@@ -62,7 +63,7 @@ export interface PlotHooks {
   readonly focus: (row: Row) => void;
   readonly incident: (incident: Incident) => void;
   readonly reset: () => void;
-  readonly tip: (tip: Tip | null, x: number, y: number, offsetMin: number) => void;
+  readonly tip: (tip: Tip | null, x: number, y: number, offsetOf: OffsetOf) => void;
   readonly announce: (text: string) => void;
 }
 
@@ -95,6 +96,23 @@ interface HeldLanes {
 }
 
 /**
+ * The bands of an entity's row, worked out once per history, state and now: the last state of a quiet row holds up to
+ * now, so a later now is a longer band although the history is the same.
+ */
+export function createEntityBands(): (data: TimelineData, entity: EntityInfo) => readonly Band[] {
+  const cache = new WeakMap<StateHistory, { readonly state: number; readonly now: number; readonly bands: readonly Band[] }>();
+  return (data, entity) => {
+    const history = data.states[entity.name];
+    if (!history) return [];
+    const cached = cache.get(history);
+    if (cached && cached.state === entity.state && cached.now === data.now) return cached.bands;
+    const bands = entityBands(data, entity);
+    cache.set(history, { state: entity.state, now: data.now, bands });
+    return bands;
+  };
+}
+
+/**
  * The canvas of the timeline: it owns the view window, the scroll offset of the rows, the selected moment while it is
  * dragged, the gestures that move them and one draw per frame. React only hands it a model when data or selection
  * change; a drag, a wheel turn or a hover never touches React state.
@@ -109,7 +127,7 @@ export class Plot {
     loading: new Set(),
     incidents: [],
     bounds: { lo: 0, hi: 1 },
-    offsetMin: 0,
+    offsetOf: () => 0,
     follow: null,
   };
   private followTimer = 0;
@@ -143,7 +161,7 @@ export class Plot {
   private tipShown = false;
   private cursorStyle = "";
   private readonly pointers = new Map<number, { x: number; y: number }>();
-  private readonly entityCache = new WeakMap<StateHistory, { state: number; bands: readonly Band[] }>();
+  private readonly entityBands = createEntityBands();
   private readonly seriesCache = new WeakMap<SeriesHistory, { bands: readonly Band[]; hold: number; end: number }>();
   private readonly lanes = new WeakMap<readonly Point[], HeldLanes>();
   private markerKey: readonly [unknown, unknown] = [null, null];
@@ -488,15 +506,7 @@ export class Plot {
     this.markers = out;
   }
 
-  private bandsOf = (entity: EntityInfo): readonly Band[] => {
-    const history = this.model.data.states[entity.name];
-    if (!history) return [];
-    const cached = this.entityCache.get(history);
-    if (cached && cached.state === entity.state) return cached.bands;
-    const bands = entityBands(this.model.data, entity);
-    this.entityCache.set(history, { state: entity.state, bands });
-    return bands;
-  };
+  private bandsOf = (entity: EntityInfo): readonly Band[] => this.entityBands(this.model.data, entity);
 
   private seriesOf(entity: string, signal: string): { history: SeriesHistory; bands: readonly Band[]; hold: number } | undefined {
     const history = this.model.data.series[seriesKey(entity, signal)];
@@ -540,7 +550,7 @@ export class Plot {
     const scale = makeScale(this.shown, width);
     const frame: Frame = { ctx, width, height, view: this.shown, scale, colors: model.colors };
     clear(frame);
-    const ticks = timeTicks(this.shown, width, 96, model.offsetMin);
+    const ticks = timeTicks(this.shown, width, 96, model.offsetOf);
     drawGrid(frame, ticks);
     const viewport = Math.max(0, height - AXIS_HEIGHT);
     const top = this.getScroll();
@@ -577,14 +587,14 @@ export class Plot {
   }
 
   private textOf(moment: number): string {
-    if (this.momentText[0] !== moment) this.momentText = [moment, formatMoment(moment, this.model.offsetMin)];
+    if (this.momentText[0] !== moment) this.momentText = [moment, formatMoment(moment, this.model.offsetOf)];
     return this.momentText[1];
   }
 
   private hideTip(): void {
     if (!this.tipShown) return;
     this.tipShown = false;
-    this.hooks.tip(null, 0, 0, this.model.offsetMin);
+    this.hooks.tip(null, 0, 0, this.model.offsetOf);
   }
 
   private updateTip(): void {
@@ -598,7 +608,7 @@ export class Plot {
     if (this.pointerY >= INCIDENT_BAND[0] && this.pointerY < INCIDENT_BAND[1]) {
       const incident = model.incidents.find((item) => t >= item.from && t <= (item.to ?? model.data.now));
       const marker = incident ? [{ kind: "incident" as const, entity: "", t: incident.from, text: incidentText(incident, model.data.now) }] : [];
-      this.hooks.tip(incident ? { t, lines: [], hidden: 0, markers: marker } : null, this.pointerX, this.pointerY, model.offsetMin);
+      this.hooks.tip(incident ? { t, lines: [], hidden: 0, markers: marker } : null, this.pointerX, this.pointerY, model.offsetOf);
       return;
     }
     const [i0, i1] = this.visible;
@@ -627,7 +637,7 @@ export class Plot {
             t1: t + reach,
           })
         : [];
-    this.hooks.tip({ t, lines, hidden, markers }, this.pointerX, this.pointerY, model.offsetMin);
+    this.hooks.tip({ t, lines, hidden, markers }, this.pointerX, this.pointerY, model.offsetOf);
   }
 
   private holdFor(history: SeriesHistory): number {

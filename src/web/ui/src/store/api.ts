@@ -354,6 +354,8 @@ export interface ModelStream {
 
 const LIVE_BACKOFF_BASE_MS = 500;
 const LIVE_BACKOFF_CAP_MS = 30_000;
+/** A busy refusal before the stream starts (the model was just changed, or its viewers are many) is tried again this often before the caller is told. */
+const LIVE_REFUSAL_RETRIES = 3;
 /** The server sends a comment every 15 s: a connection that stays silent for three times that is dead. */
 const LIVE_SILENCE_MS = 45_000;
 
@@ -373,6 +375,7 @@ export function openModelStream(selection: ModelSelection | null, handlers: Mode
     const decoder = new TextDecoder();
     let lastId: string | null = null;
     let failures = 0;
+    let refused = 0;
     let first = true;
     while (!signal.aborted) {
       handlers.onStatus(first ? "connecting" : "reconnecting");
@@ -392,8 +395,13 @@ export function openModelStream(selection: ModelSelection | null, handlers: Mode
           signal: connection.signal,
         });
         if (!response.ok) {
-          if (!signal.aborted) handlers.onFailure(await readError(response));
-          return;
+          const error = await readError(response);
+          if (!error.retryable || refused >= LIVE_REFUSAL_RETRIES) {
+            if (!signal.aborted) handlers.onFailure(error);
+            return;
+          }
+          refused += 1;
+          throw new Error("The live stream was refused for now.");
         }
         if (response.body === null) throw new Error("The live stream has no body.");
         handlers.onStatus("open");
@@ -405,6 +413,7 @@ export function openModelStream(selection: ModelSelection | null, handlers: Mode
           watch();
           for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
             failures = 0;
+            refused = 0;
             if (signal.aborted) return;
             const event = parseLiveFrame(frame.event, frame.data, frame.id);
             if (frame.id !== null) lastId = frame.id;

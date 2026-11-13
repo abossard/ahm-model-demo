@@ -438,6 +438,37 @@ describe("the browser's cache", () => {
     expect([...storage.items.keys()].some((key) => key.includes("ada") || key.includes("bob") || key.includes("tenant"))).toBe(false);
   });
 
+  it.each([
+    { name: "the structure", slow: 0 },
+    { name: "the tiles", slow: 1 },
+  ])("a read of $name that lands after the timeline closed asks the app for nothing, and the next view does", async ({ slow }) => {
+    const inner = memoryStorage();
+    const waiting: (() => void)[] = [];
+    let calls = 0;
+    const storage: TileStorage = {
+      ...inner,
+      get: (ids) => {
+        calls += 1;
+        return calls - 1 === slow ? new Promise((resolve) => waiting.push(() => resolve(inner.get(ids)))) : inner.get(ids);
+      },
+    };
+    const subject = harness(SMALL, { cache: cached(storage) });
+    subject.loader.open(ADA);
+    subject.loader.want(demand());
+    await tick();
+    expect(waiting).toHaveLength(1);
+
+    subject.loader.stop();
+    for (const go of waiting) go();
+    await subject.loader.idle();
+    await tick();
+    expect(subject.requests).toEqual([]);
+
+    subject.loader.want(demand());
+    await subject.loader.idle();
+    expect(subject.requests.length).toBeGreaterThan(0);
+  });
+
   it("another model, or no model, gets nothing of it and cancels what was in flight", async () => {
     const subject = await opened(SMALL, { gated: true });
     subject.loader.want(demand({ lanes: [FIRST] }));

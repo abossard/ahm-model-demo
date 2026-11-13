@@ -89,14 +89,20 @@ export function useReorder({ labelOf, whyFixed, idAttribute = "entity", onKeep }
     return state.sortKey === "custom" && key !== null ? (state.customOrders[key] ?? null) : null;
   });
 
+  // What the viewer kept, whatever the Order is now: a drag in another order adds to it, it does not replace it.
+  const saved = useStore((state) => {
+    const key = orderKey(state.selected);
+    return key !== null ? (state.customOrders[key] ?? null) : null;
+  });
+
   const [move, setMove] = useState<Move | null>(null);
   const moveRef = useRef<Move | null>(null);
   // A drag is judged against what was on screen when it began: the view draws the order a drop would keep as it goes.
   const held = useRef<{ readonly world: ReorderWorld; readonly base: ModelOrder | null } | null>(null);
   const cancelled = useRef(false);
   const offered = useRef<ReorderWorld | null>(null);
-  const latest = useRef({ stored, labelOf, whyFixed, onKeep });
-  latest.current = { stored, labelOf, whyFixed, onKeep };
+  const latest = useRef({ saved, labelOf, whyFixed, onKeep });
+  latest.current = { saved, labelOf, whyFixed, onKeep };
   const offer = useCallback((world: ReorderWorld | null): void => {
     offered.current = world;
   }, []);
@@ -113,7 +119,7 @@ export function useReorder({ labelOf, whyFixed, idAttribute = "entity", onKeep }
     (id: string, pointer: Point | null, source: Move["source"]): boolean => {
       const current = offered.current;
       if (!current || !current.parents.has(id) || !current.rects.has(id)) return false;
-      held.current = { world: current, base: latest.current.stored };
+      held.current = { world: current, base: latest.current.saved };
       cancelled.current = false;
       update({ id, pointer, candidate: currentCandidate(current, id), source });
       return true;

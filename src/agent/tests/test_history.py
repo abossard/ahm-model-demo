@@ -235,6 +235,9 @@ class MomentTests(unittest.TestCase):
             ("everything since an ago", "AppRequests | where TimeGenerated > ago(5m) | summarize count()", f"AppRequests | where TimeGenerated between (({at} - 5m) .. {at}) | summarize count()"),
             ("since an ago, inclusive", "T | where TimeGenerated >= ago( 1h )", f"T | where TimeGenerated between (({at} - 1h) .. {at})"),
             ("a range to now", "T | where TimeGenerated between (ago(1h) .. now())", f"T | where TimeGenerated between (({at} - 1h) .. {at})"),
+            ("no spaces", "T | where TimeGenerated>ago(1h) | count", f"T | where TimeGenerated between (({at} - 1h) .. {at}) | count"),
+            ("no spaces, inclusive", "T | where TimeGenerated>=ago(1h)", f"T | where TimeGenerated between (({at} - 1h) .. {at})"),
+            ("tabs and newlines", "T\n| where TimeGenerated\t>\nago( 1h )", f"T\n| where TimeGenerated between (({at} - 1h) .. {at})"),
             ("now with an offset", "T | where TimeGenerated < now(-1h)", f"T | where TimeGenerated < ({at} + -1h)"),
             ("an ago elsewhere", "T | extend old = Created < ago(7d)", f"T | extend old = Created < ({at} - 7d)"),
             ("its own times", "T | where TimeGenerated between (datetime(2026-11-10T09:00:00Z) .. datetime(2026-11-10T10:00:00Z))", None),
@@ -252,12 +255,25 @@ class MomentTests(unittest.TestCase):
             ("bounded by the query", f"T | where TimeGenerated <= {at} | count", "", f"T | where TimeGenerated <= {at} | count", 50),
             ("the columns of a table", "T | getschema", "", "T | getschema", 50),
             ("a longer period", f"T | where TimeGenerated < {at}", "the 3 days before", f"T | where TimeGenerated < {at}", 98),
+            ("a lookback longer than the window", f"T | where TimeGenerated < {at} and X > ago(7d)", "", f"T | where TimeGenerated < {at} and X > ({at} - 7d)", 194),
         ]
         for label, query, instruction, expected, hours in cases:
             with self.subTest(label):
                 bounded = log_arguments({"workspace": "w", "table": "T", "query": query, "hours": 1}, as_of=self.AT, instruction=instruction, now=NOW)
 
                 self.assertEqual(bounded, {"workspace": "w", "table": "T", "query": expected, "hours": hours})
+
+    def test_a_log_call_keeps_the_hours_it_asked_for_counted_from_the_moment(self):
+        for label, asked, hours in [("a few hours", 3, 50), ("a week", 168, 194), ("none", None, 50)]:
+            with self.subTest(label):
+                arguments = {"table": "T", "query": "T | getschema"} | ({} if asked is None else {"hours": asked})
+                self.assertEqual(log_arguments(arguments, as_of=self.AT, instruction="", now=NOW)["hours"], hours)
+
+    def test_a_malformed_bound_does_not_count_as_a_bound(self):
+        for label, query in [("glued", "T | where TimeGeneratedbetween(a .. b)"), ("no parentheses", "T | where TimeGenerated between a .. b")]:
+            with self.subTest(label):
+                with self.assertRaises(HistoryRefused):
+                    log_arguments({"table": "T", "query": query}, as_of=self.AT, instruction="", now=NOW)
 
     def test_a_log_query_that_would_read_up_to_now_is_refused_and_says_what_to_add(self):
         for label, query in [("no time", "T | summarize count()"), ("only a start", "T | where TimeGenerated > datetime(2026-11-10T09:00:00Z)"), ("a named query", "recent")]:

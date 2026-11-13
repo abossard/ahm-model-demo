@@ -328,20 +328,20 @@ class TimelineReader:
         structure = (self._hub_structure(selection) if self._hub_structure else None) or cached(
             self._structures, scope, lambda: self._read_structure(client, group, model)
         )
-        wanted = self._wanted(structure, names)
+        wanted, missing = self._wanted(structure, names)
         window = snap_window(query["start"], query["end"], now, query["floor"])
         jobs = self._jobs(wanted, query["parts"], query["only"])
         if sum(1 for job in jobs if job[0] == "signal") > TIMELINE_MAX_SERIES:
             raise TimelineRequestError(
                 "too_many_series", f"Ask for at most {TIMELINE_MAX_SERIES} signals at a time: pass entity to narrow the request."
             )
-        etag = validator(scope[1:], query, window, jobs, to_ms(now) - HISTORY_SAFETY_SECONDS * 1000)
+        etag = None if missing else validator(scope[1:], query, window, jobs, to_ms(now) - HISTORY_SAFETY_SECONDS * 1000)
 
         def read():
             budget = Budget(TIMELINE_MAX_CALLS, self._clock() + TIMELINE_DEADLINE_SECONDS, self._clock)
             cache = self._live if window["live"] else self._past
             results = self._run(jobs, lambda job: self._job(cache, scope, client, group, model, window, budget, job))
-            return self._assemble(model, now, window, query, wanted, jobs, results)
+            return self._assemble(model, now, window, query, wanted, jobs, results, missing)
 
         return Prepared(etag, read)
 
@@ -389,14 +389,16 @@ class TimelineReader:
         return build_structure(entities, relationships, model)
 
     def _wanted(self, structure, names):
+        """The entities to read and the names that are not in the model. The unknown ones are reported per entity, as long as one is known:
+        an Apply may have deleted an entity that a page with an older structure still asks for."""
         if not names:
-            return structure
+            return structure, []
         known = {entity["name"]: entity for entity in structure}
         unique = list(dict.fromkeys(names))
         missing = [name for name in unique if name not in known]
-        if missing or len(unique) > TIMELINE_MAX_ENTITIES:
+        if len(missing) == len(unique) or len(unique) > TIMELINE_MAX_ENTITIES:
             raise TimelineRequestError("unknown_entity", "Every entity must exist in the selected Health Model.")
-        return [known[name] for name in unique]
+        return [known[name] for name in unique if name in known], missing
 
     def _jobs(self, wanted, parts, only=frozenset()):
         """What a request reads, one history each. `only` narrows the series to the signals with those names."""
@@ -533,7 +535,7 @@ class TimelineReader:
                 return rows, False
             body = {"nextMarker": marker, **{key: value for key, value in first.items() if key not in WINDOW_KEYS}}
 
-    def _assemble(self, model, now, window, query, wanted, jobs, results):
+    def _assemble(self, model, now, window, query, wanted, jobs, results, missing=()):
         step = query["resolution"] * 1000
         out = {"states": [], "series": [], "annotations": [], "reports": [], "failures": []}
         failures = []
@@ -554,7 +556,14 @@ class TimelineReader:
                 failures.append(result)
         if jobs and all("cause" in result for result in results):
             raise results[0]["cause"]
-        partial = bool(failures) or any(not item.get("complete", True) for item in out["states"] + out["series"])
+        gone = {"code": "unknown_entity", "message": "This entity is not in the Health Model.", "retryable": False}
+        for entity in missing:
+            if "states" in query["parts"]:
+                out["states"].append({"entity": entity, "transitions": [], "complete": False, "earliest": None, "error": gone})
+            for part in ("annotations", "reports"):
+                if part in query["parts"]:
+                    out["failures"].append({"entity": entity, "part": part, "error": gone})
+        partial = bool(failures) or bool(missing) or any(not item.get("complete", True) for item in out["states"] + out["series"])
         return {
             "model": model,
             "observedAt": iso_ms(to_ms(now)),

@@ -23,7 +23,7 @@ import { ReportForm } from "../components/ReportForm";
 import { SignalHistory } from "../components/SignalHistory";
 import { accessMessage } from "../model/errors";
 import { stateName, type Transition } from "../model/timeline";
-import { formatInstant } from "../model/timelineScale";
+import { formatInstant, type OffsetOf } from "../model/timelineScale";
 import type { ReportOptions } from "../model/types";
 import { actions, useStore } from "../store/store";
 import { selectEntityAt } from "../store/timelineSlice";
@@ -34,7 +34,7 @@ interface Props {
   readonly options: ReportOptions;
   /** Every state change of the selected entity, oldest first. */
   readonly changes: readonly Transition[];
-  readonly offsetMin: number;
+  readonly offsetOf: OffsetOf;
   /** None of the entity's rows is in the viewport of the tree. */
   readonly rowHidden: boolean;
 }
@@ -46,7 +46,7 @@ interface Props {
  * Its state is the one the graph shows: the live model's now, the one it had at a selected moment. The detail that is
  * read when it is selected adds what the model does not carry: whether it takes health reports, and the reports it got.
  */
-export function TimelineEntity({ options, changes, offsetMin, rowHidden }: Props): JSX.Element {
+export function TimelineEntity({ options, changes, offsetOf, rowHidden }: Props): JSX.Element {
   const styles = useStyles();
   const selectedName = useStore((state) => state.selectedName);
   const detail = useStore((state) => state.detail);
@@ -130,7 +130,7 @@ export function TimelineEntity({ options, changes, offsetMin, rowHidden }: Props
                     <HealthBadge state={stateName(change.to)}>
                       {stateName(change.from)} to {stateName(change.to)}
                     </HealthBadge>
-                    <time>{formatInstant(change.t, offsetMin)}</time>
+                    <time>{formatInstant(change.t, offsetOf)}</time>
                     {change.reason ? <span>{change.reason}</span> : null}
                   </li>
                 ))}

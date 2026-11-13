@@ -59,6 +59,27 @@ describe("applyLive", () => {
     expect(next.states.a?.covered).toEqual([{ from: 0, to: 10 * hour + 30_000 }]);
   });
 
+  it.each([
+    { part: "states", track: (store: TimeStore) => store.states.a },
+    { part: "annotations", track: (store: TimeStore) => store.annotations.a },
+    { part: "reports", track: (store: TimeStore) => store.reports.a },
+    { part: "series", track: (store: TimeStore) => store.series[KEY]?.[0] },
+  ])("after a reload the $part held to where the cache ended keep the gap to the live event, to be read", ({ track }) => {
+    const day = 86_400_000;
+    const cached = mergeAnswer(EMPTY_STORE, answer({}, 0, day), ALL);
+    const delta = {
+      transitions: [{ entity: "a", t: 2 * day - 1000, from: 1 as const, to: 3 as const, reason: null }],
+      points: [{ entity: "a", signal: "cpu", points: [[2 * day - 1000, 5, 1]] as const }],
+      annotations: [{ entity: "a", id: "n1", t: 2 * day - 1000, description: "Deploy", details: {} }],
+      reports: [{ entity: "a", t: 2 * day - 1000, state: 2 as const, value: 0.5, reason: "x", reportId: "r1" }],
+    };
+
+    const next = applyLive(cached, delta, 2 * day, NONE);
+
+    expect(track(next)).toBe(track(cached));
+    expect(next.now).toBe(2 * day);
+  });
+
   it("appends a new point, revises one with the same time, and ignores a series that is not held", () => {
     const delta = {
       points: [

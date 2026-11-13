@@ -1,6 +1,6 @@
 import type { StateCreator } from "zustand";
 import type { AsyncState, ModelCatalog, ModelRef, ModelSelection } from "../model/types";
-import { selectionFromSearch } from "../model/selection";
+import { sameModel, selectionFromSearch } from "../model/selection";
 import * as api from "./api";
 import { IDLE, LOADING, settle } from "./asyncState";
 import type { Store } from "./store";
@@ -38,6 +38,9 @@ export const catalogSlice: StateCreator<Store, [], [], CatalogState & CatalogAct
 
   // Switching models is the one place that clears what belonged to the previous model.
   chooseModel: (selected) => {
+    const before = get().selected;
+    // A moment picked on one model is never asked about on another: the page returns to now while the next one loads.
+    if (before !== null && !sameModel(before, selected)) get().selectMoment(null);
     set({
       selected,
       unavailableSelection: null,

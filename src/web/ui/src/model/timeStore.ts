@@ -68,9 +68,21 @@ const timeOfRow = (row: { readonly t: number }): number => row.t;
 const timeOfPoint = (point: Point): number => point[0];
 const NOT_ANSWERED: SeriesError = { code: "not_found", message: "This history does not exist.", retryable: false };
 
-function put<T>(track: Track<T> | null | undefined, rows: readonly T[], span: Span, time: (row: T) => number): Track<T> {
+type Merge = <T>(existing: readonly T[], incoming: readonly T[], span: Span, time: (row: T) => number) => readonly T[];
+
+function put<T>(track: Track<T> | null | undefined, rows: readonly T[], span: Span, time: (row: T) => number, merge: Merge = mergeRange): Track<T> {
   const held = track ?? (EMPTY_TRACK as Track<T>);
-  return { rows: mergeRange(held.rows, rows, span, time), covered: addSpan(held.covered, span), error: null };
+  return { rows: merge(held.rows, rows, span, time), covered: addSpan(held.covered, span), error: null };
+}
+
+/**
+ * A tile holds [from, to): its rows replace the held ones from `from` up to, not at, `to`. A row at `to` belongs to the
+ * next tile, and is kept whichever of the two is merged first.
+ */
+function mergeTile<T>(existing: readonly T[], incoming: readonly T[], span: Span, time: (row: T) => number): readonly T[] {
+  const inside = incoming.slice(lowerBound(incoming, span.from, time), lowerBound(incoming, span.to, time));
+  if (existing.length === 0) return inside;
+  return [...existing.slice(0, lowerBound(existing, span.from, time)), ...inside, ...existing.slice(lowerBound(existing, span.to, time))];
 }
 
 const failed = <T>(track: Track<T> | null | undefined, error: SeriesError): Track<T> => ({ ...(track ?? (EMPTY_TRACK as Track<T>)), error });
@@ -227,12 +239,12 @@ export function mergeKept(store: TimeStore, tiles: readonly KeptTile[]): TimeSto
   let now = store.now;
   let floor = store.floor;
   for (const tile of tiles) {
-    if (tile.kind === "states") states[tile.entity] = put(states[tile.entity], tile.rows as readonly Transition[], tile.span, timeOfRow);
-    else if (tile.kind === "annotations") annotations[tile.entity] = put(annotations[tile.entity], tile.rows as readonly Annotation[], tile.span, timeOfRow);
-    else if (tile.kind === "reports") reports[tile.entity] = put(reports[tile.entity], tile.rows as readonly Report[], tile.span, timeOfRow);
+    if (tile.kind === "states") states[tile.entity] = put(states[tile.entity], tile.rows as readonly Transition[], tile.span, timeOfRow, mergeTile);
+    else if (tile.kind === "annotations") annotations[tile.entity] = put(annotations[tile.entity], tile.rows as readonly Annotation[], tile.span, timeOfRow, mergeTile);
+    else if (tile.kind === "reports") reports[tile.entity] = put(reports[tile.entity], tile.rows as readonly Report[], tile.span, timeOfRow, mergeTile);
     else {
       const key = seriesKey(tile.entity, tile.signal ?? "");
-      series[key] = withLevel(series[key], tile.level, put(series[key]?.[tile.level], tile.rows as readonly Point[], tile.span, timeOfPoint));
+      series[key] = withLevel(series[key], tile.level, put(series[key]?.[tile.level], tile.rows as readonly Point[], tile.span, timeOfPoint, mergeTile));
     }
     now = Math.max(now, tile.span.to);
     floor = floor === 0 ? tile.span.from : Math.min(floor, tile.span.from);
@@ -240,14 +252,14 @@ export function mergeKept(store: TimeStore, tiles: readonly KeptTile[]): TimeSto
   return { ...store, states, annotations, reports, series, now, floor };
 }
 
-/** The tiles of an answer, for the browser to keep: one per history and tile, cut to what the answer read of it. */
+/** The tiles of an answer, for the browser to keep: one per history and tile, cut to what the answer read of it, each [from, to). */
 export function tilesOfAnswer(response: TimelineResponse, asked: Asked, tileSize: { readonly overview: number; readonly series: (level: number) => number }): readonly KeptTile[] {
   const range = { from: Date.parse(response.range.from), to: Date.parse(response.range.to) };
   const out: KeptTile[] = [];
   const cut = <T>(kind: KeptTile["kind"], entity: string, signal: string | null, level: number, size: number, rows: readonly T[], time: (row: T) => number): void => {
     for (let index = Math.floor(range.from / size); index * size < range.to; index += 1) {
       const span = { from: Math.max(range.from, index * size), to: Math.min(range.to, (index + 1) * size) };
-      out.push({ kind, entity, signal, level, span, rows: rows.slice(lowerBound(rows, span.from, time), span.to === range.to ? rows.length : lowerBound(rows, span.to, time)) });
+      out.push({ kind, entity, signal, level, span, rows: rows.slice(lowerBound(rows, span.from, time), lowerBound(rows, span.to, time)) });
     }
   };
   if (asked.parts.includes("states")) {

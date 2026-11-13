@@ -52,14 +52,12 @@ export function useTimelineLoading(rows: RowModel, range: readonly [number, numb
   const latest = useRef({ view });
   latest.current = { view };
   const stream = useRef<"never" | "live" | "lost">("never");
-  const opened = useRef<string | null>(null);
 
   useEffect(() => {
     if (selectedKey === "") return;
-    const key = `${selectedKey} ${owner}`;
-    // The first set-up keeps the moment a link named: another model, or another user, begins at now.
-    actions.resetTimeline(opened.current === null || opened.current === key);
-    opened.current = key;
+    // The first set-up keeps the moment a link named: another model, or another user, begins at now. The store knows
+    // which model the timeline was set up for: switching models unmounts the timeline, so this hook starts afresh.
+    actions.resetTimeline(true);
     return () => cancelTimelineSignals();
   }, [selectedKey, owner]);
 

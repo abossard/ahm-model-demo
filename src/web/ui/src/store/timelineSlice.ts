@@ -88,7 +88,8 @@ export interface TimelineActions {
   readonly setTimelineView: (view: View) => void;
   /**
    * Forgets what is held and begins again for the selected model and user. The selected moment goes with it, unless
-   * `keepMoment`: the first set-up of a page keeps the moment its link named.
+   * `keepMoment` and the timeline is set up again for the model and user it was set up for, or for the first time: the
+   * first set-up of a page keeps the moment its link named.
    */
   readonly resetTimeline: (keepMoment?: boolean) => void;
   /** What the timeline shows now: the loader reads what is missing of it. */
@@ -115,6 +116,13 @@ let loader: TimelineLoader | null = null;
 let cache: TileCache | null | undefined;
 /** The view that was made from what the browser kept: it ends where the cache did, so the first answer moves it to now. */
 let hydratedView: View | null = null;
+/**
+ * The model the loader was opened for, taken with the scope its answers are kept under: every request asks for it, so
+ * an answer is never kept under another model's scope while the selection changes.
+ */
+let openedSelection: State["selected"] = null;
+/** The model and user the timeline was last set up for, null before the first set-up: the selected moment belongs to them. */
+let setUpFor: string | null = null;
 
 /** Test hook: replaces the browser's cache (null for none). */
 export function setTimelineCache(next: TileCache | null): void {
@@ -274,7 +282,7 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
     loader ??= createTimelineLoader({
       fetch: (request, signal) =>
         api.fetchTimeline(
-          get().selected,
+          openedSelection,
           {
             from: request.from,
             to: request.to,
@@ -368,6 +376,13 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
 
   resetTimeline: (keepMoment = false) => {
     hydratedView = null;
+    const opening = get();
+    const scope = cacheScope(opening);
+    const key = scope === null ? "" : `${scope.owner}\u0001${scope.model}`;
+    // A moment picked on one model, or by one user, is never carried to another, however the timeline is set up again.
+    const keep = keepMoment && (setUpFor === null || setUpFor === key);
+    setUpFor = key;
+    openedSelection = opening.selected;
     set((state) => ({
       timelineSeries: EMPTY_STORE,
       timelineData: EMPTY_TIMELINE,
@@ -375,12 +390,12 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
       timelineError: null,
       timelineLoading: [],
       timelineExpanded: [],
-      timelinePinned: keepMoment ? state.timelinePinned : null,
-      timelineFollowPaused: keepMoment && state.timelinePinned !== null && state.timelineFollowPaused,
+      timelinePinned: keep ? state.timelinePinned : null,
+      timelineFollowPaused: keep && state.timelinePinned !== null && state.timelineFollowPaused,
       timelineStale: false,
       timelineHeld: [],
     }));
-    loaderOf().open(cacheScope(get()));
+    loaderOf().open(scope);
   },
 
   wantTimeline: (demand) => {

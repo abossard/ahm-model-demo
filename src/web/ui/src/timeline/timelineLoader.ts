@@ -20,7 +20,7 @@ export interface TimelineLoader {
   readonly refresh: () => void;
   /** What failed is asked for again. */
   readonly retry: () => void;
-  /** Cancels everything in flight and keeps what is held: the timeline closed. */
+  /** Cancels everything in flight, forgets what was wanted and keeps what is held: the timeline closed. Nothing is read until the next `want`. */
   readonly stop: () => void;
   /** Resolves when nothing is being read, from the cache or the network. */
   readonly idle: () => Promise<void>;
@@ -246,6 +246,8 @@ export function createTimelineLoader(ports: LoaderPorts): TimelineLoader {
       cancelAll();
       if (restTimer !== null) clearTimeout(restTimer);
       restTimer = null;
+      // A read of the cache that is still on its way plans again when it lands: with nothing wanted, that plan asks for nothing.
+      demand = null;
       wantedKey = "";
       report();
     },

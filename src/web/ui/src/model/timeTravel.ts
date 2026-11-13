@@ -95,14 +95,20 @@ function readingHeld(levels: Levels | undefined, info: SignalInfo | undefined, t
     const point = track.rows[after - 1];
     const next = track.rows[after];
     const to = next && next[0] <= span.to ? next[0] : span.to;
-    if (!point || point[0] < span.from) return { value: null, from: span.from, to };
+    if (!point || point[0] < span.from) return within({ value: null, from: span.from, to }, gap);
     const rule = point[2] === 3 ? (info?.rules.unhealthy ?? null) : point[2] === 2 ? (info?.rules.degraded ?? null) : null;
     const hold = holdFor(track.rows, info);
     const stale = t - point[0] > hold;
     // The reading turns stale when it is older than it holds: that instant ends the stretch too.
-    return { value: { t: point[0], value: point[1], state: point[2], age: t - point[0], rule, stale, level }, from: stale ? point[0] + hold : point[0], to: stale ? to : Math.min(to, point[0] + hold) };
+    const held = { value: { t: point[0], value: point[1], state: point[2], age: t - point[0], rule, stale, level }, from: stale ? point[0] + hold : point[0], to: stale ? to : Math.min(to, point[0] + hold) };
+    return within(held, gap);
   }
   return gap;
+}
+
+/** An answer of a coarser level holds only where no finer level does: past that, the finer one answers. */
+function within<T>(held: Held<T>, gap: { readonly from: number; readonly to: number }): Held<T> {
+  return { value: held.value, from: Math.max(held.from, gap.from), to: Math.min(held.to, gap.to) };
 }
 
 /**

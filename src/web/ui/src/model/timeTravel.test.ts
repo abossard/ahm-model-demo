@@ -174,6 +174,19 @@ describe("modelAt", () => {
     expect(later.entities[0]).not.toBe(first.entities[0]);
   });
 
+  it.each([
+    { name: "forward into raw points", raw: track<Point>([[5000, 99, 3]], [5000, 9000]), first: 4500, then: 6000 },
+    { name: "back into raw points", raw: track<Point>([[4100, 99, 3]], [0, 4200]), first: 5000, then: 4150 },
+  ])("a move from thinned points reads the evaluation itself where it is held: $name", ({ raw, first, then }) => {
+    const coarse = track<Point>([[2000, 40, 1], [8000, 50, 1]], [0, NOW]);
+    const both: TimeStore = { ...store, series: { [seriesKey("api", "cpu")]: [raw, null, coarse] } };
+    const at = createModelAt();
+    const cpu = (t: number): unknown => at(model, both, t).entities[1]?.signals[0]?.value;
+
+    expect(cpu(first)).toBe(40);
+    expect(cpu(then)).toBe(99);
+  });
+
   it("while a moment is selected, new data after it changes nothing that is shown", () => {
     const at = createModelAt();
     const first = at(model, store, 3200);

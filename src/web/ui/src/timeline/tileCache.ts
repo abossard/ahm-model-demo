@@ -19,6 +19,8 @@ const KEEP_RATIO = 0.9;
 const WRITE_DELAY_MS = 1500;
 /** An entry that is read is marked as used at most this often: a read must not cost a write every time. */
 const TOUCH_MS = 3600 * 1000;
+/** How long opening the database may take before the timeline goes on without it. */
+export const OPEN_TIMEOUT_MS = 2000;
 const DB_NAME = "ahm-timeline";
 const STORE = "tiles";
 const SEP = "\u0001";
@@ -224,20 +226,46 @@ function finished(transaction: IDBTransaction): Promise<void> {
   });
 }
 
-/** The browser's IndexedDB as the storage. Null where there is none. */
+/**
+ * The browser's IndexedDB as the storage. Null where there is none. A database that does not open in time, or that a
+ * tab of another build holds open, is a storage that fails: the cache then holds nothing and the timeline reads the app.
+ */
 export function indexedDbStorage(): TileStorage | null {
   if (typeof indexedDB === "undefined") return null;
   let db: Promise<IDBDatabase> | null = null;
   const open = (): Promise<IDBDatabase> => {
     db ??= new Promise((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const giveUp = (error: unknown): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      };
       const opening = indexedDB.open(DB_NAME, CACHE_SCHEMA);
+      timer = setTimeout(() => giveUp(new Error("The timeline cache did not open in time.")), OPEN_TIMEOUT_MS);
       opening.onupgradeneeded = () => {
         // Another schema's entries cannot be read: they go with their stores.
         for (const name of [...opening.result.objectStoreNames]) opening.result.deleteObjectStore(name);
         opening.result.createObjectStore(STORE, { keyPath: "id" }).createIndex("lru", ["usedAt", "bytes"]);
       };
-      opening.onsuccess = () => resolve(opening.result);
-      opening.onerror = () => reject(opening.error);
+      // A tab of an older build holds the database at its schema: waiting for it would wait for that tab to close.
+      opening.onblocked = () => giveUp(new Error("The timeline cache is held open by another tab."));
+      opening.onsuccess = () => {
+        const database = opening.result;
+        // Opened after the timeline went on without it: let go, so the database never blocks another tab for nothing.
+        if (settled) return database.close();
+        settled = true;
+        clearTimeout(timer);
+        // A tab of a newer build asks to upgrade: this one lets go, and opens again when it next needs the database.
+        database.onversionchange = () => {
+          database.close();
+          db = null;
+        };
+        resolve(database);
+      };
+      opening.onerror = () => giveUp(opening.error);
     });
     return db;
   };

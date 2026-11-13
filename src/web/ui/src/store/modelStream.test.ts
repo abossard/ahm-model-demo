@@ -147,16 +147,35 @@ describe("the live stream of a model", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("a refusal before the stream starts is reported and not tried again", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ error: { code: "live_unavailable", message: "Busy.", retryable: true } }), { status: 503, headers: { "content-type": "application/json" } }),
+  it.each([
+    ["a busy refusal is tried again with a growing delay and then reported", true, 4, 1],
+    ["a refusal that cannot pass is reported at once", false, 1, 1],
+  ])("%s", async (_label, retryable, calls, reported) => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: { code: "live_unavailable", message: "Busy.", retryable } }), { status: 503, headers: { "content-type": "application/json" } }),
+      ),
     );
     const heard = listen();
 
     await vi.advanceTimersByTimeAsync(60_000);
 
-    expect(heard.failures.map((error) => error.code)).toEqual(["live_unavailable"]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(heard.failures.map((error) => error.code)).toEqual(Array(reported).fill("live_unavailable"));
+    expect(fetchMock).toHaveBeenCalledTimes(calls);
+  });
+
+  it("a refusal that passes is followed by the stream and no failure", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "live_unavailable", message: "Changed.", retryable: true } }), { status: 503, headers: { "content-type": "application/json" } }))
+      .mockImplementation((_url, init: RequestInit) => Promise.resolve(respond([snapshot("e-0")], "hang", init.signal ?? undefined)));
+    const heard = listen();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(heard.failures).toEqual([]);
+    expect(heard.events.map((event) => event.kind)).toEqual(["snapshot"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    heard.stream.close();
   });
 
   it("a connection that goes silent for three keep-alive periods is dropped and taken up again", async () => {

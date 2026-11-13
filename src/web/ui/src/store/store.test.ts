@@ -150,6 +150,19 @@ describe("chooseModel", () => {
     });
     expect(api.fetchHealthModel).toHaveBeenCalledWith(MODEL_B);
   });
+
+  it.each([
+    { name: "another model returns the page to now", before: MODEL_A, chosen: MODEL_B, pinned: null },
+    { name: "the same model keeps the moment", before: MODEL_A, chosen: { ...MODEL_A }, pinned: 1_000 },
+    { name: "the first model, before any was selected, keeps the moment a link named", before: null, chosen: MODEL_A, pinned: 1_000 },
+  ])("choosing $name", ({ before, chosen, pinned }) => {
+    vi.mocked(api.fetchHealthModel).mockReturnValue(new Promise(() => {}));
+    useStore.setState({ selected: before, timelinePinned: 1_000 });
+
+    actions.chooseModel(chosen);
+
+    expect(useStore.getState().timelinePinned).toBe(pinned);
+  });
 });
 
 describe("loadHealthModel", () => {

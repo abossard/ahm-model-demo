@@ -154,4 +154,14 @@ describe("useReorder", () => {
     await act(async () => useStore.getState().setSortKey("custom"));
     expect(shown()).toEqual(["b", "a", "c", "held"]);
   });
+
+  it.each(["shortest", "name"] as const)("a drag while the Order is %s keeps the orders kept for other parents and switches to Custom", async (sortKey) => {
+    const kept = { of: "other", names: ["x", "y"] };
+    useStore.setState({ customOrders: { "sub/rg/hm": { chains: [kept], places: {} } }, sortKey });
+    await draw();
+    for (const key of ["m", "ArrowRight", "Enter"]) await press("a", key);
+
+    expect(useStore.getState().sortKey).toBe("custom");
+    expect(chains()).toEqual([kept, { of: "r", names: ["b", "a", "c"] }]);
+  });
 });

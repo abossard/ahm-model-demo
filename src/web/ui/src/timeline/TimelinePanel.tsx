@@ -9,7 +9,7 @@ import { signalFacts } from "../model/timelineTree";
 import { historyAt, stateAt, troubledAt } from "../model/timeTravel";
 import { detectIncidents, entityBands, incidentText, type Incident } from "../model/timelineIncidents";
 import { allKeys, buildRows, entityShown, heldRows, moveFocus, revealKeys, rootEntity, scrollToShow, type Row } from "../model/timelineRows";
-import { PRESETS, formatClock, formatDay, formatInstant, padView, presetOf, presetView } from "../model/timelineScale";
+import { PRESETS, formatClock, formatDay, formatInstant, offsetAt, padView, presetOf, presetView } from "../model/timelineScale";
 import { actions, useStore } from "../store/store";
 import { TIMELINE_MAX_HEIGHT, TIMELINE_MIN_HEIGHT, selectedMoment, timelineBounds } from "../store/timelineSlice";
 import { readColors, type TimelineColors } from "./colors";
@@ -24,8 +24,6 @@ import { useInertElsewhere } from "./useInertElsewhere";
 import { useTimelineLoading } from "./useTimelineLoading";
 import { useStyles } from "./styles";
 import "./timeline.css";
-
-const OFFSET_MIN = new Date().getTimezoneOffset();
 
 /** The signal timeline: a tree of entities with their signals and dependencies beside a shared time axis. */
 export function TimelinePanel(): JSX.Element {
@@ -148,7 +146,7 @@ export function TimelinePanel(): JSX.Element {
   const summaryAt = useCallback(
     (t: number): string => {
       const rows = troubledAt(seriesStore, t);
-      return `${formatInstant(t, OFFSET_MIN)}: ${rows.length === 0 ? "nothing degraded or unhealthy" : rows.map((row) => `${row.displayName} ${stateName(row.state)}`).join(", ")}`;
+      return `${formatInstant(t, offsetAt)}: ${rows.length === 0 ? "nothing degraded or unhealthy" : rows.map((row) => `${row.displayName} ${stateName(row.state)}`).join(", ")}`;
     },
     [seriesStore],
   );
@@ -288,7 +286,7 @@ export function TimelinePanel(): JSX.Element {
             loading: new Set(loading),
             incidents,
             bounds,
-            offsetMin: OFFSET_MIN,
+            offsetOf: offsetAt,
             follow: follow && liveStatus !== "off" && liveStatus !== "paused" ? { skew } : null,
           },
     [colors, data, rowModel, selectedEntity, loading, incidents, bounds, follow, liveStatus, skew],
@@ -445,7 +443,7 @@ export function TimelinePanel(): JSX.Element {
         </div>
         {view ? (
           <span className={styles.range} data-testid="tl-range">
-            {formatDay(view.t0, OFFSET_MIN)} {formatClock(view.t0, OFFSET_MIN)} to {formatDay(view.t1, OFFSET_MIN)} {formatClock(view.t1, OFFSET_MIN)} · {formatDuration(view.t1 - view.t0)}
+            {formatDay(view.t0, offsetAt)} {formatClock(view.t0, offsetAt)} to {formatDay(view.t1, offsetAt)} {formatClock(view.t1, offsetAt)} · {formatDuration(view.t1 - view.t0)}
           </span>
         ) : null}
         <ToggleButton
@@ -477,7 +475,7 @@ export function TimelinePanel(): JSX.Element {
               <MenuList>
                 {[...incidents].reverse().map((incident) => (
                   <MenuItem key={incident.id} onClick={() => zoomToIncident(incident)} data-testid="tl-incident">
-                    {formatInstant(incident.from, OFFSET_MIN)}: {incidentText(incident, data.now)}
+                    {formatInstant(incident.from, offsetAt)}: {incidentText(incident, data.now)}
                   </MenuItem>
                 ))}
               </MenuList>
@@ -486,7 +484,7 @@ export function TimelinePanel(): JSX.Element {
         ) : null}
         {pinned !== null ? (
           <div className={styles.pinned} role="group" aria-label="Selected moment" data-testid="tl-model-at">
-            <span>The model at {formatInstant(pinned, OFFSET_MIN)}</span>
+            <span>The model at {formatInstant(pinned, offsetAt)}</span>
             <Button
               size="small"
               appearance="primary"
@@ -535,7 +533,7 @@ export function TimelinePanel(): JSX.Element {
       ) : null}
       <TimelineLegend standby={data.entities.some((entity) => entity.state === 4)} />
       {selectedName !== null && graphModel.kind === "success" ? (
-        <TimelineEntity options={graphModel.value.reportOptions} changes={data.states[selectedName]?.transitions ?? []} offsetMin={OFFSET_MIN} rowHidden={rowHidden} />
+        <TimelineEntity options={graphModel.value.reportOptions} changes={data.states[selectedName]?.transitions ?? []} offsetOf={offsetAt} rowHidden={rowHidden} />
       ) : null}
       <div className={styles.body}>
         <div
@@ -552,7 +550,7 @@ export function TimelinePanel(): JSX.Element {
             <div className={styles.labelsHead}>
               <span>Entity / signal</span>
               <span className={mergeClasses(styles.asOf, pinned !== null && styles.asOfPinned)} data-testid="tl-asof">
-                {pinned === null ? "Now" : `As of ${formatInstant(pinned, OFFSET_MIN)}`}
+                {pinned === null ? "Now" : `As of ${formatInstant(pinned, offsetAt)}`}
               </span>
               <span className={styles.incidentsLabel}>Incidents</span>
             </div>

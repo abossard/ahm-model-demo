@@ -103,6 +103,20 @@ describe("the overview", () => {
     expect(requests[0]).toMatchObject({ parts: ["structure", "states", "annotations", "reports"], entities: null, from: THIS_WEEK * WEEK, to: (THIS_WEEK + 1) * WEEK });
   });
 
+  it.each([
+    { name: "the first plan of a large model", start: () => input({ hint: hintOf(many(100)) }) },
+    { name: "a refresh of a large model", start: () => input({ store: answered(many(100), input({ hint: hintOf(many(100)) })).store, structureAt: NOW - HOUR, freshAt: NOW + MINUTE, now: NOW + MINUTE }) },
+  ])("the structure that $name reads on its own stays wanted while it is on its way", ({ start }) => {
+    const base = start();
+    const read = planRequests(base).requests.find((request) => request.parts.includes("structure"));
+    expect(read).toMatchObject({ parts: ["structure"] });
+
+    const next = planRequests({ ...base, busy: new Set(read?.cells) });
+
+    expect(read?.cells.every((cell) => next.wanted.has(cell))).toBe(true);
+    expect(next.requests.filter((request) => request.parts.includes("structure"))).toEqual([]);
+  });
+
   it("an entity whose states failed is left alone until it is retried", () => {
     const { store } = answered(small, input({ hint: hintOf(small) }));
     const name = small.entities[0]?.name ?? "";

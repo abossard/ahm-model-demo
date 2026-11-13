@@ -364,6 +364,12 @@ class Hub:
             return False
         return True
 
+    async def settle(self, member):
+        """Reads the model as a joining viewer when a write of this app is not read back yet. Raises what the read raised."""
+        async with self.polling:
+            if self.dirty:
+                await self.poll(member)
+
     async def tail(self, reader, old, inventory):
         """New transitions of the entities whose state changed, and now and then the annotations: the history Azure holds that a snapshot does not."""
         tail = self.manager.read_tail
@@ -467,9 +473,17 @@ class ModelHub:
             if hub.inventory is None and not hub.members:
                 hub.stop()
             raise error if error is not None else Refusal(503, "live_unavailable", "Live updates are unavailable.")
-        if hub.dirty:  # the snapshot is the model before a write of this app that no read has shown yet
-            hub.leave(member)
-            raise Refusal(503, "live_unavailable", "The model was just changed and is being read again. Try again in a moment.")
+        if hub.dirty:  # the snapshot is the model before a write of this app that no read has shown yet: read it as this viewer, then serve it
+            try:
+                await hub.settle(member)
+            except asyncio.CancelledError:
+                hub.leave(member)
+                raise
+            except Exception as error:
+                logger.warning("hub settle failed model=%s type=%s", selection[2], type(error).__name__)
+            if hub.dirty:
+                hub.leave(member)
+                raise Refusal(503, "live_unavailable", "The model was just changed and is being read again. Try again in a moment.")
         initial = hub.catch_up(last_id)
         member.live = True
         return Subscription(hub, member, initial)

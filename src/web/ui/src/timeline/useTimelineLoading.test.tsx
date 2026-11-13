@@ -255,4 +255,21 @@ describe("useTimelineLoading", () => {
     expect(Object.keys(useStore.getState().timelineSeries.series)).toEqual([]);
     void HOUR;
   });
+
+  it.each([
+    { name: "the same model", selected: MODEL, kept: true },
+    { name: "another model", selected: { ...MODEL, id: "/b", name: "hm-b" }, kept: false },
+  ])("a timeline mounted again for $name, as after a model switch hid it, keeps the moment selected before: $kept", async ({ selected, kept }) => {
+    const moment = NOW - 3 * DAY;
+    await show([0, 0]);
+    await advance(300);
+    await act(async () => useStore.getState().selectMoment(moment));
+
+    await act(async () => root.render(null));
+    await act(async () => useStore.setState({ selected }));
+    await show([0, 0]);
+    await advance(10);
+
+    expect(useStore.getState().timelinePinned).toBe(kept ? moment : null);
+  });
 });

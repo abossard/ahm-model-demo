@@ -11,14 +11,20 @@ export function stateCode(state: string): StateCode {
 const timeOfRow = (row: { readonly t: number }): number => row.t;
 const timeOfPoint = (point: Point): number => point[0];
 
-/** Carries a history that reached `was` on to `to`: no row means no change. One that ended earlier keeps its gap. */
-function carry(covered: readonly Span[], was: number, to: number): readonly Span[] {
+/**
+ * Carries a history that reaches `since` on to `to`: no row means no change. One that ended earlier keeps its gap,
+ * which is read when it is shown.
+ */
+function carry(covered: readonly Span[], since: number, to: number): readonly Span[] {
   const last = covered[covered.length - 1];
-  if (!last || last.to >= to || last.to < was - LIVE_SLACK) return covered;
+  if (!last || last.to >= to || last.to < since) return covered;
   return [...covered.slice(0, -1), { from: last.from, to }];
 }
 
-/** A history is current when it reaches this close to the newest instant held: a poll and a clock apart. */
+/**
+ * What a live event speaks for: the stretch this long before its own instant, a poll and a clock apart. A history is
+ * current when it reaches into it. The newest instant held is no measure: after a reload it is where the cache ended.
+ */
 const LIVE_SLACK = 3 * 60_000;
 
 function insertTransition(held: readonly Transition[], row: Transition): readonly Transition[] {
@@ -40,18 +46,18 @@ function insertMark<T extends { readonly t: number }>(held: readonly T[], row: T
  */
 export function applyLive(store: TimeStore, delta: LiveTimeline | undefined, now: number, current: ReadonlyMap<string, StateCode>): TimeStore {
   if (store.entities.length === 0) return store;
-  const was = store.now;
+  const since = now - LIVE_SLACK;
   const carried = <T>(tracks: Readonly<Record<string, Track<T>>>): Record<string, Track<T>> => {
     const out: Record<string, Track<T>> = {};
     for (const [name, track] of Object.entries(tracks)) {
-      const covered = carry(track.covered, was, now);
+      const covered = carry(track.covered, since, now);
       out[name] = covered === track.covered ? track : { ...track, covered };
     }
     return out;
   };
   const isCurrent = (track: Track<unknown> | null | undefined): boolean => {
     const last = track?.covered[track.covered.length - 1];
-    return last !== undefined && last.to >= was - LIVE_SLACK;
+    return last !== undefined && last.to >= since;
   };
 
   const states = carried(store.states);
@@ -82,7 +88,7 @@ export function applyLive(store: TimeStore, delta: LiveTimeline | undefined, now
     let changed = false;
     const next = levels.map((track) => {
       if (!track || !isCurrent(track)) return track;
-      const covered = carry(track.covered, was, Math.max(now, last));
+      const covered = carry(track.covered, since, Math.max(now, last));
       if (rows.length === 0 && covered === track.covered) return track;
       changed = true;
       return { ...track, rows: rows.length === 0 ? track.rows : mergeRange(track.rows, rows, { from: first, to: last }, timeOfPoint), covered };

@@ -15,6 +15,7 @@ import {
   tilesOfAnswer,
   toTimelineData,
   type Asked,
+  type KeptTile,
   type TimeStore,
 } from "./timeStore";
 
@@ -191,6 +192,20 @@ describe("the tiles of an answer", () => {
 
     expect(kept.series[KEY]).toEqual(direct.series[KEY]);
     expect(mergeKept(kept, [])).toBe(kept);
+  });
+
+  it.each([
+    { name: "the earlier tile first", merge: (tiles: readonly KeptTile[]) => mergeKept(held(), tiles) },
+    { name: "the later tile first", merge: (tiles: readonly KeptTile[]) => mergeKept(held(), [...tiles].reverse()) },
+    { name: "the earlier tile over the answer", merge: (tiles: readonly KeptTile[], answer: TimelineResponse) => mergeKept(mergeAnswer(held(), answer, SERIES), tiles.slice(0, 1)) },
+    { name: "the later tile over the answer", merge: (tiles: readonly KeptTile[], answer: TimelineResponse) => mergeKept(mergeAnswer(held(), answer, SERIES), tiles.slice(1)) },
+  ])("a row on the boundary of two tiles is held once, whatever is merged first: $name", ({ merge }) => {
+    const rows = [point(day(1) + 10), point(day(2)), point(day(2) + 5)];
+    const answer = response({ series: [{ entity: "api", signal: "cpu", points: rows, complete: true, earliest: null }] }, day(1), day(3));
+    const tiles = tilesOfAnswer(answer, SERIES, SIZES);
+
+    expect(tiles.map((tile) => tile.rows)).toEqual([[rows[0]], [rows[1], rows[2]]]);
+    expect(merge(tiles, answer).series[KEY]?.[0]?.rows).toEqual(rows);
   });
 });
 

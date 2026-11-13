@@ -123,30 +123,36 @@ export interface Tick {
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const pad2 = (value: number): string => String(value).padStart(2, "0");
 
-/** A local clock reading for an instant: `offsetMin` is minutes behind UTC, as `Date.getTimezoneOffset` gives it. */
-function local(t: number, offsetMin: number): Date {
-  return new Date(t - offsetMin * MINUTE);
+/** Minutes behind UTC at an instant, as `Date.getTimezoneOffset` gives it: each instant has its own, so summer time shows. */
+export type OffsetOf = (t: number) => number;
+
+/** The offset of the browser's zone at the instant `t`. */
+export const offsetAt: OffsetOf = (t) => new Date(t).getTimezoneOffset();
+
+/** A local clock reading for an instant, in the zone `offsetOf` names for it. */
+function local(t: number, offsetOf: OffsetOf): Date {
+  return new Date(t - offsetOf(t) * MINUTE);
 }
 
-export function formatClock(t: number, offsetMin: number, withSeconds = false): string {
-  const d = local(t, offsetMin);
+export function formatClock(t: number, offsetOf: OffsetOf, withSeconds = false): string {
+  const d = local(t, offsetOf);
   const base = `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
   return withSeconds ? `${base}:${pad2(d.getUTCSeconds())}` : base;
 }
 
-export function formatDay(t: number, offsetMin: number): string {
-  const d = local(t, offsetMin);
+export function formatDay(t: number, offsetOf: OffsetOf): string {
+  const d = local(t, offsetOf);
   return `${MONTHS[d.getUTCMonth()] ?? ""} ${d.getUTCDate()}`;
 }
 
 /** A full label for a cursor: the day, then the clock to the second. */
-export function formatInstant(t: number, offsetMin: number): string {
-  return `${formatDay(t, offsetMin)} ${formatClock(t, offsetMin, true)}`;
+export function formatInstant(t: number, offsetOf: OffsetOf): string {
+  return `${formatDay(t, offsetOf)} ${formatClock(t, offsetOf, true)}`;
 }
 
 /** The selected moment in full: the day with its year, then the clock to the second. */
-export function formatMoment(t: number, offsetMin: number): string {
-  return `${formatDay(t, offsetMin)} ${local(t, offsetMin).getUTCFullYear()}, ${formatClock(t, offsetMin, true)}`;
+export function formatMoment(t: number, offsetOf: OffsetOf): string {
+  return `${formatDay(t, offsetOf)} ${local(t, offsetOf).getUTCFullYear()}, ${formatClock(t, offsetOf, true)}`;
 }
 
 /** The step between ticks: the smallest whose ticks are at least `minPx` apart. */
@@ -154,14 +160,19 @@ export function tickStep(span: number, width: number, minPx: number): number {
   return STEPS.find((step) => (width * step) / Math.max(1, span) >= minPx) ?? DAY * 7;
 }
 
-export function timeTicks(view: View, width: number, minPx: number, offsetMin: number): readonly Tick[] {
+/** Ticks on the local clock's boundaries; each is placed with the offset of its own instant, so a change of the clock moves none of them off the hour. */
+export function timeTicks(view: View, width: number, minPx: number, offsetOf: OffsetOf): readonly Tick[] {
   const step = tickStep(view.t1 - view.t0, width, minPx);
-  const shift = offsetMin * MINUTE;
   const out: Tick[] = [];
-  for (let t = Math.ceil((view.t0 - shift) / step) * step + shift; t <= view.t1; t += step) {
-    const d = local(t, offsetMin);
+  // `wall` is the clock reading as if it were UTC; the instant is found with the offset near it, then with the offset at that instant.
+  for (let wall = Math.ceil((view.t0 - offsetOf(view.t0) * MINUTE) / step) * step; ; wall += step) {
+    const guess = wall + offsetOf(wall) * MINUTE;
+    const t = wall + offsetOf(guess) * MINUTE;
+    if (t > view.t1) break;
+    if (t < view.t0 || t <= (out[out.length - 1]?.t ?? -Infinity)) continue;
+    const d = local(t, offsetOf);
     const midnight = d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0;
-    const label = step >= DAY || midnight ? formatDay(t, offsetMin) : formatClock(t, offsetMin, step < MINUTE);
+    const label = step >= DAY || midnight ? formatDay(t, offsetOf) : formatClock(t, offsetOf, step < MINUTE);
     out.push({ t, label, major: midnight });
   }
   return out;

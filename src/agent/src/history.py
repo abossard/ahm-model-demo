@@ -35,11 +35,14 @@ PAST = re.compile(
 )
 REFUSAL = "History is read only for an Explain Task, for the asked entity, with no `walk`"
 # The service refuses a start older than what it keeps: a window that would begin there begins a little later.
+HOUR_SPAN = timedelta(hours=1)
 RETENTION_MARGIN = timedelta(minutes=5)
 AGO = re.compile(r"\bago\(\s*([^()]*?)\s*\)", re.IGNORECASE)
 NOW_CALL = re.compile(r"\bnow\(\s*([^()]*?)\s*\)", re.IGNORECASE)
-SINCE_AGO = re.compile(r"(\bTimeGenerated\s*)>=?\s*ago\(\s*([^()]+?)\s*\)", re.IGNORECASE)
-BOUNDED_ABOVE = re.compile(r"\bTimeGenerated\s*(?:<=?|between\b)", re.IGNORECASE)
+SINCE_AGO = re.compile(r"\bTimeGenerated\s*>=?\s*ago\(\s*([^()]+?)\s*\)", re.IGNORECASE)
+BOUNDED_ABOVE = re.compile(r"\bTimeGenerated\s*(?:<=?|\s+between\s*\()", re.IGNORECASE)
+AGO_SPAN = re.compile(r"\bago\(\s*(\d+(?:\.\d+)?)\s*([dhm])\s*\)", re.IGNORECASE)
+SPAN_UNIT = {"d": 24, "h": 1, "m": 1 / 60}
 
 
 class HistoryRefused(Exception):
@@ -144,7 +147,7 @@ def query_at(query: str, as_of: datetime) -> str:
     """A KQL query as it would have run at `as_of`: `now()` and `ago()` count from that instant, and where the query takes
     everything since an `ago()`, it takes it up to that instant."""
     moment = f"datetime({iso(as_of)})"
-    text = SINCE_AGO.sub(lambda found: f"{found[1]}between (({moment} - {found[2]}) .. {moment})", query)
+    text = SINCE_AGO.sub(lambda found: f"TimeGenerated between (({moment} - {found[1]}) .. {moment})", query)
     text = AGO.sub(lambda found: f"({moment} - {found[1]})", text)
     return NOW_CALL.sub(lambda found: f"({moment} + {found[1]})" if found[1] else moment, text)
 
@@ -154,13 +157,23 @@ def hours_back(now: datetime, as_of: datetime, instruction: str) -> int:
     return max(1, math.ceil((now - moment_window(now, as_of, instruction)[0]) / timedelta(hours=1)))
 
 
+def lookback_hours(arguments: Mapping[str, Any], query: object) -> float:
+    """The lookback a log call asks for: its `hours`, or the longest `ago()` span its query names."""
+    named = {plain_name(key): key for key in arguments}
+    asked = arguments.get(named.get("hours", ""))
+    spans = [float(found[1]) * SPAN_UNIT[found[2].lower()] for found in AGO_SPAN.finditer(query)] if isinstance(query, str) else []
+    given = [float(asked)] if isinstance(asked, (int, float)) and not isinstance(asked, bool) else []
+    return max(given + spans, default=0.0)
+
+
 def log_arguments(arguments: Mapping[str, Any], *, as_of: datetime, instruction: str, now: datetime) -> dict[str, Any]:
     """A log query of a Task about a past moment: read far enough back to reach its window, with `now()` and `ago()` counted
     from the moment. The server reads up to now, so a query that does not stop at the moment itself is refused. A look at a
     table's columns (`getschema`) reads no rows and passes."""
     named = {plain_name(key): key for key in arguments}
-    bounded = {**without(arguments, "hours"), "hours": hours_back(now, as_of, instruction)}
     query = arguments.get(named.get("query", ""))
+    reach = math.ceil((now - min(as_of, now)) / HOUR_SPAN + lookback_hours(arguments, query))
+    bounded = {**without(arguments, "hours"), "hours": max(hours_back(now, as_of, instruction), reach)}
     if not isinstance(query, str):
         return bounded
     pinned = query_at(query, min(as_of, now))

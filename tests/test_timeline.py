@@ -564,6 +564,35 @@ class ReaderTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "unknown_entity")
 
+    def test_an_unknown_entity_among_known_ones_is_reported_by_itself_and_the_known_ones_are_read(self):
+        gone = {"code": "unknown_entity", "message": "This entity is not in the Health Model.", "retryable": False}
+        table = [
+            ("states", "states", {"states": [("api", None), ("db", None), ("ghost", gone)], "failures": []}),
+            ("annotations", "annotations", {"states": [], "failures": [("ghost", "annotations", gone)]}),
+            ("reports", "reports", {"states": [], "failures": [("ghost", "reports", gone)]}),
+            ("signals", "signals", {"states": [], "failures": []}),
+        ]
+        for label, include, expected in table:
+            with self.subTest(label):
+                backend = model()
+
+                body = read(reader(), backend, {"include": include}, ["api", "ghost", "db"])
+
+                self.assertEqual([(item["entity"], item.get("error")) for item in body["states"]], expected["states"])
+                self.assertEqual([(item["entity"], item["part"], item["error"]) for item in body["failures"]], expected["failures"])
+                self.assertTrue(body["partial"])
+                self.assertNotIn("ghost", [call[1] for call in backend.calls])
+        self.assertEqual({item["entity"] for item in read(reader(), model(), {"include": "signals"}, ["api", "ghost"])["series"]}, {"api"})
+
+    def test_an_unknown_entity_is_never_a_closed_answer_the_browser_may_keep(self):
+        subject = reader()
+        params = {"include": "states", "from": (NOW - 72 * HOUR).isoformat(), "to": (NOW - 48 * HOUR).isoformat()}
+        for names in (["api"], ["api", "ghost"]):
+            with self.subTest(names=names):
+                prepared = subject.prepare(CALLER, model(), SELECTION, params, names)
+
+                self.assertEqual(prepared.etag is None, "ghost" in names)
+
     def test_a_request_that_needs_more_calls_than_the_budget_reports_the_rest_per_series(self):
         backend = model()
 

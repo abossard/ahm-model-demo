@@ -209,7 +209,8 @@ export function planRequests(input: PlanInput): Plan {
     structureRides = true;
     return ["structure"];
   };
-  if (needStructure) wanted.add(STRUCTURE_CELL);
+  // The structure on its way is still wanted: the request that reads it alone holds no other cell to keep it.
+  if (needStructure || busy.has(STRUCTURE_CELL)) wanted.add(STRUCTURE_CELL);
 
   if (known === null) {
     // Nothing says which entities there are: the tiles on screen are read for all of them, and the answer names them.

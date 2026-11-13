@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   DAY,
   HOUR,
@@ -12,6 +12,7 @@ import {
   formatInstant,
   formatMoment,
   makeScale,
+  offsetAt,
   padView,
   panBy,
   presetOf,
@@ -141,7 +142,7 @@ describe("ticks", () => {
   it("falls on local clock boundaries in the zone it is given", () => {
     const view = { t0: Date.UTC(2026, 10, 10, 10, 7), t1: Date.UTC(2026, 10, 10, 12, 0) };
 
-    const ticks = timeTicks(view, 600, 90, -120);
+    const ticks = timeTicks(view, 600, 90, () => -120);
 
     expect(ticks.map((tick) => tick.label)).toEqual(["12:30", "13:00", "13:30", "14:00"]);
     expect(ticks.every((tick) => tick.t >= view.t0 && tick.t <= view.t1)).toBe(true);
@@ -150,7 +151,7 @@ describe("ticks", () => {
   it("labels a local midnight with the day and marks it major", () => {
     const view = { t0: Date.UTC(2026, 10, 10, 20, 0), t1: Date.UTC(2026, 10, 11, 4, 0) };
 
-    const ticks = timeTicks(view, 900, 80, 0);
+    const ticks = timeTicks(view, 900, 80, () => 0);
 
     expect(ticks.filter((tick) => tick.major).map((tick) => tick.label)).toEqual(["Nov 11"]);
   });
@@ -161,21 +162,21 @@ describe("ticks", () => {
     [Date.UTC(2026, 10, 10, 23, 30), -60, false, "00:30"],
     [Date.UTC(2026, 10, 10, 1, 30), 300, false, "20:30"],
   ])("formats %d at offset %d (seconds %s) as %s", (t, offset, seconds, expected) => {
-    expect(formatClock(t, offset, seconds)).toBe(expected);
+    expect(formatClock(t, () => offset, seconds)).toBe(expected);
   });
 
   it("formats a day and an instant", () => {
     const t = Date.UTC(2026, 10, 10, 9, 5, 7);
 
-    expect(formatDay(t, 0)).toBe("Nov 10");
-    expect(formatInstant(t, 0)).toBe("Nov 10 09:05:07");
+    expect(formatDay(t, () => 0)).toBe("Nov 10");
+    expect(formatInstant(t, () => 0)).toBe("Nov 10 09:05:07");
   });
 
   it.each([
     [Date.UTC(2026, 10, 10, 9, 5, 7), 0, "Nov 10 2026, 09:05:07"],
     [Date.UTC(2026, 11, 31, 23, 30, 0), -60, "Jan 1 2027, 00:30:00"],
   ])("says the moment %d at offset %d in full: %s", (t, offset, expected) => {
-    expect(formatMoment(t, offset)).toBe(expected);
+    expect(formatMoment(t, () => offset)).toBe(expected);
   });
 
   it.each([
@@ -185,5 +186,35 @@ describe("ticks", () => {
     [MINUTE, false, 1000],
   ])("a cursor step in a %d ms window (fast %s) is %d ms", (span, fast, expected) => {
     expect(cursorStep(span, fast)).toBe(expected);
+  });
+
+  describe("in a zone with summer time", () => {
+    const zone = process.env["TZ"];
+    afterEach(() => {
+      if (zone === undefined) delete process.env["TZ"];
+      else process.env["TZ"] = zone;
+    });
+
+    it.each([
+      ["Europe/Zurich", "2026-01-15T12:00:00Z", -60],
+      ["Europe/Zurich", "2026-07-15T12:00:00Z", -120],
+      ["America/New_York", "2026-01-15T12:00:00Z", 300],
+      ["America/New_York", "2026-07-15T12:00:00Z", 240],
+      ["UTC", "2026-07-15T12:00:00Z", 0],
+    ])("%s at %s is %i minutes behind UTC", (tz, instant, minutes) => {
+      process.env["TZ"] = tz;
+      expect(offsetAt(Date.parse(instant))).toBe(minutes);
+    });
+
+    it.each([
+      ["Europe/Zurich", "2026-03-28T22:00:00Z", "2026-03-29T04:00:00Z", ["23:00", "Mar 29", "01:00", "03:00", "04:00", "05:00", "06:00"]],
+      ["America/New_York", "2026-11-01T03:00:00Z", "2026-11-01T09:00:00Z", ["23:00", "Nov 1", "01:00", "02:00", "03:00", "04:00"]],
+    ])("%s: ticks across the change of the clock fall on the hour of each instant", (tz, from, to, labels) => {
+      process.env["TZ"] = tz;
+      const ticks = timeTicks({ t0: Date.parse(from), t1: Date.parse(to) }, 700, 90, offsetAt);
+
+      expect(ticks.map((tick) => tick.label)).toEqual(labels);
+      expect(ticks.every((tick, index) => index === 0 || tick.t > (ticks[index - 1] as { t: number }).t)).toBe(true);
+    });
   });
 });
