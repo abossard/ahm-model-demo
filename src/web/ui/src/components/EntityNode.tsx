@@ -1,15 +1,19 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import type { JSX, KeyboardEvent } from "react";
 import { Handle, Position, useStore } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
-import type { Entity, HealthState } from "../model/types";
+import type { Entity, EntitySignal, HealthState } from "../model/types";
+import { SPARK_HEIGHT, SPARK_WIDTH, sparkline } from "../model/cardSignals";
+import { stateName, type Span } from "../model/timeline";
 import type { ChangeBadge } from "../model/changes";
 import { cardTokens, diffTokens, impactOf, impactStyle, tokensFor } from "../model/palette";
 import { StateGlyph } from "./StateGlyph";
 import { LEVEL_HEIGHT, type ZoomLevel } from "../model/zoomLevels";
 import { HEALTH_SORT_ORDER } from "../model/ordering";
 import { formatSignalValue } from "../model/signalValue";
-import { actions } from "../store/store";
+import { actions, useStore as useAppStore } from "../store/store";
+import { selectSparksOf, type SparkLine } from "../store/timelineSlice";
+import { useAtMoment } from "../timeline/useAtMoment";
 
 export const CARD_WIDTH = 260;
 export const DOT_SIZE = 12;
@@ -69,6 +73,74 @@ function MetricGlyph(): JSX.Element {
       <rect x="5.7" y="4.5" width="2.6" height="9.5" rx="0.6" fill={b} />
       <rect x="9.9" y="6.5" width="2.6" height="7.5" rx="0.6" fill={c} />
     </svg>
+  );
+}
+
+const levelColour = (level: number): string => tokensFor(stateName(level)).dot;
+
+/**
+ * The signal's values over the hours that end at the selected moment, in the colour of the health of each stretch, with
+ * a mark at the moment. Until the window is read it is a faint flat line of the same size.
+ */
+const Sparkline = memo(function Sparkline({ line, span }: { readonly line: SparkLine | undefined; readonly span: Span }): JSX.Element {
+  const points = line?.points;
+  const info = line?.info;
+  const drawn = useMemo(() => sparkline(points ?? [], info, span), [points, info, span]);
+  const empty = drawn.paths.length === 0;
+  return (
+    <svg
+      className="entity-node__spark"
+      viewBox={`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`}
+      width={SPARK_WIDTH}
+      height={SPARK_HEIGHT}
+      aria-hidden="true"
+      data-testid="sparkline"
+      data-empty={empty ? "true" : undefined}
+    >
+      {empty ? <path className="entity-node__spark-empty" d={`M0 ${SPARK_HEIGHT / 2}H${SPARK_WIDTH}`} /> : null}
+      {drawn.paths.map((path) => (
+        <path key={path.level} d={path.d} stroke={levelColour(path.level)} data-level={path.level} />
+      ))}
+      <path className="entity-node__spark-moment" d={`M${SPARK_WIDTH - 0.5} 0V${SPARK_HEIGHT}`} />
+      {drawn.marker ? <circle cx={drawn.marker.x} cy={drawn.marker.y} r={1.8} fill={levelColour(drawn.marker.level)} /> : null}
+    </svg>
+  );
+});
+
+/** The signal rows of a card, each with its sparkline. One selector per card reads what is held for its signals. */
+function SignalRows({ name, signals }: { readonly name: string; readonly signals: readonly EntitySignal[] }): JSX.Element {
+  const select = useMemo(() => selectSparksOf(name), [name]);
+  const sparks = useAtMoment(select);
+  return (
+    <>
+      <div className="entity-node__divider" />
+      <ul className="entity-node__rows">
+        {signals.map((signal) => {
+          const healthy = signal.healthState === "Healthy";
+          const value = formatSignalValue(signal.value);
+          return (
+            <li className="entity-node__row" key={signal.name}>
+              <StateDot state={signal.healthState} />
+              <MetricGlyph />
+              <span className="entity-node__row-name" title={signal.displayName || signal.name}>
+                {signal.displayName || signal.name}
+              </span>
+              <Sparkline line={sparks.lines.get(signal.name)} span={sparks.window} />
+              <span
+                className="entity-node__row-value"
+                title={signal.value === null ? undefined : String(signal.value)}
+                style={{
+                  fontWeight: healthy ? 400 : 600,
+                  color: healthy ? cardTokens.muted : tokensFor(signal.healthState).label,
+                }}
+              >
+                {value}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </>
   );
 }
 
@@ -205,6 +277,7 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
   const token = tokensFor(entity.healthState);
   const name = entity.displayName || entity.name;
   const impact = impactOf(entity.impact);
+  const cardSignals = useAppStore((state) => state.cardSignals);
 
   const activate = (): void => {
     actions.activateEntity(entity.name);
@@ -325,36 +398,7 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
               </span>
             </div>
           ) : null}
-          {entity.signals.length > 0 ? (
-            <>
-              <div className="entity-node__divider" />
-              <ul className="entity-node__rows">
-                {entity.signals.map((signal) => {
-                  const healthy = signal.healthState === "Healthy";
-                  const value = formatSignalValue(signal.value);
-                  return (
-                    <li className="entity-node__row" key={signal.name}>
-                      <StateDot state={signal.healthState} />
-                      <MetricGlyph />
-                      <span className="entity-node__row-name" title={signal.displayName || signal.name}>
-                        {signal.displayName || signal.name}
-                      </span>
-                      <span
-                        className="entity-node__row-value"
-                        title={signal.value === null ? undefined : String(signal.value)}
-                        style={{
-                          fontWeight: healthy ? 400 : 600,
-                          color: healthy ? cardTokens.muted : tokensFor(signal.healthState).label,
-                        }}
-                      >
-                        {value}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
-            </>
-          ) : null}
+          {cardSignals && entity.signals.length > 0 ? <SignalRows name={entity.name} signals={entity.signals} /> : null}
           {collapsed && hiddenCount > 0 ? (
             <HiddenSummary hiddenCount={hiddenCount} hiddenStates={hiddenStates} />
           ) : null}
@@ -368,10 +412,12 @@ function EntityNodeImpl({ data }: NodeProps<EntityRfNode>): JSX.Element {
 
 export const EntityNode = memo(EntityNodeImpl);
 
+/** The size of a card as it renders: `signals` is whether it shows its signal rows (the toolbar's Signals). */
 export function estimateNodeSize(
   entity: Entity,
   showsHiddenSummary = false,
   displayRole: "card" | "dot" = "card",
+  signals = true,
 ): { readonly width: number; readonly height: number } {
   if (displayRole === "dot") {
     return { width: DOT_SIZE, height: DOT_SIZE };
@@ -383,7 +429,7 @@ export function estimateNodeSize(
   // Mirrors the rendered header exactly: `min-height: 54px`, else 10px padding twice plus the
   // wrapped name at its 17px line box.
   const headerHeight = Math.max(HEADER_MIN, 20 + nameLines * 17);
-  const rowsHeight = entity.signals.length > 0 ? 16 + entity.signals.length * 22 : 0;
+  const rowsHeight = signals && entity.signals.length > 0 ? 16 + entity.signals.length * 22 : 0;
   const chipHeight = impactOf(entity.impact) === "Standard" ? 0 : CHIP_ROW;
   return {
     width: CARD_WIDTH,

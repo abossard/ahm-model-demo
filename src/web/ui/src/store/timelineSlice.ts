@@ -1,14 +1,14 @@
 import type { StateCreator } from "zustand";
 import type { ApiError, Entity, HealthModel, HealthState } from "../model/types";
-import { EMPTY_TIMELINE, type TimelineData } from "../model/timeline";
+import { EMPTY_TIMELINE, seriesKey, type EntityInfo, type Point, type SignalInfo, type Span, type TimelineData } from "../model/timeline";
 import type { LiveTimeline } from "../model/live";
 import { applyLive, stateCode } from "../model/timelineLive";
-import { REPORT_SIGNAL, type Demand, type EntityHint, type TileRequest } from "../model/timelinePlan";
+import { REPORT_SIGNAL, SPARK_LEVEL, SPARK_SPAN, sparkWindow, type Demand, type EntityHint, type TileRequest } from "../model/timelinePlan";
 import { rootKeys, type RowOrder } from "../model/timelineRows";
 import { DAY, MINUTE, clampView, presetView, type Bounds, type View } from "../model/timelineScale";
 import { LEVELS, RAW, levelFor, type Level } from "../model/timelineTiles";
 import { entityOf, lastChangeAt, modelAt } from "../model/timeTravel";
-import { EMPTY_STORE, clearErrors, markFailed, toTimelineData, type Shown, type TimeStore } from "../model/timeStore";
+import { EMPTY_STORE, clearErrors, markFailed, seriesAtLevel, toTimelineData, type Levels, type Shown, type TimeStore } from "../model/timeStore";
 import { timelineFromSearch } from "../model/timelineUrl";
 import { createTileCache, indexedDbStorage, type CacheScope, type TileCache } from "../timeline/tileCache";
 import { createTimelineLoader, type TimelineLoader } from "../timeline/timelineLoader";
@@ -61,6 +61,8 @@ export interface TimelineState {
   readonly timelinePinned: number | null;
   /** The entities whose signal values other views show at the selected moment: their series are read around it. */
   readonly timelineWatched: readonly string[];
+  /** The entities whose cards on the graph show sparklines: their series are read for the window that ends at the moment. */
+  readonly timelineSparks: readonly string[];
   /** The window keeps its right edge at now while events and the clock move it. */
   readonly timelineFollow: boolean;
   /** The window followed now when a moment was selected: it follows again when the selection is cleared. */
@@ -109,6 +111,13 @@ export interface TimelineActions {
   readonly selectMoment: (t: number | null) => void;
   /** Names the entities whose signal values are shown at the selected moment outside the timeline's lanes. */
   readonly watchEntities: (names: readonly string[]) => void;
+  /** Names the entities whose cards show sparklines. */
+  readonly watchSparks: (names: readonly string[]) => void;
+  /**
+   * While the timeline is closed: reads the series of the sparklines `timelineSparks` names, and the structure that says
+   * which signals there are, nothing else. The timeline is set up for the selected model and user first if it is not.
+   */
+  readonly wantSparks: () => void;
   readonly followTimeline: (follow: boolean) => void;
 }
 
@@ -139,6 +148,9 @@ function cacheOf(): TileCache | null {
 
 const modelKey = (selected: { readonly subscriptionId: string; readonly resourceGroup: string; readonly name: string } | null): string =>
   selected ? `${selected.subscriptionId}/${selected.resourceGroup}/${selected.name}`.toLowerCase() : "";
+
+/** The model and user a timeline is set up for, in words. */
+const setUpKey = (scope: CacheScope): string => `${scope.owner}\u0001${scope.model}`;
 
 /** Whose cache it is: the signed-in user in their directory, or the one local user of a development server. */
 export function cacheScope(state: Pick<State, "account" | "selected">): CacheScope | null {
@@ -195,6 +207,56 @@ export function selectLastChange(state: Pick<State, "selectedName" | "detail" | 
     if (occurredAt !== null && !Number.isNaN(Date.parse(occurredAt)) && (newest === null || Date.parse(occurredAt) > Date.parse(newest))) newest = occurredAt;
   }
   return newest;
+}
+
+/** A sparkline: the points held for its window at the sparkline's level, and the signal with its rules. */
+export interface SparkLine {
+  readonly points: readonly Point[];
+  readonly info: SignalInfo | undefined;
+}
+
+/** What the sparklines of one card show: the window, which ends at the selected moment or at the newest minute held, and a line by signal. */
+export interface CardSparks {
+  readonly window: Span;
+  readonly lines: ReadonlyMap<string, SparkLine>;
+}
+
+const entityIndex = new WeakMap<readonly EntityInfo[], ReadonlyMap<string, EntityInfo>>();
+
+function entityInfo(entities: readonly EntityInfo[], name: string): EntityInfo | undefined {
+  let index = entityIndex.get(entities);
+  if (!index) {
+    index = new Map(entities.map((entity) => [entity.name, entity]));
+    entityIndex.set(entities, index);
+  }
+  return index.get(name);
+}
+
+/**
+ * Makes the selector of one entity's sparklines, for `useAtMoment`; make it once per entity. It gives the same object
+ * while the window and what is held of the entity's signals stay the same, so a card draws again only when its own lines
+ * change, not on every change of the store.
+ */
+export function selectSparksOf(entity: string): (state: Pick<State, "timelineSeries" | "timelinePinned">) => CardSparks {
+  let last: CardSparks | null = null;
+  let heldInfo: EntityInfo | undefined;
+  let heldLevels: readonly (Levels | undefined)[] = [];
+  return (state) => {
+    const store = state.timelineSeries;
+    const info = entityInfo(store.entities, entity);
+    const end = state.timelinePinned ?? Math.floor(store.now / MINUTE) * MINUTE;
+    const levels = (info?.signals ?? []).map((signal) => store.series[seriesKey(entity, signal.name)]);
+    if (last !== null && info === heldInfo && last.window.to === end && levels.length === heldLevels.length && levels.every((item, index) => item === heldLevels[index])) return last;
+    const lines = new Map<string, SparkLine>();
+    for (const [index, signal] of (info?.signals ?? []).entries()) {
+      const held = levels[index];
+      lines.set(signal.name, { points: held ? seriesAtLevel(held, SPARK_LEVEL).points : [], info: signal });
+    }
+    heldInfo = info;
+    heldLevels = levels;
+    last = { window: { from: end - SPARK_SPAN, to: end }, lines };
+    return last;
+  };
 }
 
 /** The oldest instant any entity's history starts at: the real beginning of "all". */
@@ -329,6 +391,7 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
   timelineOrder: "structure",
   timelinePinned: null,
   timelineWatched: [],
+  timelineSparks: [],
   timelineFollow: true,
   timelineFollowPaused: false,
   timelineStale: false,
@@ -378,7 +441,7 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
     hydratedView = null;
     const opening = get();
     const scope = cacheScope(opening);
-    const key = scope === null ? "" : `${scope.owner}\u0001${scope.model}`;
+    const key = scope === null ? "" : setUpKey(scope);
     // A moment picked on one model, or by one user, is never carried to another, however the timeline is set up again.
     const keep = keepMoment && (setUpFor === null || setUpFor === key);
     setUpFor = key;
@@ -465,6 +528,16 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
   },
   watchEntities: (names) => {
     if (!sameList(names, get().timelineWatched)) set({ timelineWatched: names });
+  },
+  watchSparks: (names) => {
+    if (!sameList(names, get().timelineSparks)) set({ timelineSparks: names });
+  },
+  wantSparks: () => {
+    const scope = cacheScope(get());
+    if (scope === null) return;
+    if (setUpFor !== setUpKey(scope)) get().resetTimeline(true);
+    const now = Date.now();
+    loaderOf().want({ view: sparkWindow(now, now), width: 1, lanes: [], moment: null, watched: [], sparks: get().timelineSparks, overview: false });
   },
   followTimeline: (follow) => {
     const { timelineView, timelineData } = get();

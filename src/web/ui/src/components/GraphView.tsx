@@ -6,6 +6,7 @@ import { viewDefinition } from "../views/registry";
 import { actions, useStore } from "../store/store";
 import { selectModelAt } from "../store/timelineSlice";
 import { useAtMoment } from "../timeline/useAtMoment";
+import { useSparkLoading } from "../timeline/useSparkLoading";
 import { CompareView } from "./CompareView";
 import { GraphToolbar } from "./GraphToolbar";
 import { Legend } from "./Legend";
@@ -34,6 +35,7 @@ export const GraphView = memo(function GraphView(): JSX.Element | null {
   const compare = useStore((state) => state.compare);
   const diff = useStore((state) => state.diff);
   const view = useStore((state) => state.view);
+  const cardSignals = useStore((state) => state.cardSignals);
   const selectedName = useStore((state) => state.selectedName);
   const highlightedName = useStore((state) => state.highlightedName);
   const chainNames = useStore((state) => state.chainNames);
@@ -45,6 +47,13 @@ export const GraphView = memo(function GraphView(): JSX.Element | null {
   useEffect(() => {
     actions.watchEntities(past ? withSignals : NO_NAMES);
   }, [past, withSignals]);
+  // With Signals on, the cards also draw a sparkline per signal: the loader reads their window, at a moment or now.
+  const sparks = cardSignals && definition.cardSignals === true;
+  useEffect(() => {
+    actions.watchSparks(sparks ? withSignals : NO_NAMES);
+  }, [sparks, withSignals]);
+  useEffect(() => () => actions.watchSparks(NO_NAMES), []);
+  useSparkLoading();
 
   // The toolbar and search see every node either side draws, so the count and the results match the screen.
   const shown = useMemo(

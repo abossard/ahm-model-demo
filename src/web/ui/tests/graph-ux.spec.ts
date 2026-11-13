@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { healthModel, installStubs, liveShapeModel } from "./fixture";
+import { healthModel, installStubs, liveShapeModel, showCardSignals } from "./fixture";
 import { getBezierPath, getSmoothStepPath, Position } from "@xyflow/react";
 import { DENSE_SEED, denseModel, realAnbomovModel } from "./denseModel";
 import { openView } from "./views";
@@ -1043,6 +1043,7 @@ test("C3-4 — each edge carries the health colour of the entity it points at", 
 });
 
 test("C3-5 — a card keeps every signal row and its existing selection behaviour", async ({ page }) => {
+  await showCardSignals(page);
   await boot(page);
   const card = page.locator('.react-flow__node[data-id="svc-a"] .entity-node');
 
@@ -1290,6 +1291,7 @@ test("C3-7b — a collapsed parent keeps a shared child that another expanded pa
 });
 
 test("C3-8 — a collapsed card keeps its signals and tallies exactly what it hides", async ({ page }) => {
+  await showCardSignals(page);
   await boot(page);
   await page.locator('.react-flow__node[data-id="svc-a"] [data-testid="collapse-toggle"]').click();
 

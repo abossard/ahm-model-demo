@@ -1,10 +1,11 @@
 import { expect, test } from "@playwright/test";
-import { DISCOVERED_SIGNALS, healthModel, installStubs, realShapeModel } from "./fixture";
+import { DISCOVERED_SIGNALS, healthModel, installStubs, realShapeModel, showCardSignals } from "./fixture";
 import { openView } from "./views";
 
 // Shapes the deployed app served that the first fixtures never had.
 
 test("a card row keeps a long fraction on one line, rounded, with the raw value on hover", async ({ page }) => {
+  await showCardSignals(page);
   await installStubs(page, { healthModelFails: false, model: realShapeModel });
   await openView(page, "zoom");
   await page.waitForSelector(".react-flow__node .entity-node");

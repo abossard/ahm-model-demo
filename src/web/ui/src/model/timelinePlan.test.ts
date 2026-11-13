@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildFixture, topologyFixture, type TimelineFixture } from "./timelineFixture";
-import { MAX_COST, MAX_ENTITIES, MAX_SIGNALS, REPORT_SIGNAL, demandKey, overviewCell, parseCell, planRequests, seriesCell, type Demand, type PlanInput, type TileRequest } from "./timelinePlan";
+import { MAX_COST, MAX_ENTITIES, MAX_SIGNALS, REPORT_SIGNAL, SPARK_LEVEL, demandKey, overviewCell, parseCell, planRequests, seriesCell, type Demand, type PlanInput, type TileRequest } from "./timelinePlan";
 import { DAY, HOUR, MINUTE } from "./timelineScale";
 import { RETENTION, WEEK, tileOf } from "./timelineTiles";
 import { EMPTY_STORE, mergeAnswer, type TimeStore } from "./timeStore";
@@ -18,7 +18,7 @@ const many = (count: number, signalNames: readonly string[] = ["cpu"]): Timeline
     { now: NOW, days: 2 },
   );
 
-const demand = (parts: Partial<Demand> = {}): Demand => ({ view: { from: NOW - DAY, to: NOW }, width: 1000, lanes: [], moment: null, watched: [], ...parts });
+const demand = (parts: Partial<Demand> = {}): Demand => ({ view: { from: NOW - DAY, to: NOW }, width: 1000, lanes: [], moment: null, watched: [], sparks: [], overview: true, ...parts });
 
 function input(parts: Partial<PlanInput> & { readonly store?: TimeStore } = {}): PlanInput {
   return { store: EMPTY_STORE, demand: demand(), now: NOW, freshAt: NOW - MINUTE, structureAt: 0, busy: new Set(), settled: new Set(), hint: null, idle: false, ...parts };
@@ -285,6 +285,40 @@ describe("a selected moment", () => {
   });
 });
 
+describe("the sparklines of the graph's cards", () => {
+  const { store } = answered(small, input({ hint: hintOf(small) }));
+  const [first, second] = small.entities.filter((entity) => entity.signals.length > 0).map((entity) => entity.name) as [string, string];
+  const signalsOf = (requests: readonly TileRequest[]): readonly TileRequest[] => requests.filter((request) => request.parts.includes("signals"));
+
+  it.each([
+    { name: "now, with the timeline closed", moment: null, overview: false, first: TODAY, last: TODAY },
+    { name: "now, with the timeline open", moment: null, overview: true, first: TODAY, last: TODAY },
+    { name: "a moment eight days ago", moment: NOW - 8 * DAY, overview: true, first: TODAY - 8, last: TODAY - 8 },
+    { name: "a moment just after midnight, whose hours begin the day before", moment: TODAY * DAY + 3 * HOUR, overview: true, first: TODAY - 1, last: TODAY },
+  ])("at $name are the 6 hours that end there, in slots of 15 minutes", ({ moment, overview, first: from, last }) => {
+    const { requests } = planRequests(input({ store, structureAt: NOW, demand: demand({ sparks: [first, second], moment, overview }) }));
+
+    expect(signalsOf(requests)).toHaveLength(1);
+    expect(signalsOf(requests)[0]).toMatchObject({ entities: [first, second], signals: null, level: SPARK_LEVEL, from: from * DAY, to: (last + 1) * DAY, rank: 0 });
+  });
+
+  it.each([
+    { name: "Signals off, the timeline closed", sparks: [], overview: false },
+    { name: "Signals off, the timeline open", sparks: [], overview: true },
+  ])("with $name, nothing is read for them", ({ sparks, overview }) => {
+    const { requests } = planRequests(input({ store, structureAt: NOW, demand: demand({ sparks, overview }) }));
+
+    expect(requests).toEqual([]);
+  });
+
+  it("with the timeline closed, only the structure is read before them, and no history of states", () => {
+    const start = input({ hint: hintOf(small), demand: demand({ sparks: [first], overview: false }) });
+
+    expect(planRequests(start).requests.map((request) => request.parts)).toEqual([["structure"]]);
+    expect(answered(small, start).requests.map((request) => request.parts)).toEqual([["structure"], ["signals"]]);
+  });
+});
+
 describe("demandKey", () => {
   it.each([
     { name: "a small pan inside the same tiles", other: demand({ view: { from: NOW - DAY - HOUR, to: NOW - HOUR } }), same: true },
@@ -293,6 +327,8 @@ describe("demandKey", () => {
     { name: "a zoom that changes the level", other: demand({ view: { from: NOW - 8 * DAY, to: NOW } }), same: false },
     { name: "a pan into another day", other: demand({ view: { from: NOW - 3 * DAY, to: NOW - 2 * DAY } }), same: false },
     { name: "a selected moment", other: demand({ moment: NOW - HOUR }), same: false },
+    { name: "sparklines", other: demand({ sparks: ["x"] }), same: false },
+    { name: "the timeline closed", other: demand({ overview: false }), same: false },
   ])("$name is the same demand: $same", ({ other, same }) => {
     expect(demandKey(other, NOW) === demandKey(demand(), NOW)).toBe(same);
   });

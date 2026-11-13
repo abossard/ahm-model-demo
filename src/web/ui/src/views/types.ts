@@ -44,6 +44,8 @@ export interface ViewDefinition extends ViewMeta {
   readonly compareMode: CompareMode;
   /** Controls that only make sense for this view, shown in the toolbar while it is selected. */
   readonly Controls?: ComponentType<ViewControlsProps>;
+  /** The view draws its entities as the cards of `EntityNode`: the toolbar offers Signals, which shows their signal rows with sparklines. */
+  readonly cardSignals?: boolean;
   /** Extra lines for the legend: what a lane, a chip or a cell means in this view. */
   readonly legendNotes?: readonly string[];
 }

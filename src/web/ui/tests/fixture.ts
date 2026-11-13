@@ -327,6 +327,11 @@ export const liveShapeModel: HealthModel = (() => {
   };
 })();
 
+/** Turns on the card graph's Signals before the page loads, as a viewer who turned it on before would find it. */
+export async function showCardSignals(page: Page): Promise<void> {
+  await page.addInitScript(() => window.localStorage.setItem("ahm.cardSignals.v1", "on"));
+}
+
 export const SUBSCRIPTION_A = "11111111-1111-1111-1111-111111111111";
 export const SUBSCRIPTION_B = "22222222-2222-2222-2222-222222222222";
 

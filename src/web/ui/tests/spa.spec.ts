@@ -8,6 +8,7 @@ import {
   modelCatalog,
   paymentsHealthModel,
   reportResponse,
+  showCardSignals,
 } from "./fixture";
 import { openView } from "./views";
 
@@ -110,6 +111,7 @@ test("AC4 — Unknown card border is dashed, Healthy is solid", async ({ page })
 });
 
 test("AC5 — signal rows render each signal name and its distinct value", async ({ page }) => {
+  await showCardSignals(page);
   await bootTopology(page);
   const rows = page.locator(`.react-flow__node[data-id="svc-a"] .entity-node__row`);
   await expect(rows).toHaveCount(3);
@@ -191,6 +193,7 @@ test("each edge is stroked with its child entity health colour", async ({ page }
 });
 
 test("cards of different heights on the same rank are top aligned", async ({ page }) => {
+  await showCardSignals(page);
   await bootTopology(page);
   // svc-f has no relationship and goes on a shelf of its own, so it is not on this rank.
   const boxes = await Promise.all(
@@ -509,6 +512,7 @@ test("theme toggle still works when local storage writes are blocked", async ({ 
 
 for (const theme of ["light", "dark"] as const) {
   test(`${theme} theme keeps graph and controls at accessible contrast`, async ({ page }) => {
+    await showCardSignals(page);
     await bootTopology(page);
     const current = await page.evaluate(() => document.documentElement.dataset.theme);
     if (current !== theme) {

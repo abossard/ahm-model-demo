@@ -16,7 +16,7 @@ const PARTS: { readonly [K in BuiltViewId]: Parts } = {
   swimlanes: { Component: SwimlanesView, compareMode: "split", legendNotes: ["Lane = layer: flows, systems, resources, context", "Line colour = what the child contributes", "Dashed chip = healthy parts folded under their parent"] },
   tidy: { Component: TidyView, compareMode: "split", legendNotes: ["Dashed frame = parts not connected to the root", "Count tile = healthy leaves folded in a large model: click to open"] },
   cause: { Component: CausePathView, compareMode: "merged", legendNotes: ["Big = broken, small = fine", "Dashed chip = folded parts: click or press Enter to open"] },
-  zoom: { Component: ZoomView, compareMode: "split", Controls: ZoomControls },
+  zoom: { Component: ZoomView, compareMode: "split", Controls: ZoomControls, cardSignals: true },
   outline: { Component: OutlineView, compareMode: "merged", Controls: OutlineControls, legendNotes: ["Right edge: one mark per row, click to jump", "Arrow keys move, Right and Left open and close, Enter opens the entity"] },
   coverage: { Component: CoverageView, compareMode: "merged", legendNotes: ["Width = leaf parts below", "Number badge = parents; arcs show on selection"] },
 };

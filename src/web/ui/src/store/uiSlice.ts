@@ -1,6 +1,7 @@
 import type { StateCreator } from "zustand";
 import { DEFAULT_LAYOUT_ID, type LayoutId } from "../model/layout";
 import type { ConnectionPolicy, EdgeStyle } from "../model/edgeRouting";
+import { persistCardSignals, readStoredCardSignals } from "../model/cardSignals";
 import { persistOrders, persistSortKey, readStoredOrders, readStoredSortKey, orderKey, type CustomOrders, type ModelOrder } from "../model/customOrder";
 import { SORT_CHOICES, type SortKey } from "../model/ordering";
 import type { ThemeName } from "../model/theme";
@@ -28,6 +29,8 @@ export interface UiState {
   readonly customOrders: CustomOrders;
   readonly edgeStyle: EdgeStyle;
   readonly connectionPolicy: ConnectionPolicy;
+  /** The graph's cards show their signal rows, each with a sparkline; kept in this browser. */
+  readonly cardSignals: boolean;
   readonly collapsed: readonly string[];
   readonly searchOpen: boolean;
   readonly highlightedName: string | null;
@@ -61,6 +64,7 @@ export interface UiActions {
   readonly resetCustomOrder: () => void;
   readonly setEdgeStyle: (edgeStyle: EdgeStyle) => void;
   readonly setConnectionPolicy: (policy: ConnectionPolicy) => void;
+  readonly setCardSignals: (on: boolean) => void;
   readonly toggleCollapse: (name: string) => void;
   readonly expandMany: (names: readonly string[]) => void;
   readonly openSearch: () => void;
@@ -99,6 +103,7 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
   customOrders: typeof window === "undefined" ? {} : readStoredOrders(() => window.localStorage),
   edgeStyle: "smooth",
   connectionPolicy: "with-layout",
+  cardSignals: typeof window === "undefined" ? false : readStoredCardSignals(() => window.localStorage),
   collapsed: [],
   searchOpen: false,
   highlightedName: null,
@@ -153,6 +158,10 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
   toggleSortDirection: () => set((state) => ({ sortReversed: !state.sortReversed })),
   setEdgeStyle: (edgeStyle) => set({ edgeStyle }),
   setConnectionPolicy: (connectionPolicy) => set({ connectionPolicy }),
+  setCardSignals: (cardSignals) => {
+    set({ cardSignals });
+    if (typeof window !== "undefined") persistCardSignals(cardSignals, () => window.localStorage);
+  },
   toggleCollapse: (name) =>
     set((state) => ({
       collapsed: state.collapsed.includes(name)

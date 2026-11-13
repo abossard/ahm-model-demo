@@ -9,7 +9,7 @@ import { coveredAt, covers, type Asked, type TimeStore } from "./timeStore";
  * settled, and starts what it returns.
  */
 
-/** What the viewer looks at. The states, annotations and reports of every entity are always part of it. */
+/** What the viewer looks at. */
 export interface Demand {
   /** The window of time on screen. */
   readonly view: Span;
@@ -21,6 +21,10 @@ export interface Demand {
   readonly moment: number | null;
   /** The entities whose signal values show at the selected moment, wherever on the page. */
   readonly watched: readonly string[];
+  /** The entities whose signals show as sparklines on the graph's cards: their series are read for `sparkWindow`. */
+  readonly sparks: readonly string[];
+  /** The timeline shows, so the states, annotations and reports of every entity are read. Without it only the structure and the series are. */
+  readonly overview: boolean;
 }
 
 export interface TileRequest extends Asked {
@@ -77,6 +81,16 @@ export const REPORT_SIGNAL = "web-ui-health-report";
 /** How long an evaluation is believed to hold at most: a value at a moment may be this much older than the moment. */
 const MAX_HOLD = 2 * HOUR;
 const SEP = "\u0001";
+/** How far back a sparkline on a card reaches from the moment it ends at. */
+export const SPARK_SPAN = 6 * HOUR;
+/**
+ * The level a sparkline is read at: slots of 15 minutes, so 6 hours are some 24 slots for a line of about 56 pixels,
+ * and a tile is a day, which costs one history call a signal. The hourly level would give 6 slots and week tiles.
+ */
+export const SPARK_LEVEL = 1;
+
+/** The window a sparkline shows: the `SPARK_SPAN` that ends at `end`, within what the service keeps. */
+export const sparkWindow = (end: number, now: number): Span => ({ from: Math.max(now - RETENTION, end - SPARK_SPAN), to: Math.min(now, end) });
 const STRUCTURE_CELL = "x";
 const ANY = "*";
 
@@ -188,7 +202,19 @@ export function demandKey(demand: Demand, now: number): string {
   // By the day, whatever the level: that is as fine as what is held ever ends.
   const tiles = tilesIn(pad(demand.view, now), DAY);
   const moment = demand.moment === null ? "" : `${Math.floor(demand.moment / HOUR)}`;
-  return [level, tiles[0] ?? "", tiles[tiles.length - 1] ?? "", moment, demand.lanes.join(SEP), demand.moment === null ? "" : demand.watched.join(SEP)].join("|");
+  const sparks = demand.sparks.length === 0 ? [] : tilesIn(sparkWindow(demand.moment ?? now, now), DAY);
+  return [
+    level,
+    tiles[0] ?? "",
+    tiles[tiles.length - 1] ?? "",
+    moment,
+    demand.lanes.join(SEP),
+    demand.moment === null ? "" : demand.watched.join(SEP),
+    demand.overview ? "o" : "",
+    demand.sparks.join(SEP),
+    sparks[0] ?? "",
+    sparks[sparks.length - 1] ?? "",
+  ].join("|");
 }
 
 export function planRequests(input: PlanInput): Plan {
@@ -212,7 +238,8 @@ export function planRequests(input: PlanInput): Plan {
   // The structure on its way is still wanted: the request that reads it alone holds no other cell to keep it.
   if (needStructure || busy.has(STRUCTURE_CELL)) wanted.add(STRUCTURE_CELL);
 
-  if (known === null) {
+  // Without the timeline on screen nothing shows the overview: only the structure is read, to know the signals of the series.
+  if (demand.overview && known === null) {
     // Nothing says which entities there are: the tiles on screen are read for all of them, and the answer names them.
     const first = overviewTiles.find((tile) => overlaps(tileSpan(tile, OVERVIEW_TILE), onScreen)) ?? overviewTiles[overviewTiles.length - 1] ?? 0;
     const cells = overviewTiles.filter((tile) => tile >= first).map((tile) => overviewCell(ANY, tile));
@@ -223,7 +250,7 @@ export function planRequests(input: PlanInput): Plan {
       const tiles = todo.map((cell) => parseCell(cell).tile);
       requests.push({ parts: [...structure(), "states", "annotations", "reports"], entities: null, signals: null, level: RAW, from: Math.min(...tiles) * OVERVIEW_TILE, to: (Math.max(...tiles) + 1) * OVERVIEW_TILE, cells: todo, rank: 0 });
     }
-  } else {
+  } else if (demand.overview && known !== null) {
     const costOf = (entity: EntityHint): number => 2 + (entity.reports ? OVERVIEW_TILE / DAY : 0);
     const whole = known.reduce((sum, entity) => sum + costOf(entity), 0);
     // Neighbouring tiles that the whole model lacks, read together while one request can.
@@ -321,6 +348,7 @@ export function planRequests(input: PlanInput): Plan {
   if (demand.moment !== null) {
     series([...demand.watched, ...demand.lanes], RAW, { from: Math.max(now - RETENTION, demand.moment - MAX_HOLD), to: Math.min(now, demand.moment + 1) }, 0);
   }
+  if (demand.sparks.length > 0) series(demand.sparks, SPARK_LEVEL, sparkWindow(demand.moment ?? now, now), 0);
   if (input.idle && requests.length === 0) {
     // The window before the one on screen, and the one after it when the view does not end at now.
     series(demand.lanes, level, { from: Math.max(now - RETENTION, demand.view.from - span), to: demand.view.from }, 2);

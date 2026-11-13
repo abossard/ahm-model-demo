@@ -25,7 +25,7 @@ const large = (count: number, reports = false): TimelineFixture =>
     { now: NOW, days: 3 },
   );
 
-const demand = (parts: Partial<Demand> = {}): Demand => ({ view: { from: NOW - DAY, to: NOW }, width: 1000, lanes: [], moment: null, watched: [], ...parts });
+const demand = (parts: Partial<Demand> = {}): Demand => ({ view: { from: NOW - DAY, to: NOW }, width: 1000, lanes: [], moment: null, watched: [], sparks: [], overview: true, ...parts });
 
 interface Harness {
   readonly loader: TimelineLoader;

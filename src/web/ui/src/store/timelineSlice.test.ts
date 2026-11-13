@@ -80,7 +80,7 @@ const graphOf = (fixture = FIXTURE): HealthModel => ({
   reportOptions: { signalName: "x", healthStates: [], values: [], expiries: [], reasonPresets: [] },
 });
 
-const demand = (parts: Partial<Demand> = {}): Demand => ({ view: { from: NOW - DAY, to: NOW }, width: 1000, lanes: [], moment: null, watched: [], ...parts });
+const demand = (parts: Partial<Demand> = {}): Demand => ({ view: { from: NOW - DAY, to: NOW }, width: 1000, lanes: [], moment: null, watched: [], sparks: [], overview: true, ...parts });
 const queries = (): readonly api.TimelineQuery[] => vi.mocked(api.fetchTimeline).mock.calls.map((call) => call[1]);
 const seriesQueries = (): readonly api.TimelineQuery[] => queries().filter((query) => query.include.includes("signals"));
 

@@ -10,10 +10,11 @@ import {
   PopoverTrigger,
   Radio,
   RadioGroup,
+  ToggleButton,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import { Filter20Regular, Search20Regular } from "@fluentui/react-icons";
+import { DataLine20Regular, Filter20Regular, Search20Regular } from "@fluentui/react-icons";
 import { tokensFor } from "../model/palette";
 import type { Entity, Relationship } from "../model/types";
 import { OrderControls } from "../views/OrderControls";
@@ -157,6 +158,25 @@ function HealthFilter(): JSX.Element {
   );
 }
 
+/** Shows the signal rows of the cards, each with a sparkline of the hours before the selected moment. */
+function SignalsToggle(): JSX.Element {
+  const on = useStore((state) => state.cardSignals);
+  return (
+    <ToggleButton
+      size="small"
+      checked={on}
+      icon={<DataLine20Regular />}
+      data-testid="card-signals-toggle"
+      onClick={() => {
+        actions.setCardSignals(!on);
+        actions.announce(on ? "Signals are hidden on the cards." : "The cards show their signals, with the last 6 hours of each.");
+      }}
+    >
+      Signals
+    </ToggleButton>
+  );
+}
+
 interface GraphToolbarProps {
   readonly entities: readonly Entity[];
   readonly relationships: readonly Relationship[];
@@ -165,12 +185,14 @@ interface GraphToolbarProps {
 export function GraphToolbar({ entities, relationships }: GraphToolbarProps): JSX.Element {
   const styles = useStyles();
   const view = useStore((state) => state.view);
-  const Controls = viewDefinition(view).Controls;
+  const definition = viewDefinition(view);
+  const Controls = definition.Controls;
 
   return (
     <div className={styles.root} data-testid="graph-toolbar" role="group" aria-label="View controls">
       <ViewSwitch />
       {Controls ? <Controls entities={entities} relationships={relationships} /> : null}
+      {definition.cardSignals ? <SignalsToggle /> : null}
       <OrderControls />
       <Button
         size="small"

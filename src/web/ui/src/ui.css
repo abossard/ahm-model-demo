@@ -342,6 +342,24 @@ body {
   text-overflow: ellipsis;
 }
 
+.entity-node__spark {
+  flex: 0 0 auto;
+  fill: none;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.entity-node__spark-empty {
+  stroke: var(--colorNeutralStroke2);
+  stroke-dasharray: 2 2;
+}
+
+.entity-node__spark-moment {
+  stroke: var(--colorNeutralStroke1);
+  stroke-width: 1;
+}
+
 .entity-node__row-value {
   /* A value keeps its width: a long signal name gives way, so a number never breaks across lines. */
   flex: 0 0 auto;

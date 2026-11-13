@@ -48,6 +48,7 @@ export function useTimelineLoading(rows: RowModel, range: readonly [number, numb
   // With everything else that follows the moment: a drag moves it every frame, and what is read is told once it rests.
   const moment = useAtMoment(selectedMoment);
   const watched = useStore((state) => state.timelineWatched);
+  const sparks = useStore((state) => state.timelineSparks).join("\u0001");
   const selectedName = useStore((state) => state.selectedName);
   const latest = useRef({ view });
   latest.current = { view };
@@ -97,6 +98,8 @@ export function useTimelineLoading(rows: RowModel, range: readonly [number, numb
         lanes: lanes === "" ? [] : lanes.split("\u0001"),
         moment,
         watched: watching === "" ? [] : watching.split("\u0001"),
+        sparks: sparks === "" ? [] : sparks.split("\u0001"),
+        overview: true,
       });
     };
     // The first telling for a model starts the overview at once; after that a view that is still moving is not worth a request.
@@ -107,5 +110,5 @@ export function useTimelineLoading(rows: RowModel, range: readonly [number, numb
     }
     const timer = window.setTimeout(tell, SETTLE_MS);
     return () => window.clearTimeout(timer);
-  }, [selectedKey, owner, t0, t1, follow, lanes, moment, watching, width]);
+  }, [selectedKey, owner, t0, t1, follow, lanes, moment, watching, sparks, width]);
 }

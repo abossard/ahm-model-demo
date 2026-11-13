@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import type { HealthModel } from "../src/model/types";
-import { healthModel, installStubs } from "./fixture";
+import { healthModel, installStubs, showCardSignals } from "./fixture";
 import { DENSE_SEED, denseModel, realAnbomovModel } from "./denseModel";
 import { openView } from "./views";
 
@@ -438,6 +438,7 @@ test("hide mode removes deselected-state nodes and edges", async ({ page }) => {
 });
 
 test("reselecting a health bucket restores a dot back to full card presentation", async ({ page }) => {
+  await showCardSignals(page);
   await boot(page);
   await openHealthFilter(page);
   await page.getByRole("radio", { name: "Gray dot" }).click();
@@ -583,6 +584,7 @@ test("refresh with rewired relationships reheats adaptive layout", async ({ page
 });
 
 test("adaptive drag moves card and dot nodes at different zoom levels", async ({ page }) => {
+  await showCardSignals(page);
   await boot(page);
   await chooseAdaptive(page);
 

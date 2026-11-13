@@ -102,6 +102,7 @@ export const LAYOUT_TRANSITION_MS = 500;
 export const FOCUS_TRANSITION_MS = 750;
 const EMPTY_LAYOUT: GraphLayout = { positions: new Map(), width: 0, height: 0 };
 const EMPTY_STATES: ReadonlyMap<HealthState, number> = new Map();
+const EMPTY_SIZES: ReadonlyMap<string, NodeSize> = new Map();
 const FALLBACK_GRID_COLUMNS = 4;
 const FALLBACK_GRID_X = 320;
 const FALLBACK_GRID_Y = 220;
@@ -271,6 +272,7 @@ function TopologyCanvas({
   const focusNames = useStore((state) => state.focusNames);
   const focusSeq = useStore((state) => state.focusSeq);
   const chainNames = useStore((state) => state.chainNames);
+  const cardSignals = useStore((state) => state.cardSignals);
   const { fitView } = useReactFlow();
   // What the zoom shows of a card: it changes only where the zoom crosses a floor, so nothing re-renders in between.
   const level = useFlowStore((state) => zoomLevel(state.transform?.[2])) ?? "card";
@@ -295,7 +297,9 @@ function TopologyCanvas({
     [entities, relationships, collapsed, selectedHealth, excludedEntityMode],
   );
 
-  const [measuredCards, setMeasuredCards] = useState<ReadonlyMap<string, NodeSize>>(new Map());
+  // What was measured holds for the cards with or without their signal rows: turning Signals over begins again from the estimates.
+  const [measured, setMeasured] = useState<{ readonly signals: boolean; readonly cards: ReadonlyMap<string, NodeSize> }>(() => ({ signals: cardSignals, cards: new Map() }));
+  const measuredCards = measured.signals === cardSignals ? measured.cards : EMPTY_SIZES;
   const sizes = useMemo<ReadonlyMap<string, NodeSize>>(
     () =>
       new Map(
@@ -307,12 +311,12 @@ function TopologyCanvas({
               displayRole === "dot"
                 ? estimateNodeSize(item, false, "dot")
                 : measuredCards.get(item.name) ??
-                  estimateNodeSize(item, (visible.hiddenCounts.get(item.name) ?? 0) > 0),
+                  estimateNodeSize(item, (visible.hiddenCounts.get(item.name) ?? 0) > 0, "card", cardSignals),
             ] as const;
           },
         ),
       ),
-    [visible, measuredCards],
+    [visible, measuredCards, cardSignals],
   );
 
   // What the arrangement runs on: this graph, or the basis it shares, drawn with this graph's sizes
@@ -330,11 +334,11 @@ function TopologyCanvas({
         item.name,
         shared.dotNames.has(item.name)
           ? estimateNodeSize(item, false, "dot")
-          : estimateNodeSize(item, (shared.hiddenCounts.get(item.name) ?? 0) > 0),
+          : estimateNodeSize(item, (shared.hiddenCounts.get(item.name) ?? 0) > 0, "card", cardSignals),
       );
     }
     return { visible: shared, sizes: sharedSizes };
-  }, [basis, visible, sizes, collapsed, selectedHealth, excludedEntityMode]);
+  }, [basis, visible, sizes, collapsed, selectedHealth, excludedEntityMode, cardSignals]);
 
   const [layout, setLayout] = useState<GraphLayout>(EMPTY_LAYOUT);
   // What a drop showed, kept on screen until the arrangement it asked for arrives.
@@ -447,7 +451,7 @@ function TopologyCanvas({
         currentSession.update(
           orderedEntities,
           visible.relationships,
-          (item) => sizes.get(item.name) ?? estimateNodeSize(item),
+          (item) => sizes.get(item.name) ?? estimateNodeSize(item, false, "card", cardSignals),
           remembered,
         );
         if (liveSession.current === currentSession) {
@@ -504,7 +508,7 @@ function TopologyCanvas({
 
     const links = arranged.visible.relationships;
     const run = (custom: CustomOrder | null): Promise<GraphLayout> =>
-      engine.run(arranged.visible.entities, links, (item) => arranged.sizes.get(item.name) ?? estimateNodeSize(item), { shortest, ...(custom ? { custom } : {}) });
+      engine.run(arranged.visible.entities, links, (item) => arranged.sizes.get(item.name) ?? estimateNodeSize(item, false, "card", cardSignals), { shortest, ...(custom ? { custom } : {}) });
     // A layout with ranks is asked twice when the viewer gave an order: once for its own ranks, then with the order laid over them.
     const arrangeAll = async (): Promise<{ readonly unordered: GraphLayout; readonly whole: GraphLayout }> => {
       const places = family && kindOf(family) === "slots" ? forLayout(family, stored, [], links) : null;
@@ -548,7 +552,7 @@ function TopologyCanvas({
     return () => {
       cancelled = true;
     };
-  }, [layoutId, sortKey, sortReversed, visible, sizes, arranged, basis, fitOn, settledKey, stored, family, reducedMotion]);
+  }, [layoutId, sortKey, sortReversed, visible, sizes, arranged, basis, fitOn, settledKey, stored, family, reducedMotion, cardSignals]);
 
   useEffect(
     () => () => {
@@ -738,7 +742,8 @@ function TopologyCanvas({
           nodesFocusable={false}
           elementsSelectable={false}
           onNodesChange={(changes: NodeChange<Node>[]) => {
-            setMeasuredCards((previous) => {
+            setMeasured((kept) => {
+              const previous = kept.signals === cardSignals ? kept.cards : EMPTY_SIZES;
               let next: Map<string, NodeSize> | undefined;
               for (const change of changes) {
                 // Far out a card is drawn smaller; what the layout keeps is its size as a card.
@@ -750,7 +755,7 @@ function TopologyCanvas({
                 next ??= new Map(previous);
                 next.set(change.id, { width, height });
               }
-              return next ?? previous;
+              return next ? { signals: cardSignals, cards: next } : kept;
             });
           }}
           onNodeDragStart={(_, node) => {
