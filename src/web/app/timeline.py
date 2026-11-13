@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from azure.core.exceptions import AzureError
@@ -12,6 +13,8 @@ from config import (
     CANONICAL_SIGNAL_NAME,
     CLOUDHEALTH_API_VERSION,
     HISTORY_SAFETY_SECONDS,
+    PREWARM_CONCURRENCY,
+    PREWARM_GLOBAL_CONCURRENCY,
     TIMELINE_ANNOTATION_PAGE_SIZE,
     TIMELINE_ANNOTATION_PAGES,
     TIMELINE_CACHE_SIZE,
@@ -31,7 +34,7 @@ from config import (
     TIMELINE_STRUCTURE_CACHE_SECONDS,
 )
 from dto import context_fields, field, graph_dto, history_items, scalar, signal_group_values
-from healthmodels import TtlCache, cached
+from healthmodels import MISSING, TtlCache, cached
 import history_store
 
 
@@ -49,6 +52,7 @@ ETAG_VERSION = "t1"
 # A closed window is kept by the browser and checked again on every use, so the access check still runs.
 CLOSED_CACHE_CONTROL = "private, no-cache"
 RETENTION_MARGIN = timedelta(minutes=5)
+RETENTION_MARGIN_MS = int(RETENTION_MARGIN.total_seconds() * 1000)
 SNAP_BY_SPAN = ((timedelta(hours=6), 60), (timedelta(days=2), 300), (timedelta(days=365), 900))
 WINDOW_KEYS = ("startAt", "endAt", "top")
 
@@ -274,12 +278,73 @@ def series_error(error):
     return {"code": code, "message": message, "retryable": retryable}
 
 
+def levels_of(kind, rows):
+    """The rows of a piece at every level it is kept at: a signal also thinned to the slots of each coarser level, with the
+    same rule as an answer, so a stored level is what thinning every point would give."""
+    if kind != "signal":
+        return {0: rows}
+    return {0: rows, **{level: {"points": decimate(rows["points"], level * 1000)} for level in history_store.LEVELS[1:]}}
+
+
+def stored_level(query, window):
+    """The level a request's series can be read at from storage: its resolution when that is a kept level and the window
+    begins and ends on its slots, so no slot is cut. Else every point, thinned in the answer."""
+    step = query["resolution"] * 1000
+    if query["resolution"] not in history_store.LEVELS[1:] or window["from"] % step or (window["to"] is not None and window["to"] % step):
+        return 0
+    return query["resolution"]
+
+
+class Gate:
+    """The Azure calls the timeline makes at once across the app. A call made in the background waits while any interactive
+    call waits or runs, and only a few run at a time."""
+
+    def __init__(self, total, background):
+        self._total = total
+        self._background_limit = background
+        self._cond = threading.Condition()
+        self._busy = 0
+        self._wanted = 0
+        self._background = 0
+
+    @contextmanager
+    def interactive(self):
+        with self._cond:
+            self._wanted += 1
+            self._cond.wait_for(lambda: self._busy < self._total)
+            self._busy += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._busy -= 1
+                self._wanted -= 1
+                self._cond.notify_all()
+
+    @contextmanager
+    def background(self, check):
+        """`check` raises to give up waiting, and is asked every second."""
+        with self._cond:
+            while not self._cond.wait_for(lambda: self._wanted == 0 and self._background < self._background_limit and self._busy < self._total, 1.0):
+                check()
+            self._busy += 1
+            self._background += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._busy -= 1
+                self._background -= 1
+                self._cond.notify_all()
+
+
 class Budget:
-    def __init__(self, calls, deadline, clock):
+    def __init__(self, calls, deadline, clock, tally=None):
         self._left = calls
         self._deadline = deadline
         self._clock = clock
         self._lock = threading.Lock()
+        self.tally = tally or history_store.Tally()
 
     def take(self):
         with self._lock:
@@ -291,11 +356,33 @@ class Budget:
     def expired(self):
         return self._clock() >= self._deadline
 
+    def slot(self, gate):
+        return gate.interactive()
+
+
+class FillBudget:
+    """The budget of a background fill: `pace` decides when a call may go, and raises when the fill has to stop."""
+
+    def __init__(self, pace, tally):
+        self._pace = pace
+        self.tally = tally
+
+    def take(self):
+        self._pace.call()
+        return True
+
+    def expired(self):
+        return False
+
+    def slot(self, gate):
+        return gate.background(self._pace.check)
+
 
 class Prepared:
-    def __init__(self, etag, read):
+    def __init__(self, etag, read, tally):
         self.etag = etag
         self.read = read
+        self.tally = tally
 
     def headers(self, body=None):
         """The headers of an answer the browser may keep: none for a window that is still open or an answer with holes."""
@@ -310,10 +397,14 @@ class TimelineReader:
         self._hub_structure = structure
         self._clock = clock
         self._now = now
-        self._gate = threading.BoundedSemaphore(TIMELINE_GLOBAL_CONCURRENCY)
+        self._gate = Gate(TIMELINE_GLOBAL_CONCURRENCY, PREWARM_GLOBAL_CONCURRENCY)
         self._structures = TtlCache(64, TIMELINE_STRUCTURE_CACHE_SECONDS, clock)
         self._live = TtlCache(TIMELINE_CACHE_SIZE, TIMELINE_LIVE_CACHE_SECONDS, clock)
         self._past = TtlCache(TIMELINE_CACHE_SIZE, TIMELINE_PAST_CACHE_SECONDS, clock)
+
+    @property
+    def keeps_history(self):
+        return self._history is not None
 
     def read(self, caller, user, selection, params, names=(), signals=()):
         return self.prepare(caller, user, selection, params, names, signals).read()
@@ -336,14 +427,23 @@ class TimelineReader:
                 "too_many_series", f"Ask for at most {TIMELINE_MAX_SERIES} signals at a time: pass entity to narrow the request."
             )
         etag = None if missing else validator(scope[1:], query, window, jobs, to_ms(now) - HISTORY_SAFETY_SECONDS * 1000)
+        tally = history_store.Tally()
+        level = stored_level(query, window)
+
+        def level_of(job):
+            reports = job[2] == CANONICAL_SIGNAL_NAME and "reports" in query["parts"]
+            return level if job[0] == "signal" and not reports else 0
 
         def read():
-            budget = Budget(TIMELINE_MAX_CALLS, self._clock() + TIMELINE_DEADLINE_SECONDS, self._clock)
+            budget = Budget(TIMELINE_MAX_CALLS, self._clock() + TIMELINE_DEADLINE_SECONDS, self._clock, tally)
             cache = self._live if window["live"] else self._past
-            results = self._run(jobs, lambda job: self._job(cache, scope, client, group, model, window, budget, job))
+            batch = history_store.Batch()
+            results = self._run(jobs, lambda job: self._job(cache, scope, client, group, model, window, budget, job, level_of(job), batch))
+            if len(batch):
+                self._history.write(batch, tally)
             return self._assemble(model, now, window, query, wanted, jobs, results, missing)
 
-        return Prepared(etag, read)
+        return Prepared(etag, read, tally)
 
     def read_tail(self, user, selection, since, annotation_names):
         """The newest transitions of some entities, from a time each, and the newest annotations of others: what the live feed adds to a snapshot."""
@@ -358,29 +458,31 @@ class TimelineReader:
             kind, name, start = job
             first = {"startAt": start}
             if kind == "states":
-                rows, _ = self._pages(lambda body: client.entities.get_history(group, model, name, body), first, 1, budget)
-                return [{"entity": name, **transition_row(row)} for row in rows]
+                rows, complete = self._pages(lambda body: client.entities.get_history(group, model, name, body), first, 1, budget)
+                return [{"entity": name, **transition_row(row)} for row in rows], complete
             first["top"] = TIMELINE_ANNOTATION_PAGE_SIZE
-            rows, _ = self._pages(
+            rows, complete = self._pages(
                 lambda body: client.entities.get_data_annotations(group, model, name, body),
                 first,
                 1,
                 budget,
                 lambda response: list(field(response, "annotations", default=[]) or []),
             )
-            return [{"entity": name, **row} for row in filter(None, map(annotation_row, rows))]
+            return [{"entity": name, **row} for row in filter(None, map(annotation_row, rows))], complete
 
         def run(job):
             try:
                 return read(job)
             except AzureError as error:
                 if getattr(error, "status_code", None) == 404:  # an entity that is gone, such as one an Apply deleted, adds nothing and must not fail the others
-                    return []
+                    return [], True
                 raise
 
-        found = {"transitions": [], "annotations": []}
-        for job, rows in zip(jobs, self._run(jobs, run)):
+        found = {"transitions": [], "annotations": [], "cut": []}
+        for job, (rows, complete) in zip(jobs, self._run(jobs, run)):
             found["transitions" if job[0] == "states" else "annotations"].extend(rows)
+            if job[0] == "states" and not complete:
+                found["cut"].append(job[1])
         return found
 
     def _read_structure(self, client, group, model):
@@ -422,26 +524,30 @@ class TimelineReader:
         with ThreadPoolExecutor(max_workers=min(TIMELINE_CALL_CONCURRENCY, len(jobs))) as pool:
             return list(pool.map(run, jobs))
 
-    def _job(self, cache, scope, client, group, model, window, budget, job):
+    def _job(self, cache, scope, client, group, model, window, budget, job, level=0, batch=None):
         kind, entity, signal = job
-        key = (*scope, kind, entity, signal, window["from"], window["to"])
+        key = (*scope, kind, entity, signal, level, window["from"], window["to"])
         try:
-            return cached(cache, key, lambda: self._load(kind, client, group, model, entity, signal, window, budget, scope[1:]))
+            return cached(cache, key, lambda: self._load(kind, client, group, model, entity, signal, window, budget, scope[1:], level, batch))
         except Skipped as skipped:
             return {"error": {"code": skipped.code, "message": skipped.message, "retryable": skipped.retryable}}
         except AzureError as error:
             logger.warning("timeline history failed kind=%s status=%s", kind, getattr(error, "status_code", None))
             return {"error": series_error(error), "cause": error}
 
-    def _load(self, kind, client, group, model, entity, signal, window, budget, model_scope):
-        """One history over a window. Whole days (or weeks) that are over are read once and kept; the open tail is always read."""
+    def _floor_ms(self, now_ms):
+        return now_ms - TIMELINE_RETENTION_DAYS * 24 * 3600 * 1000 + int(RETENTION_MARGIN.total_seconds() * 1000)
+
+    def _load(self, kind, client, group, model, entity, signal, window, budget, model_scope, level=0, batch=None):
+        """One history over a window. Whole days (or weeks) that are over are read once and kept, at every level; the open
+        tail is always read. A signal at a kept level is served as stored, already thinned."""
         if self._history is None:
             return self._load_raw(kind, client, group, model, entity, signal, window, budget)
-        size = history_store.BUCKET_MS[kind]
+        size = history_store.PIECE_MS[kind]
         now_ms = to_ms(self._now())
         limit = history_store.closed_before(now_ms, size)
         start, end = window["from"], now_ms if window["to"] is None else window["to"]
-        floor_ms = now_ms - TIMELINE_RETENTION_DAYS * 24 * 3600 * 1000 + int(RETENTION_MARGIN.total_seconds() * 1000)
+        floor_ms = self._floor_ms(now_ms)
         parts, complete, earliest = [], True, None
         tail_start = max(start, limit)
         if tail_start < end:
@@ -450,31 +556,134 @@ class TimelineReader:
             complete, earliest = tail["complete"], tail.get("earliest")
         if complete:
             for first, last in history_store.buckets(start, end, size, limit):
-                name = history_store.blob_name(model_scope, kind, entity, signal, first)
-                found = self._history.get(name)
-                if found is None:
+                found = self._stored(model_scope, kind, level, entity, signal, first, budget.tally, batch)
+                if found is not None:
+                    budget.tally.add("pieces_stored")
+                else:
                     try:
-                        # The service refuses a start more than 30 days back: the oldest bucket is read from the floor and, being partial, not kept.
+                        # The service refuses a start more than 30 days back: the oldest piece is read from the floor and, being partial, not kept.
                         raw = self._load_raw(kind, client, group, model, entity, signal, {"from": max(first, floor_ms), "to": last, "live": False}, budget)
                     except Skipped:
                         if not parts:
                             raise
                         complete, earliest = False, self._oldest(kind, parts)
                         break
-                    if raw["complete"]:
-                        if first >= floor_ms:
-                            self._history.put(name, {part: raw[part] for part in history_store.PARTS[kind]})
-                    else:
-                        parts.append(raw)
+                    rows = history_store.within(kind, raw, first, last)
+                    if not raw["complete"]:
+                        parts.append(rows)
                         complete, earliest = False, raw.get("earliest")
                         break
-                    found = raw
+                    budget.tally.add("pieces_read")
+                    levels = levels_of(kind, rows)
+                    if first >= floor_ms and batch is not None:
+                        batch.add(model_scope, kind, entity, signal, first, history_store.AZURE, levels)
+                    found = levels[level]
                 parts.append(found)
         merged = history_store.merge_parts(kind, parts)
         for part, rows in merged.items():
             time_of = history_store.KEYS[part]
             merged[part] = [row for row in rows if start <= time_of(row) <= end]
         return {**merged, "complete": complete, "earliest": earliest if not complete else self._oldest(kind, [merged])}
+
+    def _stored(self, model_scope, kind, level, entity, signal, start, tally, batch):
+        """The rows of a closed piece at a level from the store, or None. A coarser level that is missing is thinned from the
+        stored points, and a piece only the first layout holds is moved to this one: both are written with the batch."""
+        found = self._history.piece(model_scope, kind, level, entity, signal, start, tally)
+        if found is not None:
+            return found[1]
+        if level:
+            raw = self._history.piece(model_scope, kind, 0, entity, signal, start, tally)
+            if raw is not None:
+                levels = levels_of(kind, raw[1])
+                if batch is not None:
+                    batch.add(model_scope, kind, entity, signal, start, raw[0], {key: rows for key, rows in levels.items() if key})
+                return levels[level]
+        old = self._history.legacy(model_scope, kind, entity, signal, start, tally)
+        if old is None:
+            return None
+        levels = levels_of(kind, history_store.within(kind, old, start, start + history_store.PIECE_MS[kind]))
+        if batch is not None:
+            batch.add(model_scope, kind, entity, signal, start, history_store.AZURE, levels)
+        return levels[level]
+
+    def keep(self, selection, pieces):
+        """What a live hub recorded of closed days and weeks, as (kind, entity, signal, start, rows): kept at every level,
+        where Azure's own pieces are not."""
+        if self._history is None:
+            return
+        model_scope = tuple(part.casefold() for part in selection)
+        floor_ms = self._floor_ms(to_ms(self._now()))
+        batch = history_store.Batch()
+        for kind, entity, signal, start, rows in pieces:
+            if start >= floor_ms:
+                batch.add(model_scope, kind, entity, signal, start, history_store.RECORDED, levels_of(kind, rows))
+        tally = history_store.Tally()
+        self._history.write(batch, tally)
+        logger.info("timeline recorded model=%s pieces=%d written=%d", selection[2], len(pieces), tally.counts()["written"])
+
+    def fill(self, caller, user, selection, pace, tally):
+        """Reads every closed piece of the last 30 days that the store lacks, newest first, as `user` and at the pace `pace`
+        allows: the states and annotations of every entity by the week, then every signal by the day. `pace` raises to stop."""
+        if self._history is None:
+            return
+        subscription, group, model = selection
+        client = user.client(subscription)
+        model_scope = tuple(part.casefold() for part in selection)
+        budget = FillBudget(pace, tally)
+        structure = self._hub_structure(selection) if self._hub_structure else None
+        if not structure:
+            structure = self._structures.get((caller.owner, *model_scope))
+        if structure is MISSING or not structure:
+            pace.call()
+            pace.call()
+            structure = self._read_structure(client, group, model)
+        now_ms = to_ms(self._now())
+        overview = [(kind, entity["name"], None) for entity in structure for kind in ("states", "annotations")]
+        signals = [("signal", entity["name"], signal["name"]) for entity in structure for signal in entity["signals"]]
+        for histories, size, level in ((overview, history_store.WEEK_MS, 0), (signals, history_store.DAY_MS, history_store.LEVELS[-1])):
+            limit = history_store.closed_before(now_ms, size)
+            for first, last in history_store.buckets(self._floor_ms(now_ms), limit, size, limit):
+                # A fill takes a while: a piece that aged out of the 30 days on the way is no longer read.
+                if first < self._floor_ms(to_ms(self._now())):
+                    continue
+                batch = history_store.Batch()
+                missing = [job for job in histories if self._stored(model_scope, job[0], level, job[1], job[2], first, tally, batch) is None]
+                tally.add("pieces_stored", len(histories) - len(missing))
+
+                def one(job, first=first, last=last, batch=batch):
+                    raw = self._fill_piece(job, client, group, model, first, last, budget, pace)
+                    if raw is not None:
+                        tally.add("pieces_read")
+                        batch.add(model_scope, job[0], job[1], job[2], first, history_store.AZURE, levels_of(job[0], history_store.within(job[0], raw, first, last)))
+
+                if missing:
+                    pool = ThreadPoolExecutor(max_workers=min(PREWARM_CONCURRENCY, len(missing)))
+                    try:
+                        list(pool.map(one, missing))
+                    finally:
+                        pool.shutdown(wait=True, cancel_futures=True)
+                        if len(batch):
+                            self._history.write(batch, tally)
+                elif len(batch):
+                    self._history.write(batch, tally)
+
+    def _fill_piece(self, job, client, group, model, first, last, budget, pace):
+        """One piece read in full for a fill, or None when it is skipped. A busy service is waited out by `pace`, and a piece
+        that ages out of the 30 days the service keeps is skipped without counting as a failure."""
+        kind, entity, signal = job
+        while True:
+            if first < self._floor_ms(to_ms(self._now())):
+                return None
+            try:
+                raw = self._load_raw(kind, client, group, model, entity, signal, {"from": first, "to": last, "live": False}, budget)
+            except Exception as error:  # pace decides: wait and try again, skip this history, or stop the fill
+                if getattr(error, "status_code", None) == 400 and first < self._floor_ms(to_ms(self._now())) + RETENTION_MARGIN_MS:
+                    return None
+                if pace.failed(error):
+                    continue
+                return None
+            pace.succeeded()
+            return raw if raw["complete"] else None
 
     def _oldest(self, kind, parts):
         rows = parts[-1].get(history_store.PARTS[kind][0], []) if parts else []
@@ -524,8 +733,9 @@ class TimelineReader:
                 if pages:
                     return rows, False
                 raise Skipped("call_budget", "Too many Azure calls for one request: ask for fewer entities.", True)
-            with self._gate:
+            with budget.slot(self._gate):
                 response = call(body)
+            budget.tally.add("azure_calls")
             pages += 1
             rows.extend(items(response))
             marker = field(response, "next_marker", "nextMarker")

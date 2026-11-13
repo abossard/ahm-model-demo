@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 import httpx
 from fastapi.testclient import TestClient
@@ -244,6 +245,21 @@ class LiveWriteTests(base.DiffAndApplyCase):
         self.assertEqual(self.names(after)["orders-api"], "Orders API (reviewed)")
         self.assertEqual(event["event"], "delta")
         self.assertEqual([item["displayName"] for item in event["data"]["entities"]["upsert"]], ["Orders API (reviewed)"])
+
+    def test_an_apply_tells_the_hub_the_model_itself_changed_and_a_health_report_does_not(self):
+        change = {"id": "c1", "op": "change", "kind": "entity", "name": "orders-api", "after": {"displayName": "Renamed"}, "reason": "r"}
+        sid = self.stored_diff([change])
+        table = [
+            ("an apply", lambda client: self.post_apply(client, sid, ["c1"]), True),
+            ("a health report", lambda client: client.post("/api/entities/payments/health-reports", json=REPORT), False),
+        ]
+        with TestClient(self.module.app) as client:
+            hub, _ = self.watch(client)
+            for label, write, changed_model in table:
+                with self.subTest(label), mock.patch.object(hub, "refresh", mock.Mock(wraps=hub.refresh)) as refresh:
+                    self.assertLess(write(client).status_code, 300)
+
+                    self.assertEqual(refresh.call_args.args[2], changed_model)
 
     def test_after_a_partial_apply_what_was_written_shows_and_nothing_more(self):
         good = {"id": "c1", "op": "change", "kind": "entity", "name": "orders-api", "after": {"displayName": "Written"}, "reason": "r"}

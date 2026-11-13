@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from azure.core.exceptions import AzureError, ClientAuthenticationError, HttpResponseError
 
 import live_data
+import recording
 from config import (
+    HISTORY_RECORD_MAX_POINTS,
+    HISTORY_RECORD_MAX_TRANSITIONS,
+    HISTORY_SAFETY_SECONDS,
     HUB_ACCESS_RECHECK_SECONDS,
     HUB_ANNOTATION_SECONDS,
     HUB_GRACE_SECONDS,
@@ -30,6 +34,7 @@ from config import (
     HUB_QUEUE_SIZE,
     HUB_READ_CONCURRENCY,
     HUB_RING_SIZE,
+    HUB_TAIL_TRIES,
 )
 from obo import ConsentRequired, InteractionRequired
 
@@ -54,6 +59,10 @@ class HubSettings:
     annotation_seconds: float = HUB_ANNOTATION_SECONDS
     read_concurrency: int = HUB_READ_CONCURRENCY
     overlap_ms: int = HUB_OVERLAP_MS
+    tail_tries: int = HUB_TAIL_TRIES
+    record_late_ms: int = HISTORY_SAFETY_SECONDS * 1000
+    record_max_points: int = HISTORY_RECORD_MAX_POINTS
+    record_max_transitions: int = HISTORY_RECORD_MAX_TRANSITIONS
 
 
 class Refusal(Exception):
@@ -159,9 +168,14 @@ class Hub:
         self.known_transitions = set()
         self.known_annotations = set()
         self.last_transition = {}
-        self.pending_tail = set()
+        # Entities whose seen state change the history has not shown yet: when the earliest of them may have happened
+        # (`after`), when the latest may have (`last`), and how often the history was read for it.
+        self.pending = {}
+        self.read_began = None
         self.tail_not_before = 0.0
         self.annotations_at = 0.0
+        self.annotations_not_before = 0.0
+        self.writing = set()
         self.checked_at = manager.clock()
         self.ready = asyncio.Event()
         self.failure = None
@@ -173,6 +187,7 @@ class Hub:
         self.dirty = False
         # Counts those writes. A read that began before the latest one may predate it and cannot clear `dirty`.
         self.generation = 0
+        self.recorder = manager.recorder()
 
     # ----- viewers -----
 
@@ -240,8 +255,10 @@ class Hub:
         ]
 
     async def run(self):
+        """Polls at a fixed rate: the next read begins `delay` after the previous one began, whatever the work in between took."""
         delay = self.settings.poll_seconds
         while True:
+            began = self.manager.clock()
             try:
                 await self.cycle()
                 delay = self.settings.poll_seconds
@@ -253,7 +270,7 @@ class Hub:
                 return
             self.wake.clear()
             try:
-                await asyncio.wait_for(self.wake.wait(), delay)
+                await asyncio.wait_for(self.wake.wait(), max(0.0, began + delay - self.manager.clock()))
             except TimeoutError:
                 pass
 
@@ -324,8 +341,13 @@ class Hub:
         read = self.manager.read_state
         started = self.generation
         async with self.manager.semaphore:
+            began = self.wall()
             inventory, structure = await asyncio.to_thread(read, reader.user, self.selection)
         self.observed = self.wall()
+        if self.recorder is not None:
+            self.recorder.observed(int(began * 1000), int(self.observed * 1000), inventory, structure)
+        # A change this read shows happened after the previous read began.
+        changed_after, self.read_began = self.read_began or int(began * 1000), int(began * 1000)
         old = self.inventory
         if old is None:
             self.inventory, self.structure = inventory, structure
@@ -340,7 +362,8 @@ class Hub:
         for row in reports:
             self.known_reports.add((row["entity"], row["t"], row["reportId"]))
         timeline = {"points": points, "reports": reports}
-        timeline.update(await self.tail(reader, old, inventory))
+        # A health report can change a state and change it back between two polls: its entity's history is read too.
+        timeline.update(await self.tail(reader, old, inventory, {row["entity"] for row in reports}, changed_after))
         if not live_data.empty_timeline(timeline):
             payload["timeline"] = {part: rows for part, rows in timeline.items() if rows}
         self.inventory, self.structure = inventory, structure
@@ -349,6 +372,25 @@ class Hub:
         if payload:
             payload["observedAt"] = inventory["observedAt"]
             self.publish(payload)
+        self.keep()
+
+    def keep(self):
+        """Hands the days and weeks that closed, watched whole, to the history store (ADR 0011), in a task of its own so the
+        next poll does not wait for it."""
+        if self.recorder is None:
+            return
+        pieces = self.recorder.closed(int(self.wall() * 1000))
+        if not pieces:
+            return
+        task = asyncio.get_running_loop().create_task(self.write_kept(pieces))
+        self.writing.add(task)
+        task.add_done_callback(self.writing.discard)
+
+    async def write_kept(self, pieces):
+        try:
+            await asyncio.to_thread(self.manager.record, self.selection, pieces)
+        except Exception as error:  # what was recorded is also in Azure: losing it costs a read, never a viewer
+            logger.warning("hub recording not kept model=%s type=%s", self.selection[2], type(error).__name__)
 
     async def refresh(self, user):
         """Reads the model now, as the viewer who just wrote to it, and pushes what changed. False when the read failed: the snapshot is then not served until a read succeeds."""
@@ -370,51 +412,104 @@ class Hub:
             if self.dirty:
                 await self.poll(member)
 
-    async def tail(self, reader, old, inventory):
-        """New transitions of the entities whose state changed, and now and then the annotations: the history Azure holds that a snapshot does not."""
+    async def tail(self, reader, old, inventory, also=(), changed_after=0):
+        """New transitions of the entities whose state changed (and of `also`), and now and then the annotations: the history
+        Azure holds that a snapshot does not. An entity whose change the history has not shown yet is read again, from
+        before that change, on the next polls."""
         tail = self.manager.read_tail
         if tail is None:
             return {}
-        names = set(live_data.changed_states(old, inventory)) | self.pending_tail
+        seen = int(self.observed * 1000)
+        for name in live_data.changed_states(old, inventory):
+            entry = self.pending.setdefault(name, {"after": changed_after, "last": changed_after, "tries": 0})
+            entry["last"] = max(entry["last"], changed_after)
+            self.unsure(name, changed_after, seen)
         now = self.manager.clock()
-        if now < self.tail_not_before:
-            self.pending_tail = names
-            return {}
-        want_annotations = now - self.annotations_at >= self.settings.annotation_seconds
-        if not names and not want_annotations:
-            return {}
-        since = {name: self.last_transition.get(name, int(self.wall() * 1000) - 3600_000) - self.settings.overlap_ms for name in names}
-        try:
-            async with self.manager.semaphore:
-                found = await asyncio.to_thread(
-                    tail, reader.user, self.selection, since, [item["name"] for item in inventory["entities"]] if want_annotations else []
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            if credential_problem(error):
+        found = {"transitions": [], "annotations": []}
+        names = set(self.pending) | set(also)
+        if names and now >= self.tail_not_before:
+            since = {name: self.since(name, also, changed_after) for name in names}
+            try:
+                async with self.manager.semaphore:
+                    states = await asyncio.to_thread(tail, reader.user, self.selection, since, [])
+            except asyncio.CancelledError:
                 raise
-            self.pending_tail = names
-            if status_of(error) in (429, 503):
-                self.tail_not_before = now + min(self.settings.max_backoff_seconds, max(retry_after(error) or 0, BUSY_BACKOFF_SECONDS))
-            return {}
-        self.pending_tail = set()
-        if want_annotations:
-            self.annotations_at = now
-        transitions = live_data.merge_by_key(self.known_transitions, found.get("transitions", []), live_data.transition_key)
+            except Exception as error:
+                for name in set(also) - set(self.pending):  # a report's history that was not read may hide a change
+                    self.unsure(name, changed_after, seen)
+                if credential_problem(error):
+                    raise
+                if status_of(error) in (429, 503):
+                    self.tail_not_before = now + self.wait_after(error)
+            else:
+                self.settle_tail(since, states)
+                found["transitions"] = states.get("transitions", [])
+        if now - self.annotations_at >= self.settings.annotation_seconds and now >= self.annotations_not_before:
+            try:
+                async with self.manager.semaphore:
+                    notes = await asyncio.to_thread(tail, reader.user, self.selection, {}, [item["name"] for item in inventory["entities"]])
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:  # the annotations are read again on a later poll and never hold up the transitions
+                if credential_problem(error):
+                    raise
+                if status_of(error) in (429, 503):
+                    self.annotations_not_before = now + self.wait_after(error)
+            else:
+                self.annotations_at = now
+                found["annotations"] = notes.get("annotations", [])
+        transitions = live_data.merge_by_key(self.known_transitions, found["transitions"], live_data.transition_key)
         for row in transitions:
             self.last_transition[row["entity"]] = max(self.last_transition.get(row["entity"], 0), row["t"])
-        annotations = live_data.merge_by_key(self.known_annotations, found.get("annotations", []), lambda row: (row["entity"], row["id"], row["t"]))
+        annotations = live_data.merge_by_key(self.known_annotations, found["annotations"], lambda row: (row["entity"], row["id"], row["t"]))
         return {"transitions": transitions, "annotations": annotations}
+
+    def wait_after(self, error):
+        return min(self.settings.max_backoff_seconds, max(retry_after(error) or 0, BUSY_BACKOFF_SECONDS))
+
+    def since(self, name, also, changed_after):
+        """Where to read an entity's history from: its last known transition, or an hour back, but never after the earliest
+        change of it the history has not shown yet, nor after the previous read began for an entity that got a report."""
+        start = self.last_transition.get(name, int(self.wall() * 1000) - 3600_000)
+        if name in self.pending:
+            start = min(start, self.pending[name]["after"])
+        if name in also:
+            start = min(start, changed_after)
+        return start - self.settings.overlap_ms
+
+    def settle_tail(self, since, found):
+        """A read of the history ended: an entity whose latest seen change it shows is no longer pending, and the recording
+        knows its changes since the read began. One the history still does not show after a few reads stops being read
+        for it; the recording then leaves its week to Azure."""
+        cut = set(found.get("cut", []))
+        rows = found.get("transitions", [])
+        if self.recorder is not None:
+            self.recorder.transitions(rows)
+        for name, entry in list(self.pending.items()):
+            if name not in since:
+                continue
+            if name not in cut and any(row["entity"] == name and row["t"] >= entry["last"] for row in rows):
+                del self.pending[name]
+                if self.recorder is not None:
+                    self.recorder.confirmed(name, since[name])
+                continue
+            entry["tries"] += 1
+            if entry["tries"] >= self.settings.tail_tries:
+                del self.pending[name]
+
+    def unsure(self, name, after, seen):
+        if self.recorder is not None:
+            self.recorder.unsure(name, after, seen)
 
 
 class ModelHub:
     """All the hubs of the app: bounded in number, each bounded in viewers."""
 
-    def __init__(self, read_state, read_tail=None, settings=None, clock=time.monotonic, wall=time.time):
+    def __init__(self, read_state, read_tail=None, settings=None, clock=time.monotonic, wall=time.time, record=None):
         self.settings = settings or HubSettings()
         self.read_state = read_state
         self.read_tail = read_tail
+        self.record = record
         self.clock = clock
         self.wall = wall
         self.semaphore = asyncio.Semaphore(self.settings.read_concurrency)
@@ -424,14 +519,33 @@ class ModelHub:
     def hub_count(self):
         return len(self._hubs)
 
+    def recorder(self):
+        """What a new hub records for the history store, or None when nothing keeps it. A poll may end 1.5 poll intervals
+        after the previous one began, and a signal is recorded only when it is evaluated at most once every two intervals,
+        so every evaluation is seen by at least one poll."""
+        if self.record is None:
+            return None
+        poll_ms = int(self.settings.poll_seconds * 1000)
+        return recording.Recorder(
+            gap_ms=poll_ms * 3 // 2,
+            min_refresh_ms=poll_ms * 2,
+            late_ms=self.settings.record_late_ms,
+            max_points=self.settings.record_max_points,
+            max_transitions=self.settings.record_max_transitions,
+            states=self.read_tail is not None,
+        )
+
     def warm(self, selection):
         """The hub of a model that has a snapshot, or None."""
         hub = self._hubs.get(key_of(selection))
         return hub if hub is not None and hub.inventory is not None and not hub.dirty else None
 
-    async def refresh(self, selection, user):
-        """After a write the app made: reads the model of a warm hub at once. Nothing to do for a model nobody watches."""
+    async def refresh(self, selection, user, changed_model=False):
+        """After a write the app made: reads the model of a warm hub at once. Nothing to do for a model nobody watches. A
+        change to the model itself (an Apply) may have its signals evaluated out of turn: the days around it are not recorded."""
         hub = self._hubs.get(key_of(selection))
+        if hub is not None and changed_model and hub.recorder is not None:
+            hub.recorder.spoil(int(self.wall() * 1000))
         if hub is None or hub.inventory is None:
             return False
         return await hub.refresh(user)

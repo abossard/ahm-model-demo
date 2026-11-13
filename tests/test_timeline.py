@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "web" / "app"))
 
+import history_store  # noqa: E402
 import test_sessions_api as base  # noqa: E402
 import timeline  # noqa: E402
 
@@ -787,6 +788,48 @@ class TimelineApiTests(base.ApiCase):
 
     def test_the_route_does_not_run_on_the_event_loop(self):
         self.assertFalse(inspect.iscoroutinefunction(self.module.timeline_history))
+
+    def closed_day(self):
+        day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        return f"&from={(day - timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%SZ')}&to={(day - timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+
+    def test_every_request_says_what_it_cost_on_its_span_and_in_one_log_line(self):
+        kept = history_store.HistoryStore(history_store.MemoryBuckets())
+        query = "?include=signals&entity=orders-db" + self.closed_day()
+        costs = []
+        with mock.patch.object(self.module, "prewarm", mock.Mock()):
+            for label in ("first read", "another reader of the same store"):
+                self.module.timeline = timeline.TimelineReader(history=kept)
+                self.spans.clear()
+                with self.subTest(label), self.assertLogs("ahm-demo", level="INFO") as logs:
+                    response = self.get(query)
+
+                    self.assertEqual(response.status_code, 200, response.text)
+                    (span,) = [span for span in self.spans.get_finished_spans() if span.name == "healthmodel.timeline"]
+                    costs.append({key: span.attributes[f"timeline.{key}"] for key in ("azure_calls", "pieces_read", "pieces_stored", "memory", "written")})
+                    self.assertIn("timeline.duration_ms", span.attributes)
+                    self.assertTrue(any(f"timeline read model={MODEL} status=200 calls=" in line for line in logs.output))
+
+        self.assertEqual(costs[0], {"azure_calls": 1, "pieces_read": 1, "pieces_stored": 0, "memory": 0, "written": 3})
+        self.assertEqual(costs[1], {"azure_calls": 0, "pieces_read": 0, "pieces_stored": 1, "memory": 1, "written": 0})
+
+    def test_a_warm_store_serves_nobody_who_fails_the_access_check_and_only_an_admitted_request_starts_a_fill(self):
+        self.module.timeline = timeline.TimelineReader(history=history_store.HistoryStore(history_store.MemoryBuckets()))
+        opened = mock.Mock(return_value=False)
+        query = "/api/timeline?include=signals,states" + self.closed_day()
+        with mock.patch.object(self.module, "prewarm", SimpleNamespace(opened=opened, close=lambda: None)), TestClient(self.module.app) as client:
+            warm = client.get(query)
+            self.health.deny(base.SUB, base.GROUP, MODEL)
+            refused = [
+                client.get(query),
+                client.get(query, headers={"If-None-Match": warm.headers["etag"]}),
+                client.get(query.replace("include=signals,states", "include=structure")),
+            ]
+
+        self.assertEqual(warm.status_code, 200)
+        self.assertEqual([(response.status_code, response.json()["error"]["code"]) for response in refused], [(400, "unknown_model")] * 3)
+        self.assertEqual(opened.call_count, 1)
+        self.assertEqual(opened.call_args.args[3], (base.SUB, base.GROUP, MODEL))
 
 
 MODEL = base.MODEL

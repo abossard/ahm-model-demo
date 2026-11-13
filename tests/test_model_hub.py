@@ -3,8 +3,10 @@ import copy
 import sys
 import threading
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 
@@ -48,6 +50,7 @@ class Azure:
         self.tails = []
         self.tail_result = {}
         self.tail_error = None
+        self.annotation_error = None
 
     def read_state(self, user, selection):
         self.reads.append(user.oid)
@@ -59,6 +62,8 @@ class Azure:
         self.tails.append((user.oid, dict(since), annotations))
         if self.tail_error:
             raise self.tail_error
+        if annotations and self.annotation_error:
+            raise self.annotation_error
         return copy.deepcopy(self.tail_result)
 
     def change(self, *entities):
@@ -104,7 +109,7 @@ async def until(check, seconds=2.0):
 
 
 class HubCase(unittest.IsolatedAsyncioTestCase):
-    def make(self, azure=None, tail=True, wall=None, clock=None, **settings):
+    def make(self, azure=None, tail=True, wall=None, clock=None, record=None, **settings):
         self.azure = azure or Azure()
         self.hubs = model_hub.ModelHub(
             self.azure.read_state,
@@ -112,6 +117,7 @@ class HubCase(unittest.IsolatedAsyncioTestCase):
             model_hub.HubSettings(**{**FAST, **settings}),
             clock=clock or __import__("time").monotonic,
             wall=wall or __import__("time").time,
+            record=record,
         )
         self.addAsyncCleanup(self.stop_all)
         return self.hubs
@@ -581,7 +587,7 @@ class TailBackoffTests(HubCase):
                 waited = len(azure.tails)
                 clock.now += 2
                 azure.tail_error = None
-                await until(lambda: len(azure.tails) == 2)
+                await until(lambda: len(azure.tails) >= 2)
 
                 self.assertEqual(waited, 1, "not read again while the service asked to wait")
                 self.assertEqual(list(azure.tails[1][1]), ["a"], "the entity that was waiting is read after the wait")
@@ -618,6 +624,226 @@ class BackoffTests(HubCase):
         self.assertLess(failing, 15, "backing off, not hammering")
         azure.errors.clear()
         del sub
+
+
+DAY_S = 24 * 3600
+DAY_ONE_S = 2898 * DAY_S
+
+
+class Watched(Azure):
+    """A model whose signal is evaluated every 30 minutes on the wall clock the hub reads."""
+
+    def __init__(self, wall):
+        super().__init__(entity("a"))
+        self.wall = wall
+
+    def read_state(self, user, selection):
+        evaluated = int(self.wall.now) // 1800 * 1800
+        at = datetime.fromtimestamp(evaluated, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        self.state = inventory(entity("a", at=at, value=float(evaluated % 97)))
+        state, _ = super().read_state(user, selection)
+        return state, [{"name": "a", "signals": [{"name": "cpu", "refreshInterval": "PT30M"}]}]
+
+
+class RecordingTests(HubCase):
+    async def watch(self, until_s, during=None, **settings):
+        """Polls every 10 minutes of the wall clock from before DAY_ONE until `until_s`; `during(hub, user, now_s)` runs before each poll."""
+        wall = SimpleNamespace(now=DAY_ONE_S - 600)
+        kept = []
+        self.make(Watched(wall), wall=lambda: wall.now, poll_seconds=600, record=lambda selection, pieces: kept.extend(pieces), **settings)
+        user = person("ada")
+        await self.join(user)
+        hub = self.hubs.warm(SELECTION)
+        member = hub.members[0]
+        while wall.now < until_s:
+            wall.now += 600
+            if during is not None:
+                await during(hub, user, wall.now)
+            await hub.poll(member)
+        await until(lambda: not hub.writing)
+        return kept
+
+    async def test_a_day_watched_whole_is_handed_to_the_store_once_it_closed(self):
+        before = await self.watch(DAY_ONE_S + DAY_S + 600)
+        await self.stop_all()
+        kept = await self.watch(DAY_ONE_S + DAY_S + 1200)
+
+        self.assertEqual(before, [], "not before the safety margin after the day passed")
+        self.assertEqual([piece[:4] for piece in kept], [("signal", "a", "cpu", DAY_ONE_S * 1000)])
+        self.assertEqual(len(kept[0][4]["points"]), 48)
+
+    async def test_an_apply_leaves_the_day_it_happened_on_to_azure_and_a_health_report_does_not(self):
+        table = [("an Apply", True, []), ("a health report", False, [("signal", "a", "cpu", DAY_ONE_S * 1000)])]
+        for label, changed_model, expected in table:
+            with self.subTest(label):
+
+                async def write_at_three(hub, user, now_s, changed_model=changed_model):
+                    if now_s == DAY_ONE_S + 3 * 3600:
+                        self.assertTrue(await self.hubs.refresh(SELECTION, user, changed_model))
+
+                kept = await self.watch(DAY_ONE_S + DAY_S + 1200, write_at_three)
+                await self.stop_all()
+
+                self.assertEqual([piece[:4] for piece in kept], expected)
+
+    async def test_writing_what_was_recorded_holds_up_neither_the_next_poll_nor_a_write_of_the_app(self):
+        wall = SimpleNamespace(now=DAY_ONE_S - 600)
+        writing, release = threading.Event(), threading.Event()
+
+        def record(selection, pieces):
+            writing.set()
+            release.wait(2)
+
+        self.make(Watched(wall), wall=lambda: wall.now, poll_seconds=600, record=record)
+        user = person("ada")
+        await self.join(user)
+        hub = self.hubs.warm(SELECTION)
+        while not writing.is_set():
+            wall.now += 600
+            await hub.poll(hub.members[0])
+        await asyncio.to_thread(writing.wait, 2)
+
+        reads = len(self.azure.reads)
+        await asyncio.wait_for(hub.poll(hub.members[0]), 1)
+        refreshed = await asyncio.wait_for(self.hubs.refresh(SELECTION, user), 1)
+
+        self.assertEqual((len(self.azure.reads) - reads, refreshed, hub.polling.locked(), len(hub.writing)), (2, True, False, 1))
+        release.set()
+        await until(lambda: not hub.writing)
+
+    async def test_the_poller_keeps_its_rate_whatever_a_read_takes(self):
+        for read_seconds in (0.0, 0.08):
+            with self.subTest(read_seconds=read_seconds):
+                azure = Azure()
+                starts = []
+                original = azure.read_state
+
+                def slow(user, selection, original=original, starts=starts, read_seconds=read_seconds):
+                    starts.append(__import__("time").monotonic())
+                    __import__("time").sleep(read_seconds)
+                    return original(user, selection)
+
+                azure.read_state = slow
+                self.make(azure, poll_seconds=0.1)
+                await self.join(person("ada"))
+                await until(lambda: len(starts) >= 6, 3)
+                await self.stop_all()
+
+                intervals = [b - a for a, b in zip(starts[1:], starts[2:])]
+                self.assertLess(sum(intervals) / len(intervals), 0.15, "a poll every 0.1 s, not 0.1 s after each read ended")
+
+    async def test_a_hub_that_keeps_nothing_records_nothing(self):
+        self.make()
+        await self.join(person("ada"))
+
+        self.assertIsNone(self.hubs.warm(SELECTION).recorder)
+
+    async def test_a_new_health_report_reads_its_entity_history_even_when_the_state_did_not_change(self):
+        report = lambda report_id: {"name": "web-ui-health-report", "healthState": "Healthy", "value": 1, "reportedAt": f"2026-11-11T10:0{report_id}:00Z", "reportId": f"r{report_id}"}  # noqa: E731
+        self.make(Azure({**entity("a"), "signals": [report(1)]}, entity("b")))
+        sub = await self.join(person("ada"))
+        self.azure.change({**entity("a"), "signals": [report(2)]}, entity("b"))
+
+        await self.drain(sub, 1)
+
+        self.assertEqual([list(since) for _, since, _ in self.azure.tails], [["a"]])
+
+
+class PendingChangeTests(HubCase):
+    """A state change the hub saw is read from the entity's history from before it, until the history shows it."""
+
+    async def start(self, wall, clock=None, **settings):
+        self.make(wall=lambda: wall.now, clock=clock, poll_seconds=600, record=lambda selection, pieces: None, **settings)
+        await self.join(person("ada"))
+        hub = self.hubs.warm(SELECTION)
+        hub.recorder.confirmed = mock.Mock(wraps=hub.recorder.confirmed)
+        return hub
+
+    async def test_a_change_is_read_from_before_it_and_stays_pending_until_the_history_shows_it(self):
+        row = lambda t: {"entity": "a", "t": t, "from": 1, "to": 2, "reason": None}  # noqa: E731
+        table = [
+            ("the history shows the change", lambda after: [row(after + 1000)], [], False),
+            ("the history lags the snapshot", lambda after: [], [], True),
+            ("only an older transition came back", lambda after: [row(after - 1000)], [], True),
+            ("the read was cut", lambda after: [row(after + 1000)], ["a"], True),
+        ]
+        for label, rows, cut, pending in table:
+            with self.subTest(label):
+                wall = SimpleNamespace(now=1_000_000.0)
+                hub = await self.start(wall)
+                after = int(wall.now * 1000)
+                self.azure.tail_result = {"transitions": rows(after), "cut": cut}
+                wall.now += 30
+                self.azure.change(entity("a", "Degraded"), entity("b"))
+
+                await hub.poll(hub.members[0])
+
+                self.assertLessEqual(self.azure.tails[-1][1]["a"], after - hub.settings.overlap_ms)
+                self.assertEqual(("a" in hub.pending, hub.recorder.confirmed.called), (pending, not pending))
+                await self.stop_all()
+
+    async def test_a_change_the_history_never_shows_stops_being_read_and_its_week_stays_left_to_azure(self):
+        wall = SimpleNamespace(now=1_000_000.0)
+        hub = await self.start(wall, tail_tries=2)
+        self.azure.change(entity("a", "Degraded"), entity("b"))
+        for _ in range(3):
+            wall.now += 30
+            await hub.poll(hub.members[0])
+
+        self.assertEqual([list(since) for _, since, _ in self.azure.tails], [["a"], ["a"]])
+        self.assertNotIn("a", hub.pending)
+        self.assertFalse(hub.recorder.confirmed.called)
+        self.assertTrue(hub.recorder._hole_in("a", 0, int(wall.now * 1000)))
+
+    async def test_a_history_that_could_not_be_read_for_hours_is_read_from_before_the_first_change_it_missed(self):
+        table = [("a server error", http_error(500)), ("a busy service", http_error(429)), ("a failing exchange", ClientAuthenticationError("x"))]
+        for label, error in table:
+            with self.subTest(label):
+                wall, clock = SimpleNamespace(now=1_000_000.0), SimpleNamespace(now=50.0)
+                hub = await self.start(wall, lambda: clock.now)
+                after = int(wall.now * 1000)
+                self.azure.tail_error = error
+                self.azure.change(entity("a", "Degraded"), entity("b"))
+                for _ in range(5):
+                    wall.now += 1800
+                    clock.now += 1800
+                    try:
+                        await hub.poll(hub.members[0])
+                    except ClientAuthenticationError:
+                        pass
+                self.azure.tail_error = None
+                wall.now += 1800
+                clock.now += 1800
+                # A poll that failed did not keep what it read, so the next one sees the change again: the history must show the latest.
+                self.azure.tail_result = {"transitions": [{"entity": "a", "t": int(wall.now * 1000) - 1000, "from": 1, "to": 2, "reason": None}]}
+
+                await hub.poll(hub.members[0])
+
+                since = [call[1] for call in self.azure.tails if call[1]][-1]
+                self.assertLessEqual(since["a"], after - hub.settings.overlap_ms)
+                self.assertNotIn("a", hub.pending)
+                self.assertEqual(hub.recorder.confirmed.call_args.args, ("a", since["a"]))
+                await self.stop_all()
+
+    async def test_a_failed_read_of_the_annotations_does_not_hold_up_the_transitions(self):
+        table = [("a busy service", http_error(429), 1), ("a server error", http_error(500), 2)]
+        for label, error, annotation_reads in table:
+            with self.subTest(label):
+                wall, clock = SimpleNamespace(now=1_000_000.0), SimpleNamespace(now=50.0)
+                hub = await self.start(wall, lambda: clock.now, annotation_seconds=0)
+                after = int(wall.now * 1000)
+                self.azure.annotation_error = error
+                self.azure.tail_result = {"transitions": [{"entity": "a", "t": after + 1000, "from": 1, "to": 2, "reason": None}]}
+                self.azure.change(entity("a", "Degraded"), entity("b"))
+                wall.now += 30
+
+                await hub.poll(hub.members[0])
+                await hub.poll(hub.members[0])
+
+                self.assertNotIn("a", hub.pending)
+                self.assertTrue(hub.recorder.confirmed.called)
+                self.assertEqual(len([call for call in self.azure.tails if call[2]]), annotation_reads)
+                await self.stop_all()
 
 
 if __name__ == "__main__":

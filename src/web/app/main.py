@@ -85,6 +85,7 @@ from sessions_store import (
     utc_now,
 )
 from model_hub import HubSettings, ModelHub, Refusal
+from prewarm import Prewarm
 from timeline import CLOSED_CACHE_CONTROL, TimelineReader, TimelineRequestError, build_structure, matches
 from task_runner import AgentsBusy, TaskRunner, TaskRunning, TooManySubscribers, UserBusy
 
@@ -158,17 +159,23 @@ def warm_structure(selection):
     return hub.structure if hub else None
 
 
-history = history_store.LayeredHistory(
-    history_store.MemoryHistory(),
+history_container = (
     None
     if RUNTIME_SCOPE["sessions_container_url"] == MEMORY_STORE_URL
-    else history_store.BlobHistory(ContainerClient.from_container_url(RUNTIME_SCOPE["sessions_container_url"], credential=credential)),
+    else ContainerClient.from_container_url(RUNTIME_SCOPE["sessions_container_url"], credential=credential)
+)
+history = history_store.HistoryStore(
+    history_store.MemoryBuckets(),
+    history_container and history_store.BlobBuckets(history_container),
+    history_container and history_store.LegacyHistory(history_container),
 )
 timeline = TimelineReader(history=history, structure=warm_structure)
+prewarm = Prewarm()
 live_hub = ModelHub(
     read_state,
     timeline.read_tail,
     HubSettings(**({"poll_seconds": float(os.environ["HUB_POLL_SECONDS"])} if os.environ.get("HUB_POLL_SECONDS", "").replace(".", "", 1).isdigit() else {})),
+    record=timeline.keep,
 )
 
 
@@ -187,6 +194,7 @@ async def recover_tasks():
 async def lifespan(application):
     application.state.recovery = asyncio.create_task(recover_tasks())
     yield
+    prewarm.close()
     application.state.recovery.cancel()
     await asyncio.gather(application.state.recovery, return_exceptions=True)
     await runner.shutdown()
@@ -450,10 +458,10 @@ async def health_model_stream(request: Request, caller: Authed):
     )
 
 
-async def _refresh_live(selection, user):
+async def _refresh_live(selection, user, changed_model=False):
     """A write changed the model: a warm hub reads it again now, so the next read and the stream show the change."""
     try:
-        await live_hub.refresh(selection, user)
+        await live_hub.refresh(selection, user, changed_model)
     except Exception:
         logger.warning("live refresh failed after a write")
 
@@ -493,6 +501,7 @@ def timeline_history(request: Request, caller: Authed):
     selection, rejected = _selected_model(request, user, caller)
     if rejected:
         return rejected
+    started = time.monotonic()
     with tracer.start_as_current_span("healthmodel.timeline", kind=SpanKind.CLIENT) as span:
         span.set_attribute("cloudhealth.operation", "timeline.read")
         span.set_attribute("cloudhealth.model", selection[2])
@@ -500,9 +509,12 @@ def timeline_history(request: Request, caller: Authed):
             prepared = timeline.prepare(
                 caller, user, selection, request.query_params, request.query_params.getlist("entity"), request.query_params.getlist("signal")
             )
+            # Only after the access check above: the fill reads as this user, and what it keeps is served only to admitted callers.
+            prewarm.opened(timeline, caller, user, selection)
             # The caller was admitted above: a closed window the browser still holds costs no history call and no body.
             if matches(request.headers.get("if-none-match"), prepared.etag):
                 span.set_attribute("cloudhealth.not_modified", True)
+                _timeline_timing(span, selection, prepared.tally, started, 304)
                 return Response(status_code=304, headers=prepared.headers())
             body = prepared.read()
         except TimelineRequestError as error:
@@ -510,7 +522,23 @@ def timeline_history(request: Request, caller: Authed):
         except AzureError as error:
             return sdk_error_response(error, "timeline.read")
         span.set_attribute("cloudhealth.partial", body["partial"])
+        _timeline_timing(span, selection, prepared.tally, started, 200)
         return JSONResponse(body, headers=prepared.headers(body))
+
+
+def _timeline_timing(span, selection, tally, started, status):
+    """What a timeline request cost, on its span and in one log line: Azure calls, pieces served from the history store or
+    read, buckets from memory or blob storage, and the time it took."""
+    counts = tally.counts()
+    elapsed = int((time.monotonic() - started) * 1000)
+    for name, value in counts.items():
+        span.set_attribute(f"timeline.{name}", value)
+    span.set_attribute("timeline.duration_ms", elapsed)
+    logger.info(
+        "timeline read model=%s status=%d calls=%d stored=%d read=%d memory=%d blob=%d absent=%d legacy=%d written=%d ms=%d",
+        selection[2], status, counts["azure_calls"], counts["pieces_stored"], counts["pieces_read"], counts["memory"],
+        counts["blob"], counts["absent"], counts["legacy"], counts["written"], elapsed,
+    )
 
 
 @api.get("/entities/{entity_name:path}")
@@ -1099,7 +1127,7 @@ async def task_apply(sid: str, tid: str, request: Request, caller: Authed):
         return sdk_error_response(error, "apply.read")
     finally:
         # Whatever was written, whole or in part, shows at once.
-        await _refresh_live(apply.reference(task["target"]), user)
+        await _refresh_live(apply.reference(task["target"]), user, changed_model=True)
     return JSONResponse({key: outcome[key] for key in ("outcome", "written", "failed", "expanded")})
 
 

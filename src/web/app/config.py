@@ -106,10 +106,36 @@ HUB_ACCESS_RECHECK_SECONDS = 300
 HUB_ANNOTATION_SECONDS = 300
 HUB_READ_CONCURRENCY = 4
 HUB_OVERLAP_MS = 2 * 60 * 1000
-HISTORY_BUCKET_SECONDS = 24 * 3600
+# Polls a seen state change is read from its history before the hub stops waiting for the history to show it.
+HUB_TAIL_TRIES = 10
 HISTORY_SAFETY_SECONDS = 15 * 60
-HISTORY_MEMORY_BUCKETS = 4096
-HISTORY_PREFIX = "history/v1"
+# The tiles of past history held in memory, by the bytes of their stored text (ADR 0011).
+HISTORY_MEMORY_BYTES = 64 * 1024 * 1024
+HISTORY_PREFIX = "history/v2"
+# The first layout, one blob per history and bucket: still read where the new one has nothing, until it ages out of the 30 days.
+HISTORY_LEGACY_PREFIX = "history/v1"
+HISTORY_LEGACY_MODELS = 32
+HISTORY_LEGACY_RETRY_SECONDS = 60
+HISTORY_WRITE_ATTEMPTS = 3
+# Blobs are written after the answer has gone: this many at once, and at most this many waiting (more are left unwritten).
+HISTORY_WRITERS = 4
+HISTORY_WRITE_QUEUE = 256
+# What a live hub holds of the days and weeks it records, at most, before it gives the oldest up to Azure.
+HISTORY_RECORD_MAX_POINTS = 300_000
+HISTORY_RECORD_MAX_TRANSITIONS = 20_000
+# Filling a model's missing history in the background when a user opens it, with that user's sign-in (ADR 0011).
+PREWARM_CONCURRENCY = 2
+PREWARM_GLOBAL_CONCURRENCY = 4
+PREWARM_CALLS_PER_MINUTE = 300
+PREWARM_MAX_CALLS = 8000
+PREWARM_MAX_FILLS = 2
+PREWARM_RETRY_SECONDS = 600
+PREWARM_BUSY_SECONDS = 60
+PREWARM_MAX_BACKOFF_SECONDS = 300
+PREWARM_BUSY_RETRIES = 3
+PREWARM_ERROR_LIMIT = 3
+PREWARM_TOKEN_MARGIN_SECONDS = 120
+PREWARM_MODELS = 256
 CANONICAL_SIGNAL_NAME = "web-ui-health-report"
 RESERVED_SIGNAL_NAME = "database-connectivity-probe"
 HEALTH_STATES = ("Healthy", "Degraded", "Unhealthy", "Unknown")
