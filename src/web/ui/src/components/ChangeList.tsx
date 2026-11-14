@@ -190,7 +190,7 @@ function VerificationChips({ change }: { readonly change: DiffChange }): JSX.Ele
                 </Button>
               </PopoverTrigger>
               <PopoverSurface data-testid={`verification-popover-${change.id}-${status}`}>
-                <div className={styles.verification}>
+                <div className={styles.verification} tabIndex={0} role="region" aria-label={`Signal tests: ${rows.length} ${STATUS_LABEL[status]}`}>
                   {rows.map((row) => (
                     <div key={`${row.entity}/${row.signal}`} className={styles.verificationRow}>
                       <Text weight="semibold">

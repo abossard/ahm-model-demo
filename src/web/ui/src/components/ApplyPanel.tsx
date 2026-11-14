@@ -59,7 +59,7 @@ function ApplyDialog({
   const nameOf = nameLookup(view);
   const needed = new Set(added);
   return (
-    <Dialog open={open} onOpenChange={(_, data) => (data.open ? undefined : onClose())}>
+    <Dialog open={open} modalType="alert" onOpenChange={(_, data) => (data.open ? undefined : onClose())}>
       <DialogSurface data-testid="apply-dialog">
         <DialogBody>
           <DialogTitle>Change the live model {view.target.name}?</DialogTitle>
@@ -84,7 +84,7 @@ function ApplyDialog({
             </ul>
           </DialogContent>
           <DialogActions>
-            <Button appearance="secondary" onClick={onClose} data-testid="apply-cancel">
+            <Button appearance="secondary" autoFocus onClick={onClose} data-testid="apply-cancel">
               Cancel
             </Button>
             <Button
