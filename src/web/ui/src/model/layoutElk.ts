@@ -10,7 +10,13 @@ export type ElkAlgorithm = "layered" | "radial";
 let elk: Promise<InstanceType<(typeof import("elkjs/lib/elk.bundled.js"))["default"]>> | undefined;
 
 function elkEngine() {
-  elk ??= import("elkjs/lib/elk.bundled.js").then(({ default: ELK }) => new ELK());
+  elk ??= import("elkjs/lib/elk.bundled.js").then(
+    ({ default: ELK }) => new ELK(),
+    (error: unknown) => {
+      elk = undefined;
+      throw error;
+    },
+  );
   return elk;
 }
 

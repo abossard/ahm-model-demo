@@ -1,9 +1,28 @@
-import { Suspense, createElement, lazy, type ComponentType } from "react";
+import { Component, Suspense, createElement, lazy, type ComponentType, type ReactNode } from "react";
+import { MessageBar, MessageBarBody, MessageBarTitle } from "@fluentui/react-components";
 import { DEFAULT_VIEW, VIEWS, type BuiltViewId, type ViewId } from "../model/views";
 import type { ViewDefinition, ViewProps } from "./types";
 import { CausePathView } from "./CausePathView";
 import { OutlineControls } from "./OutlineControls";
 import { ZoomControls } from "./ZoomControls";
+
+/** Shows a view that failed to load as a message, so the rest of the app stays up. */
+class ViewLoadBoundary extends Component<{ readonly children: ReactNode }, { readonly failed: boolean }> {
+  override state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  override render(): ReactNode {
+    if (!this.state.failed) return this.props.children;
+    return createElement(
+      MessageBar,
+      { intent: "error", role: "alert" },
+      createElement(MessageBarBody, null, createElement(MessageBarTitle, null, "This view could not load"), "Reload the page to try again."),
+    );
+  }
+}
 
 /**
  * A view fetched when it is first shown. The fallback fills the same flex space the view does, so nothing moves
@@ -11,7 +30,12 @@ import { ZoomControls } from "./ZoomControls";
  */
 function lazyView(load: () => Promise<ComponentType<ViewProps>>): ComponentType<ViewProps> {
   const View = lazy(async () => ({ default: await load() }));
-  return (props) => createElement(Suspense, { fallback: createElement("div", { style: { flex: 1, minWidth: 0, minHeight: 0 } }) }, createElement(View, props));
+  return (props) =>
+    createElement(
+      ViewLoadBoundary,
+      null,
+      createElement(Suspense, { fallback: createElement("div", { style: { flex: 1, minWidth: 0, minHeight: 0 } }) }, createElement(View, props)),
+    );
 }
 
 const SwimlanesView = lazyView(async () => (await import("./SwimlanesView")).SwimlanesView);
