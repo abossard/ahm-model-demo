@@ -19,6 +19,7 @@ interface ForceNode extends SimulationNodeDatum {
 }
 
 const TICKS = 300;
+const SLICE_MS = 50;
 const RING_STEP = 120;
 const MAX_INTERACTION_TICKS = 360;
 const LINKED_SEED_DISTANCE = 180;
@@ -30,11 +31,17 @@ interface SessionCallbacks {
   readonly reducedMotion: boolean;
 }
 
+function yieldToMain(): Promise<void> {
+  const scheduler = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  return scheduler?.yield ? scheduler.yield() : new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 /**
  * Runs headless and deterministically: the simulation is stopped before it can start its animation
- * timer, seeded from the caller's node order, then ticked a fixed number of times.
+ * timer, seeded from the caller's node order, then ticked a fixed number of times. The ticks run in
+ * slices of about 50 ms, so input is handled between them.
  */
-export function forceLayout(
+export async function forceLayout(
   entities: readonly Entity[],
   relationships: readonly Relationship[],
   sizeOf: SizeOf,
@@ -72,7 +79,14 @@ export function forceLayout(
     .force("center", forceCenter(0, 0))
     .stop();
 
-  simulation.tick(TICKS);
+  let deadline = performance.now() + SLICE_MS;
+  for (let tick = 0; tick < TICKS; tick += 1) {
+    simulation.tick();
+    if (performance.now() >= deadline) {
+      await yieldToMain();
+      deadline = performance.now() + SLICE_MS;
+    }
+  }
 
   const minX = Math.min(...nodes.map((node) => (node.x ?? 0) - node.radius));
   const minY = Math.min(...nodes.map((node) => (node.y ?? 0) - node.radius));
@@ -86,7 +100,7 @@ export function forceLayout(
     });
   }
 
-  return Promise.resolve({ positions, ...boundsOf(positions, sizes) });
+  return { positions, ...boundsOf(positions, sizes) };
 }
 
 function pointToCenter(point: Point, size: NodeSize): Point {
