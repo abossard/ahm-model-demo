@@ -4,7 +4,7 @@ import type { ConnectionPolicy, EdgeStyle } from "../model/edgeRouting";
 import { persistCardSignals, readStoredCardSignals } from "../model/cardSignals";
 import { persistOrders, persistSortKey, readStoredOrders, readStoredSortKey, orderKey, type CustomOrders, type ModelOrder } from "../model/customOrder";
 import { SORT_CHOICES, type SortKey } from "../model/ordering";
-import type { ThemeName } from "../model/theme";
+import { detectSystemTheme, readStoredTheme, type ThemeName } from "../model/theme";
 import { DEFAULT_VIEW, persistView, readStoredView, viewFromSearch, type ViewId } from "../model/views";
 import type { HealthState } from "../model/types";
 import type { Store } from "./store";
@@ -119,8 +119,12 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
   view: DEFAULT_VIEW,
   openChips: [],
 
-  initializeTheme: (theme) => set({ theme, themeExplicit: false }),
-  setTheme: (theme) => set({ theme, themeExplicit: true }),
+  // A theme this browser kept is a choice; without one the page follows the system.
+  initializeTheme: (theme) =>
+    set({ theme, themeExplicit: typeof window !== "undefined" && readStoredTheme(() => window.localStorage) !== null }),
+  // Choosing what the system already shows is going back to following it, so nothing is kept.
+  setTheme: (theme) =>
+    set({ theme, themeExplicit: typeof window === "undefined" || theme !== detectSystemTheme(window) }),
   setAutoRefresh: (autoRefreshMs) => set({ autoRefreshMs }),
   // The countdown that an accepted report starts ends by refreshing the model.
   tickRefreshCountdown: () => {

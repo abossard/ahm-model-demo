@@ -16,7 +16,7 @@ import {
 import { healthVariables } from "../model/palette";
 import { searchFromLocation } from "../model/selection";
 import { timelineParams } from "../model/timelineUrl";
-import { applyTheme, persistTheme, type ThemeName } from "../model/theme";
+import { applyTheme, persistTheme, watchSystemTheme, type ThemeName } from "../model/theme";
 import { actions, useStore } from "../store/store";
 import { GraphView } from "./GraphView";
 import { MomentBar } from "./MomentBar";
@@ -149,9 +149,12 @@ export function App(): JSX.Element {
   }, [selected, sessionId, taskSeq, view, timelineOpen, timelineView, timelineFollow, timelineFollowPaused, timelineFullscreen, moment]);
 
   useEffect(() => {
-    applyTheme(theme, document);
-    if (themeExplicit) persistTheme(theme, window);
+    applyTheme(theme, document, themeExplicit);
+    persistTheme(theme, themeExplicit, window);
   }, [theme, themeExplicit]);
+
+  // Without a choice of the viewer, the page follows the operating system as it changes.
+  useEffect(() => (themeExplicit ? undefined : watchSystemTheme(window, actions.setTheme)), [themeExplicit]);
 
   return (
     // Layout styles belong on the inner shell: the provider copies its own classes onto every portal.

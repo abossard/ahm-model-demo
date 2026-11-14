@@ -132,13 +132,35 @@ describe("ui state collections", () => {
 });
 
 describe("ui state theme", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.localStorage.clear();
+  });
+
+  function systemIs(theme: "light" | "dark"): void {
+    vi.stubGlobal("matchMedia", () => ({ matches: theme === "dark" }));
+  }
+
   it.each([
-    { action: "initializeTheme", explicit: false },
-    { action: "setTheme", explicit: true },
-  ] as const)("$action records the theme as explicit=$explicit", ({ action, explicit }) => {
-    actions[action]("dark");
+    { stored: null, explicit: false },
+    { stored: "dark", explicit: true },
+    { stored: "invalid", explicit: false },
+  ])("initializeTheme with $stored kept records explicit=$explicit", ({ stored, explicit }) => {
+    if (stored) window.localStorage.setItem("health-pulse-theme", stored);
+    actions.initializeTheme("dark");
     const { theme, themeExplicit } = useStore.getState();
     expect({ theme, themeExplicit }).toEqual({ theme: "dark", themeExplicit: explicit });
+  });
+
+  it.each([
+    { system: "light", chosen: "dark", explicit: true },
+    { system: "dark", chosen: "dark", explicit: false },
+    { system: "dark", chosen: "light", explicit: true },
+  ] as const)("setTheme $chosen on a $system system records explicit=$explicit", ({ system, chosen, explicit }) => {
+    systemIs(system);
+    actions.setTheme(chosen);
+    const { theme, themeExplicit } = useStore.getState();
+    expect({ theme, themeExplicit }).toEqual({ theme: chosen, themeExplicit: explicit });
   });
 });
 
