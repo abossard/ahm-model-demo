@@ -13,11 +13,11 @@
 .tl-swatch[data-state="Unhealthy"] { --quiet: 25%; }
 .tl-swatch[data-state="Unknown"] { --quiet: 84%; }
 .tl-swatch[data-solid] { background-image: none; }
-.tl-swatch[data-state="Healthy"] { background: var(--healthy-dot); }
-.tl-swatch[data-state="Degraded"] { background: var(--degraded-dot); }
-.tl-swatch[data-state="Unhealthy"] { background: var(--unhealthy-dot); }
-.tl-swatch[data-state="Unknown"] { background: var(--unknown-dot); }
-.tl-swatch[data-state="Deleted"] { background: var(--deleted-border); }
+.tl-swatch[data-state="Healthy"] { background-color: var(--healthy-dot); }
+.tl-swatch[data-state="Degraded"] { background-color: var(--degraded-dot); }
+.tl-swatch[data-state="Unhealthy"] { background-color: var(--unhealthy-dot); }
+.tl-swatch[data-state="Unknown"] { background-color: var(--unknown-dot); }
+.tl-swatch[data-state="Deleted"] { background-color: var(--deleted-border); }
 .tl-mark { color: var(--colorNeutralForeground1); line-height: 1; }
 .tl-mark[data-mark="annotation"] { color: var(--colorBrandForeground1); }
 .tl-pin { display: inline-block; width: 2px; height: 12px; background: var(--colorBrandForeground1); flex-shrink: 0; }

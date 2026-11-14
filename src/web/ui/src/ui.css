@@ -139,22 +139,9 @@ body {
   box-shadow: 0 0 0 3px var(--mark-ring), var(--card-shadow-lift);
 }
 
-/* A card on its way to another place: it stays where its place would be, dimmed, and a see-through copy follows the pointer. */
-.entity-node.is-dragging {
-  opacity: 0.35;
-}
-
+/* A card on its way to another place is dimmed and followed by a copy, as views/reorder.css draws it; the copy of a card also lifts. */
 .entity-node.is-ghost {
-  opacity: 0.6;
-  pointer-events: none;
-  cursor: grabbing;
   box-shadow: var(--shadow16);
-}
-
-.entity-node.is-ghost.is-blocked {
-  opacity: 0.4;
-  outline: 2px dashed var(--colorPaletteRedBorder2);
-  outline-offset: 3px;
 }
 
 .drop-indicator {
@@ -167,21 +154,6 @@ body {
 
 .topology--reordering .entity-node {
   cursor: grabbing;
-}
-
-/* The others make room as the card passes over the places; the copy follows the pointer without lag. */
-.topology--reordering .react-flow__node {
-  transition: transform 160ms ease;
-}
-
-.topology--reordering .react-flow__node[data-id="__ghost__"] {
-  transition: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .topology--reordering .react-flow__node {
-    transition: none;
-  }
 }
 
 .entity-node__badge {
@@ -821,7 +793,7 @@ textarea {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--colorNeutralStroke1, #8a8a8a) transparent;
+  scrollbar-color: var(--colorNeutralStrokeAccessible, #8a8a8a) transparent;
 }
 
 /* An explanation that opens under its key: the rows grow from nothing, so what is below slides rather than jumps. */
@@ -879,27 +851,36 @@ textarea {
   animation: hp-from-above var(--hp-settle) var(--hp-ease);
 }
 
-/* While live, the dot breathes: slow enough to read as alive, not as an alert. */
+/* While live, a ring grows from the dot and fades: slow enough to read as alive, not as an alert. */
 @keyframes hp-breathe {
-  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--healthy-dot, #3b8a1f) 55%, transparent); }
-  70%, 100% { box-shadow: 0 0 0 6px transparent; }
+  0% { opacity: 0.55; scale: 1; }
+  70%, 100% { opacity: 0; scale: 2.5; }
 }
 
 [data-testid="live-control"][data-status="live"] > span:first-child {
+  position: relative;
+}
+
+[data-testid="live-control"][data-status="live"] > span:first-child::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--healthy-dot, #3b8a1f);
+  opacity: 0;
   animation: hp-breathe 2.4s ease-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .hp-reveal,
   .hp-chevron,
-  .hp-tally-segment,
-  .entity-node {
+  .hp-tally-segment {
     transition: none;
   }
 
   #session-workspace > :first-child,
   [data-testid="moment-bar"],
-  [data-testid="live-control"][data-status="live"] > span:first-child {
+  [data-testid="live-control"][data-status="live"] > span:first-child::after {
     animation: none;
   }
 }

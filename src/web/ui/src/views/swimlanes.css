@@ -299,10 +299,3 @@
   align-items: center;
   gap: 3px;
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .swim-card,
-  .swim-fold {
-    transition: none;
-  }
-}
