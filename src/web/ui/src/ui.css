@@ -763,3 +763,126 @@ body {
 .topology--far .react-flow__edge-textwrapper {
   display: none;
 }
+
+/*
+ * Shared motion. One ease for everything that settles, short enough to never hold the viewer up. Every rule below is
+ * still when the viewer asks for less motion.
+ */
+:root {
+  --hp-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --hp-quick: 180ms;
+  --hp-settle: 320ms;
+}
+
+/* The page's own surfaces carry the brand colour: selected text, the caret, the scrollbars. */
+::selection {
+  background: color-mix(in srgb, var(--colorBrandBackground, #0f6cbd) 32%, transparent);
+}
+
+input,
+textarea {
+  caret-color: var(--colorBrandForeground1, #0f6cbd);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--colorNeutralStroke1, #8a8a8a) transparent;
+}
+
+/* An explanation that opens under its key: the rows grow from nothing, so what is below slides rather than jumps. */
+.hp-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--hp-settle) var(--hp-ease), opacity var(--hp-quick) ease-out;
+}
+
+.hp-reveal[data-open] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.hp-reveal > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.hp-chevron {
+  transition: transform var(--hp-quick) var(--hp-ease);
+}
+
+.hp-chevron[data-open] {
+  transform: rotate(180deg);
+}
+
+/* The tally's segments grow and shrink as entities change state. */
+.hp-tally-segment {
+  flex-basis: 0;
+  min-width: 0;
+  transition: flex-grow var(--hp-settle) var(--hp-ease);
+}
+
+/* A card that changes state fades into its new colours instead of snapping. */
+.entity-node {
+  transition: background-color var(--hp-settle) ease-out, border-color var(--hp-settle) ease-out, box-shadow var(--hp-quick) ease-out;
+}
+
+/* The assistant panel and the past-moment bar arrive from where they live. */
+@keyframes hp-from-left {
+  from { opacity: 0; transform: translateX(-12px); }
+}
+
+@keyframes hp-from-above {
+  from { opacity: 0; transform: translateY(-6px); }
+}
+
+#session-workspace > :first-child {
+  animation: hp-from-left var(--hp-settle) var(--hp-ease);
+}
+
+[data-testid="moment-bar"] {
+  animation: hp-from-above var(--hp-settle) var(--hp-ease);
+}
+
+/* While live, the dot breathes: slow enough to read as alive, not as an alert. */
+@keyframes hp-breathe {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--healthy-dot, #3b8a1f) 55%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 6px transparent; }
+}
+
+[data-testid="live-control"][data-status="live"] > span:first-child {
+  animation: hp-breathe 2.4s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hp-reveal,
+  .hp-chevron,
+  .hp-tally-segment,
+  .entity-node {
+    transition: none;
+  }
+
+  #session-workspace > :first-child,
+  [data-testid="moment-bar"],
+  [data-testid="live-control"][data-status="live"] > span:first-child {
+    animation: none;
+  }
+}
+
+/* Until a first-time viewer has opened an explanation, its toggle speaks in the brand colour and glows three times. */
+@keyframes hp-invite {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--colorBrandBackground, #0f6cbd) 22%, transparent); }
+}
+
+.hp-invite[data-fresh] {
+  color: var(--colorBrandForeground1);
+  font-weight: var(--fontWeightSemibold);
+  animation: hp-invite 1.6s ease-in-out 600ms 3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hp-invite[data-fresh] {
+    animation: none;
+  }
+}
