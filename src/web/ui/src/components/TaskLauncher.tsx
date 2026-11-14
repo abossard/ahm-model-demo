@@ -11,8 +11,11 @@ import {
   Spinner,
   Toast,
   ToastBody,
+  ToastFooter,
   ToastTitle,
+  ToastTrigger,
   Toaster,
+  Tooltip,
   makeStyles,
   tokens,
   useId,
@@ -121,20 +124,28 @@ export function TaskMenu(): JSX.Element {
 export function StartButtons(): JSX.Element {
   const styles = useStyles();
   const { starting, model, past } = useLaunchState();
+  const review = (
+    <Button
+      appearance="primary"
+      icon={starting ? <Spinner size="tiny" /> : <DocumentSearch20Regular />}
+      disabled={!model}
+      disabledFocusable={starting}
+      onClick={() => void actions.startTask({ type: "review" })}
+      data-task-launcher=""
+      data-testid="start-review"
+    >
+      Check this model
+    </Button>
+  );
   return (
     <div className={styles.row}>
-      <Button
-        appearance="primary"
-        icon={starting ? <Spinner size="tiny" /> : <DocumentSearch20Regular />}
-        disabled={!model}
-        disabledFocusable={starting}
-        title={past ? NOW_NOTE : undefined}
-        onClick={() => void actions.startTask({ type: "review" })}
-        data-task-launcher=""
-        data-testid="start-review"
-      >
-        Check this model
-      </Button>
+      {past ? (
+        <Tooltip content={NOW_NOTE} relationship="description">
+          {review}
+        </Tooltip>
+      ) : (
+        review
+      )}
       <Button icon={<Sparkle20Regular />} onClick={() => actions.prefillTask("design")} data-testid="start-design">
         Design a model…
       </Button>
@@ -181,6 +192,13 @@ export function TaskNotifier(): JSX.Element {
           {notice.title}
         </ToastTitle>
         <ToastBody>{notice.text.length > 140 ? `${notice.text.slice(0, 137)}...` : notice.text}</ToastBody>
+        <ToastFooter>
+          <ToastTrigger>
+            <Link as="button" data-testid="task-toast-dismiss">
+              Dismiss
+            </Link>
+          </ToastTrigger>
+        </ToastFooter>
       </Toast>,
       { toastId, intent: notice.status === "done" ? "success" : "error", timeout: TOAST_MS, pauseOnHover: true, pauseOnWindowBlur: true },
     );

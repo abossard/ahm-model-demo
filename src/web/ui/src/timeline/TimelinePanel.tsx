@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import { Button, MenuButton, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarActions, MessageBarBody, Spinner, ToggleButton, mergeClasses } from "@fluentui/react-components";
+import { Button, MenuButton, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarActions, MessageBarBody, Spinner, ToggleButton, Tooltip, mergeClasses } from "@fluentui/react-components";
 import { Dismiss20Regular, FullScreenMaximize20Regular, FullScreenMinimize20Regular } from "@fluentui/react-icons";
 import { formatDuration } from "../model/duration";
 import { seriesKey, stateName, type EntityInfo, type StateCode } from "../model/timeline";
@@ -447,15 +447,11 @@ export function TimelinePanel(): JSX.Element {
             {formatDay(view.t0, offsetAt)} {formatClock(view.t0, offsetAt)} to {formatDay(view.t1, offsetAt)} {formatClock(view.t1, offsetAt)} · {formatDuration(view.t1 - view.t0)}
           </span>
         ) : null}
-        <ToggleButton
-          size="small"
-          checked={follow}
-          onClick={() => actions.followTimeline(!follow)}
-          data-testid="tl-live-toggle"
-          title="Keep now at the right edge while new points arrive"
-        >
-          Live
-        </ToggleButton>
+        <Tooltip content="Keep now at the right edge while new points arrive" relationship="description">
+          <ToggleButton size="small" checked={follow} onClick={() => actions.followTimeline(!follow)} data-testid="tl-live-toggle">
+            Live
+          </ToggleButton>
+        </Tooltip>
         <ToggleButton size="small" checked={order === "worst"} onClick={() => actions.setTimelineOrder(order === "worst" ? "structure" : "worst")} data-testid="tl-order">
           Worst first
         </ToggleButton>
@@ -511,15 +507,17 @@ export function TimelinePanel(): JSX.Element {
           </Button>
         ) : null}
         <span className={styles.spacer} />
-        <Button
-          size="small"
-          appearance="subtle"
-          icon={fullscreen ? <FullScreenMinimize20Regular /> : <FullScreenMaximize20Regular />}
-          aria-label={fullscreen ? "Leave full screen" : "Full screen"}
-          title={fullscreen ? "Leave full screen (Escape)" : "Full screen"}
-          onClick={() => actions.setTimelineFullscreen(!fullscreen)}
-          data-testid="tl-fullscreen"
-        />
+        <Tooltip content={fullscreen ? "Leave full screen (Escape)" : "Full screen"} relationship="label">
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={fullscreen ? <FullScreenMinimize20Regular /> : <FullScreenMaximize20Regular />}
+            aria-label={fullscreen ? "Leave full screen" : "Full screen"}
+            aria-keyshortcuts={fullscreen ? "Escape" : undefined}
+            onClick={() => actions.setTimelineFullscreen(!fullscreen)}
+            data-testid="tl-fullscreen"
+          />
+        </Tooltip>
         <Button size="small" appearance="subtle" icon={<Dismiss20Regular />} aria-label="Close the timeline" onClick={() => actions.closeTimeline()} data-testid="tl-close" />
       </div>
       {status === "failed" && error ? (

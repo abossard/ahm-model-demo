@@ -44,13 +44,22 @@ export function LiveControl(): JSX.Element {
   }, [selectedKey, loaded]);
 
   const paused = status === "paused";
+  const word = (
+    <span className={styles.word} data-testid="live-status" {...(error ? { tabIndex: 0 } : {})}>
+      {WORDS[status]}
+    </span>
+  );
   const dot = status === "live" ? styles.live : status === "connecting" || status === "reconnecting" || status === "polling" ? styles.waiting : "";
   return (
     <div className={styles.root} data-testid="live-control" data-status={status}>
       <span className={`${styles.dot} ${dot}`} aria-hidden="true" />
-      <span className={styles.word} data-testid="live-status" title={error?.message}>
-        {WORDS[status]}
-      </span>
+      {error ? (
+        <Tooltip content={error.message} relationship="description">
+          {word}
+        </Tooltip>
+      ) : (
+        word
+      )}
       {status !== "off" ? (
         <Tooltip content={paused ? "Resume live updates" : "Pause live updates"} relationship="label">
           <Button
