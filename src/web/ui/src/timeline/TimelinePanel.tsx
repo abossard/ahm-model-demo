@@ -507,7 +507,7 @@ export function TimelinePanel(): JSX.Element {
           </Button>
         ) : null}
         <span className={styles.spacer} />
-        <Tooltip content={fullscreen ? "Leave full screen (Escape)" : "Full screen"} relationship="label">
+        <Tooltip content="Full screen" relationship="label" {...(fullscreen ? { visible: false } : {})}>
           <Button
             size="small"
             appearance="subtle"

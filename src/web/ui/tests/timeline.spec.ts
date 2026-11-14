@@ -833,6 +833,14 @@ test("full screen fills the window below the top bar, Escape or the button leave
   await expect(panel).toHaveAttribute("data-fullscreen", "false");
   expect(new URL(page.url()).searchParams.get("fullscreen")).toBeNull();
 
+  // The button keeps the focus and no tooltip takes the Escape: one press leaves full screen.
+  await page.getByTestId("tl-fullscreen").click();
+  await expect(panel).toHaveAttribute("data-fullscreen", "true");
+  await page.getByTestId("tl-fullscreen").focus();
+  await page.waitForTimeout(400);
+  await page.keyboard.press("Escape");
+  await expect(panel).toHaveAttribute("data-fullscreen", "false");
+
   await page.getByTestId("tl-fullscreen").click();
   await page.getByTestId("tl-close").click();
   await expect(panel).toHaveCount(0);
