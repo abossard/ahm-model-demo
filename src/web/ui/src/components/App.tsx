@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { JSX } from "react";
 import {
+  AriaLiveAnnouncer,
   FluentProvider,
   MessageBar,
   MessageBarBody,
@@ -159,25 +160,27 @@ export function App(): JSX.Element {
   return (
     // Layout styles belong on the inner shell: the provider copies its own classes onto every portal.
     <FluentProvider theme={FLUENT_THEMES[theme]} data-testid="app-shell">
-      <div className={styles.shell}>
-        <StatusBar />
-        <MomentBar />
-        <div className={styles.body}>
-          <SessionWorkspace />
-          <main className={styles.main}>
-            {model.kind === "success" ? (
-              <>
-                <GraphView />
-                {timelineOpen ? <TimelinePanel /> : null}
-              </>
-            ) : catalog.kind === "success" && catalog.value.models.length === 0 ? (
-              <NoModels />
-            ) : (
-              <TopologyPlaceholder loading={model.kind !== "failure"} />
-            )}
-          </main>
+      <AriaLiveAnnouncer>
+        <div className={styles.shell}>
+          <StatusBar />
+          <MomentBar />
+          <div className={styles.body}>
+            <SessionWorkspace />
+            <main className={styles.main}>
+              {model.kind === "success" ? (
+                <>
+                  <GraphView />
+                  {timelineOpen ? <TimelinePanel /> : null}
+                </>
+              ) : catalog.kind === "success" && catalog.value.models.length === 0 ? (
+                <NoModels />
+              ) : (
+                <TopologyPlaceholder loading={model.kind !== "failure"} />
+              )}
+            </main>
+          </div>
         </div>
-      </div>
+      </AriaLiveAnnouncer>
     </FluentProvider>
   );
 }

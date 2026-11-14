@@ -16,7 +16,7 @@ export const TaskStatusBadge = memo(function TaskStatusBadge({
 }): JSX.Element {
   const color = status === "done" ? "success" : status === "failed" ? "danger" : status === "running" ? "brand" : "informative";
   const icon =
-    status === "done" ? <CheckmarkCircle16Filled /> : status === "failed" ? <DismissCircle16Filled /> : status === "running" ? <Spinner size="extra-tiny" /> : <Clock16Regular />;
+    status === "done" ? <CheckmarkCircle16Filled /> : status === "failed" ? <DismissCircle16Filled /> : status === "running" ? <Spinner size="extra-tiny" aria-hidden="true" /> : <Clock16Regular />;
   return (
     <Badge appearance="tint" color={color} icon={icon} data-testid="task-status" data-status={status}>
       {STATUS_LABEL[status]}

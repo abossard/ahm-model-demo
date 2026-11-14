@@ -68,7 +68,8 @@ const useStyles = makeStyles({
     whiteSpace: "nowrap",
     minWidth: 0,
     overflow: "hidden",
-    minHeight: tokens.lineHeightBase200,
+    // The height of the tiny spinner that comes and goes in this row, so its arrival moves nothing below.
+    minHeight: "20px",
     color: tokens.colorNeutralForeground2,
   },
   controls: {
@@ -90,7 +91,6 @@ function RefreshIndicator(): JSX.Element | null {
       size="tiny"
       label="Refreshing…"
       labelPosition="after"
-      role="status"
       data-testid="refresh-indicator"
     />
   ) : null;

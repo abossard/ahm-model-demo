@@ -40,7 +40,7 @@ export function LaunchNotice(): JSX.Element | null {
   if (launch.kind === "starting") {
     return (
       <div className={styles.starting} aria-busy="true" data-testid="launch-starting" data-step={launch.step}>
-        <Spinner size="tiny" />
+        <Spinner size="tiny" aria-hidden="true" />
         <Text>Asking the assistant: {launch.label}</Text>
       </div>
     );
