@@ -162,23 +162,25 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+    // Keys act on the hits of what is typed, which the deferred list may not show yet.
+    const current = query === deferredQuery ? hits : searchGraph(query, entities, relationships);
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActive((current) => (hits.length === 0 ? 0 : (current + 1) % hits.length));
+      setActive((index) => (current.length === 0 ? 0 : (Math.min(index, current.length - 1) + 1) % current.length));
       return;
     }
     if (event.key === "ArrowUp") {
       event.preventDefault();
-      setActive((current) => (hits.length === 0 ? 0 : (current - 1 + hits.length) % hits.length));
+      setActive((index) => (current.length === 0 ? 0 : (Math.min(index, current.length - 1) - 1 + current.length) % current.length));
       return;
     }
     if (event.key === "Enter" && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      choose(hits[active]);
+      choose(current[Math.min(active, current.length - 1)]);
     }
   };
 
-  const activeHit = hits[active];
+  const activeHit = hits[Math.min(active, hits.length - 1)];
 
   return (
     <Dialog open={open} onOpenChange={(_, data) => (data.open ? undefined : dismiss())}>
