@@ -61,6 +61,14 @@ body {
   border-radius: var(--borderRadiusLarge);
 }
 
+.react-flow__attribution {
+  --xy-attribution-background-color: color-mix(in srgb, var(--colorNeutralBackground1) 86%, transparent);
+}
+
+.react-flow__attribution a {
+  color: var(--colorNeutralForeground3);
+}
+
 .entity-node--dot {
   display: flex;
   align-items: center;
