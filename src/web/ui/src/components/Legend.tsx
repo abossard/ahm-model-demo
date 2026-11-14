@@ -27,7 +27,7 @@ const useStyles = makeStyles({
   swatch: { display: "block", flexShrink: 0 },
   // A phone keeps the key to one row: the graph needs the height more than the lessons.
   // As tall as a line of the key, so the row keeps the height it had without the toggle.
-  toggle: { marginInlineStart: "auto", minWidth: "auto", height: "20px", paddingBlock: 0, color: tokens.colorNeutralForeground2, "@media (max-width: 720px)": { display: "none" } },
+  toggle: { marginInlineStart: "auto", minWidth: "auto", height: "20px", paddingBlock: 0, color: tokens.colorNeutralForeground2, "@container graph (max-width: 720px)": { display: "none" } },
   lessons: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
@@ -35,7 +35,7 @@ const useStyles = makeStyles({
     rowGap: tokens.spacingVerticalM,
     padding: `${tokens.spacingVerticalS} ${tokens.spacingHorizontalM} ${tokens.spacingVerticalM}`,
     maxWidth: "1180px",
-    "@media (max-width: 720px)": { display: "none" },
+    "@container graph (max-width: 720px)": { display: "none" },
   },
   lesson: { display: "flex", flexDirection: "column", rowGap: tokens.spacingVerticalXS, maxWidth: "46ch" },
   heading: { margin: 0, fontSize: tokens.fontSizeBase300, fontWeight: tokens.fontWeightSemibold, color: tokens.colorNeutralForeground1 },

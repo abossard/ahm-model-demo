@@ -1,22 +1,16 @@
-/* First paint, before the Fluent provider mounts. */
+/* First paint, before the Fluent provider mounts. `data-theme` pins one scheme; without it the system decides. */
 :root {
+  color-scheme: light dark;
+  --page-bg: light-dark(#ffffff, #292929);
+  --page-ink: light-dark(#242424, #ffffff);
+}
+
+:root[data-theme="light"] {
   color-scheme: light;
-  --page-bg: #ffffff;
-  --page-ink: #242424;
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --page-bg: #292929;
-  --page-ink: #ffffff;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) {
-    color-scheme: dark;
-    --page-bg: #292929;
-    --page-ink: #ffffff;
-  }
 }
 
 * {
@@ -35,7 +29,19 @@ body {
   color: var(--page-ink);
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
   font-size: 14px;
-  overflow-x: hidden;
+}
+
+/* The graph area is what its views measure, not the window: the assistant panel takes part of the width. */
+[data-testid="app-shell"] main {
+  container: graph / inline-size;
+}
+
+/* On a phone the assistant panel is a sheet over the graph: a list that reaches its end stays put. */
+@media (max-width: 720px) {
+  #session-workspace,
+  #session-workspace * {
+    overscroll-behavior: contain;
+  }
 }
 
 /*
