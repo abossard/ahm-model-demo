@@ -94,6 +94,11 @@ export function TaskForm(): JSX.Element {
   const blocked = running ? "The assistant is still working on something. Ask the next question when it is done." : null;
 
   const submit = (): void => {
+    if (repositoryProblemNow !== null) {
+      setRepositoryLeft(true);
+      repositoryRef.current?.focus();
+      return;
+    }
     if (ready.input !== null && !running && !starts) void actions.startTask(draft);
   };
 
