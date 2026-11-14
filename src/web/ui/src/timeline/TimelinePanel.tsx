@@ -12,6 +12,7 @@ import { allKeys, buildRows, entityShown, heldRows, moveFocus, revealKeys, rootE
 import { PRESETS, formatClock, formatDay, formatInstant, offsetAt, padView, presetOf, presetView } from "../model/timelineScale";
 import { actions, useStore } from "../store/store";
 import { TIMELINE_MAX_HEIGHT, TIMELINE_MIN_HEIGHT, selectedMoment, timelineBounds } from "../store/timelineSlice";
+import { escapeIsFree } from "../components/escapeFree";
 import { readColors, type TimelineColors } from "./colors";
 import { AXIS_HEIGHT } from "./draw";
 import { Plot, type PlotModel } from "./plot";
@@ -72,11 +73,11 @@ export function TimelinePanel(): JSX.Element {
   useInertElsewhere(rootRef, fullscreen);
 
   // Escape leaves full screen from wherever the focus is, unless it is closing something that opened over the timeline:
-  // a dialog, a menu, or the assistant's panel, which closes first and hands the focus back.
+  // a dialog, a menu or a reorder, or the assistant's panel, which closes first and hands the focus back.
   useEffect(() => {
     if (!fullscreen) return;
     const leave = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector('[role="dialog"], [role="menu"]')) return;
+      if (event.key !== "Escape" || !escapeIsFree(event)) return;
       if (event.target instanceof Element && event.target.closest("#session-workspace") !== null) {
         actions.setWorkspaceOpen(false);
         return;

@@ -6,6 +6,7 @@ import { showingMoment } from "../model/wording";
 import { actions } from "../store/store";
 import { selectedMoment } from "../store/timelineSlice";
 import { useAtMoment } from "../timeline/useAtMoment";
+import { escapeIsFree } from "./escapeFree";
 import { useNow } from "./useNow";
 
 const useStyles = makeStyles({
@@ -25,10 +26,9 @@ const useStyles = makeStyles({
   note: { fontSize: tokens.fontSizeBase200 },
 });
 
-/** Something that takes Escape for itself is open, or has the focus: a dialog, a menu, a text being typed. */
+/** Something takes Escape for itself: what the shared rule reads, a timeline that fills the window, or a text being typed. */
 function escapeIsTaken(event: KeyboardEvent): boolean {
-  if (event.defaultPrevented) return true;
-  if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"], [data-popper-placement], [data-fullscreen="true"], .is-reordering')) return true;
+  if (!escapeIsFree(event) || document.querySelector('[data-fullscreen="true"]')) return true;
   const target = event.target;
   return target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
 }
