@@ -89,7 +89,6 @@ body {
   box-shadow: var(--card-shadow);
   font-family: var(--fontFamilyBase);
   cursor: pointer;
-  outline: none;
   pointer-events: all;
 }
 
@@ -101,17 +100,33 @@ body {
   box-shadow: 0 0 0 2px var(--select-ring), var(--card-shadow-lift);
 }
 
-.entity-node:focus-visible {
-  box-shadow: 0 0 0 2px var(--colorStrokeFocus1), 0 0 0 4px var(--colorStrokeFocus2);
+/* Focus is an outline, so a selected, highlighted or marked card cannot paint over it and it shows in forced colours. */
+.entity-node:focus-visible,
+.cause-node:focus-visible {
+  outline: 2px solid var(--colorStrokeFocus2);
+  outline-offset: 2px;
 }
 
 .entity-node.is-highlighted {
   box-shadow: 0 0 0 3px var(--highlight-ring), var(--card-shadow-lift);
 }
 
-.entity-node.is-chain {
-  outline: 2px dashed var(--select-ring);
-  outline-offset: 3px;
+/* The chain mark sits outside the focus ring, on its own element, so the two never share an outline. */
+.entity-node.is-chain::after,
+.cause-node.is-chain::after {
+  content: "";
+  position: absolute;
+  inset: -9px;
+  border: 2px dashed var(--select-ring);
+  border-radius: calc(var(--borderRadiusXLarge) + 7px);
+  pointer-events: none;
+}
+
+.entity-node--pill.is-chain::after,
+.entity-node--dot.is-chain::after,
+.entity-node--speck.is-chain::after,
+.cause-node--pill.is-chain::after {
+  border-radius: inherit;
 }
 
 .entity-node.is-marked {
@@ -473,7 +488,6 @@ body {
   box-shadow: var(--card-shadow);
   font-family: var(--fontFamilyBase);
   cursor: pointer;
-  outline: none;
   pointer-events: all;
 }
 
@@ -498,21 +512,12 @@ body {
   box-shadow: 0 0 0 2px var(--select-ring), var(--card-shadow-lift);
 }
 
-.cause-node:focus-visible {
-  box-shadow: 0 0 0 2px var(--colorStrokeFocus1), 0 0 0 4px var(--colorStrokeFocus2);
-}
-
 .cause-node.is-highlighted {
   box-shadow: 0 0 0 3px var(--highlight-ring), var(--card-shadow-lift);
 }
 
 .cause-node.is-marked {
   box-shadow: 0 0 0 3px var(--mark-ring), var(--card-shadow-lift);
-}
-
-.cause-node.is-chain {
-  outline: 2px dashed var(--select-ring);
-  outline-offset: 3px;
 }
 
 .cause-node__step {
@@ -647,6 +652,30 @@ body {
 .cause-chip:focus-visible {
   outline: 2px solid var(--colorStrokeFocus2);
   outline-offset: 2px;
+}
+
+/* Forced colours strip box-shadows: the state of a card is drawn as an outline whose style differs, and a focused card keeps the ring. */
+@media (forced-colors: active) {
+  .entity-node.is-selected,
+  .cause-node.is-selected {
+    outline: 3px solid Highlight;
+  }
+
+  .entity-node.is-highlighted,
+  .cause-node.is-highlighted {
+    outline: 3px dotted Highlight;
+  }
+
+  .entity-node.is-marked,
+  .cause-node.is-marked {
+    outline: 3px double Highlight;
+  }
+
+  .entity-node:focus-visible,
+  .cause-node:focus-visible {
+    outline: 3px solid Highlight;
+    outline-offset: 4px;
+  }
 }
 
 /* Coverage view: one SVG, the model as a partition. */
