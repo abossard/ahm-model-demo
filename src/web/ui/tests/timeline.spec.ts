@@ -453,7 +453,7 @@ test("the selected moment is dragged by its line or its label; a drag beside it 
   let box = await plotBox(page);
   const at = (fraction: number): number => box.x + box.width * fraction;
   const moment = page.getByTestId("tl-model-at");
-  // What the header says the moment is: "The model at Nov 11 22:45:42".
+  // What the header says the moment is: "The model at 11 Nov 22:45:42".
   const said = moment.locator("span").first();
   const drag = async (from: number, to: number, height = box.y + 120): Promise<void> => {
     await page.mouse.move(from, height);

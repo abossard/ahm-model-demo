@@ -120,7 +120,7 @@ export interface Tick {
   readonly major: boolean;
 }
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const dayFormat = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 const pad2 = (value: number): string => String(value).padStart(2, "0");
 
 /** Minutes behind UTC at an instant, as `Date.getTimezoneOffset` gives it: each instant has its own, so summer time shows. */
@@ -140,9 +140,16 @@ export function formatClock(t: number, offsetOf: OffsetOf, withSeconds = false):
   return withSeconds ? `${base}:${pad2(d.getUTCSeconds())}` : base;
 }
 
+/** The parts of the local day of an instant, written day first like the rest of the page. */
+function dayParts(t: number, offsetOf: OffsetOf): { readonly day: string; readonly month: string; readonly year: string } {
+  const parts = dayFormat.formatToParts(local(t, offsetOf));
+  const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find((item) => item.type === type)?.value ?? "";
+  return { day: part("day"), month: part("month"), year: part("year") };
+}
+
 export function formatDay(t: number, offsetOf: OffsetOf): string {
-  const d = local(t, offsetOf);
-  return `${MONTHS[d.getUTCMonth()] ?? ""} ${d.getUTCDate()}`;
+  const { day, month } = dayParts(t, offsetOf);
+  return `${day} ${month}`;
 }
 
 /** A full label for a cursor: the day, then the clock to the second. */
@@ -152,7 +159,7 @@ export function formatInstant(t: number, offsetOf: OffsetOf): string {
 
 /** The selected moment in full: the day with its year, then the clock to the second. */
 export function formatMoment(t: number, offsetOf: OffsetOf): string {
-  return `${formatDay(t, offsetOf)} ${local(t, offsetOf).getUTCFullYear()}, ${formatClock(t, offsetOf, true)}`;
+  return `${formatDay(t, offsetOf)} ${dayParts(t, offsetOf).year}, ${formatClock(t, offsetOf, true)}`;
 }
 
 /** The step between ticks: the smallest whose ticks are at least `minPx` apart. */

@@ -1,3 +1,4 @@
+import { formatterByZone } from "./dateFormat";
 import type { TaskSummary } from "./types";
 
 export function formatDuration(milliseconds: number): string {
@@ -22,14 +23,12 @@ export function formatOffset(milliseconds: number): string {
   return `+${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+const whenFormat = formatterByZone({ dateStyle: "medium", timeStyle: "short" });
+
 /** A date and time for a list row, or the text itself when it is not a date. */
 export function formatWhen(value: string | null, timeZone?: string): string {
   if (value === null) return "never";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("en-GB", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    ...(timeZone === undefined ? {} : { timeZone }),
-  }).format(date);
+  return whenFormat(timeZone).format(date);
 }

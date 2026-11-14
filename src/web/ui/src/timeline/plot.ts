@@ -406,7 +406,7 @@ export class Plot {
     const { t0, t1 } = this.target;
     this.moment = t;
     if (t < t0 || t > t1) this.pan(t < t0 ? t - t0 - (t1 - t0) * 0.1 : t - t1 + (t1 - t0) * 0.1);
-    this.hooks.announce(`${new Date(t).toLocaleString()}`);
+    this.hooks.announce(formatMoment(t, this.model.offsetOf));
     this.invalidate();
   }
 

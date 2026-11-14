@@ -20,6 +20,7 @@ import type {
   SignalValue,
 } from "../model/types";
 import { accessMessage } from "../model/errors";
+import { formatUpdated } from "../model/wording";
 import { reportTokens, type ReportState, type ReportTokens } from "../model/palette";
 import { actions, useStore } from "../store/store";
 
@@ -204,7 +205,9 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
         <MessageBar intent="success" role="status" data-testid="report-confirmation">
           <MessageBarBody>
             Report <strong data-testid="report-id">{result.value.reportId}</strong> accepted. It expires at{" "}
-            <time data-testid="report-expires">{result.value.expiresAt}</time>.
+            <time data-testid="report-expires" dateTime={result.value.expiresAt}>
+              {formatUpdated(result.value.expiresAt)}
+            </time>.
           </MessageBarBody>
         </MessageBar>
       ) : null}
