@@ -43,6 +43,9 @@ export function TimelinePanel(): JSX.Element {
   const expanded = useStore((state) => state.timelineExpanded);
   const order = useStore((state) => state.timelineOrder);
   const fullscreen = useStore((state) => state.timelineFullscreen);
+  // Controlled from the start: a tooltip still up after the click would take the Escape that leaves full screen.
+  const [fullscreenTip, setFullscreenTip] = useState(false);
+  useEffect(() => setFullscreenTip(false), [fullscreen]);
   const focus = useStore((state) => state.timelineFocus);
   const theme = useStore((state) => state.theme);
   const selectedName = useStore((state) => state.selectedName);
@@ -507,7 +510,12 @@ export function TimelinePanel(): JSX.Element {
           </Button>
         ) : null}
         <span className={styles.spacer} />
-        <Tooltip content="Full screen" relationship="label" {...(fullscreen ? { visible: false } : {})}>
+        <Tooltip
+          content={fullscreen ? "Leave full screen" : "Full screen"}
+          relationship="label"
+          visible={fullscreenTip && !fullscreen}
+          onVisibleChange={(_, data) => setFullscreenTip(data.visible)}
+        >
           <Button
             size="small"
             appearance="subtle"
