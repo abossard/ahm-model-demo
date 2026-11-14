@@ -8,7 +8,6 @@ export default defineConfig({
     cssCodeSplit: false,
     rollupOptions: {
       output: {
-        codeSplitting: false,
         entryFileNames: "assets/[name]-[hash].js",
         assetFileNames: "assets/[name]-[hash][extname]",
       },
