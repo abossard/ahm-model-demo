@@ -142,6 +142,7 @@ export class Plot {
   private target: View = { t0: 0, t1: 1 };
   private shown: View = { t0: 0, t1: 1 };
   private velocity = 0;
+  private readonly reduceMotion = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
   private frameId = 0;
   private lastTs = 0;
   private dirty = true;
@@ -240,7 +241,7 @@ export class Plot {
     if (sameView(next, this.target, 1)) return;
     this.target = next;
     this.velocity = 0;
-    if (!animate) this.shown = next;
+    if (!animate || this.reduceMotion?.matches) this.shown = next;
     this.invalidate();
   }
 
@@ -461,6 +462,7 @@ export class Plot {
       } else moving = true;
     }
 
+    if (this.reduceMotion?.matches) this.shown = this.target;
     const alpha = 1 - Math.exp(-dt / EASE_MS);
     const scale = makeScale(this.target, this.width);
     const off = Math.abs(this.target.t0 - this.shown.t0) + Math.abs(this.target.t1 - this.shown.t1);
@@ -768,7 +770,7 @@ export class Plot {
 
   private releaseVelocity(samples: { t: number; c: number }[], at: number): number {
     const last = samples[samples.length - 1];
-    if (!last || samples.length < 2 || at - last.t > 60) return 0;
+    if (!last || samples.length < 2 || at - last.t > 60 || this.reduceMotion?.matches) return 0;
     let first = last;
     for (let i = samples.length - 2; i >= 0 && last.t - (samples[i]?.t ?? 0) <= 100; i -= 1) first = samples[i] as { t: number; c: number };
     return last.t > first.t ? (last.c - first.c) / (last.t - first.t) : 0;
