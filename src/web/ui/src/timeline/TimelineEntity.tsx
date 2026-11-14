@@ -15,6 +15,7 @@ import {
   PopoverTrigger,
   Spinner,
   Text,
+  Tooltip,
 } from "@fluentui/react-components";
 import { Dismiss20Regular } from "@fluentui/react-icons";
 import { ExplainAction } from "../components/ExplainAction";
@@ -56,6 +57,13 @@ export function TimelineEntity({ options, changes, offsetOf, rowHidden }: Props)
   // Now the strip fills in when the detail has been read, as one piece. A past moment needs nothing of the detail,
   // which is about now: neither its wait nor its failure is shown.
   const known = shown !== undefined && (past || detail.kind === "success");
+  const reportTrigger = (
+    <DialogTrigger disableButtonEnhancement>
+      <Button size="small" disabledFocusable={past} data-testid="report-open">
+        Send a health report
+      </Button>
+    </DialogTrigger>
+  );
 
   return (
     <section className={styles.entity} aria-label={`Selected entity: ${title}`} data-testid="entity-details">
@@ -79,12 +87,14 @@ export function TimelineEntity({ options, changes, offsetOf, rowHidden }: Props)
         <ExplainAction />
         {detail.kind === "success" ? (
           <Dialog modalType="modal">
-            <DialogTrigger disableButtonEnhancement>
-              {/* A report says how the entity is doing now: there is none to send for a moment that has passed. */}
-              <Button size="small" disabledFocusable={past} title={past ? "A health report is about now. Go back to now to send one." : undefined} data-testid="report-open">
-                Send a health report
-              </Button>
-            </DialogTrigger>
+            {/* A report says how the entity is doing now: there is none to send for a moment that has passed. */}
+            {past ? (
+              <Tooltip content="A health report is about now. Go back to now to send one." relationship="description">
+                {reportTrigger}
+              </Tooltip>
+            ) : (
+              reportTrigger
+            )}
             <DialogSurface aria-describedby={undefined} data-testid="report-dialog">
               <DialogBody>
                 <DialogTitle>Send a health report</DialogTitle>

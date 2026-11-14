@@ -1,3 +1,4 @@
+import { formatterByZone } from "./dateFormat";
 import type { Confidence, HealthState, ResultWindow, TaskStatus, TaskType } from "./types";
 
 /**
@@ -62,21 +63,15 @@ export const STATUS_LABEL: Readonly<Record<TaskStatus, string>> = {
   failed: "Did not finish",
 };
 
+const updatedFormat = formatterByZone({ day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+const sessionTimeFormat = formatterByZone({ day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+const dayFormat = formatterByZone({ day: "numeric", month: "numeric", year: "numeric" });
+
 /** When the model was last read, as a person writes it: "30 Jul, 16:05:00". The seconds tell two refreshes apart. */
 export function formatUpdated(value: string, timeZone?: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("en-GB", {
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-    ...(timeZone === undefined ? {} : { timeZone }),
-  })
-    .format(date)
-    .replace(",", "");
+  return updatedFormat(timeZone).format(date).replace(",", "");
 }
 
 /** "3 proposed changes", "No changes proposed". */
@@ -86,14 +81,7 @@ export function proposedCount(count: number): string {
 
 /** The day and the minute, which is all that tells two Sessions of one day apart: "11 Nov 14:05". */
 export function formatSessionTime(when: Date, timeZone?: string): string {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    ...(timeZone === undefined ? {} : { timeZone }),
-  }).formatToParts(when);
+  const parts = sessionTimeFormat(timeZone).formatToParts(when);
   const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find((item) => item.type === type)?.value ?? "";
   return `${part("day")} ${part("month")} ${part("hour")}:${part("minute")}`;
 }
@@ -104,8 +92,13 @@ export function formatSessionTime(when: Date, timeZone?: string): string {
  */
 export function momentWords(at: number, now: number | null, timeZone?: string): string {
   const full = formatSessionTime(new Date(at), timeZone);
-  const dayOf = (text: string): string => text.slice(0, text.lastIndexOf(" "));
-  if (now === null || dayOf(formatSessionTime(new Date(now), timeZone)) !== dayOf(full)) return full;
+  const dayOf = (instant: number): string =>
+    dayFormat(timeZone)
+      .formatToParts(instant)
+      .filter((part) => part.type === "day" || part.type === "month" || part.type === "year")
+      .map((part) => part.value)
+      .join(" ");
+  if (now === null || dayOf(now) !== dayOf(at)) return full;
   return full.slice(full.lastIndexOf(" ") + 1);
 }
 

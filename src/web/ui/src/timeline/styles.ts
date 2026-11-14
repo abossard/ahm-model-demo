@@ -64,9 +64,20 @@ export const useStyles = makeStyles({
     color: tokens.colorNeutralForeground2,
     borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
     // On a phone the legend is one line that scrolls, not six that cover the plot.
-    "@media (max-width: 720px)": { flexWrap: "nowrap", overflowX: "auto", flexShrink: 0, whiteSpace: "nowrap" },
+    "@container graph (max-width: 720px)": { flexWrap: "nowrap", overflowX: "auto", flexShrink: 0, whiteSpace: "nowrap" },
   },
   legendItem: { display: "inline-flex", alignItems: "center", columnGap: tokens.spacingHorizontalXS },
+  legendToggle: { marginInlineStart: "auto", "@container graph (max-width: 720px)": { display: "none" } },
+  legendReveal: { flexBasis: "100%", ":not([data-open])": { marginTop: `calc(-1 * ${tokens.spacingVerticalXXS})` }, "@container graph (max-width: 720px)": { display: "none" } },
+  legendLessons: {
+    listStyle: "none",
+    margin: 0,
+    padding: `${tokens.spacingVerticalXXS} 0 ${tokens.spacingVerticalXS}`,
+    display: "flex",
+    flexDirection: "column",
+    rowGap: tokens.spacingVerticalXXS,
+    fontSize: tokens.fontSizeBase200,
+  },
   entity: {
     display: "flex",
     flexWrap: "wrap",
@@ -102,7 +113,7 @@ export const useStyles = makeStyles({
     overflow: "hidden",
     borderRight: `1px solid ${tokens.colorNeutralStroke2}`,
     backgroundColor: cardTokens.canvas,
-    "@media (max-width: 720px)": { width: `${LABEL_WIDTH_NARROW}px` },
+    "@container graph (max-width: 720px)": { width: `${LABEL_WIDTH_NARROW}px` },
   },
   labelsHead: {
     position: "absolute",
@@ -121,7 +132,7 @@ export const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground3,
     borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
     zIndex: 1,
-    "@media (max-width: 720px)": { "& > :first-child": { display: "none" }, justifyContent: "flex-end" },
+    "@container graph (max-width: 720px)": { "& > :first-child": { display: "none" }, justifyContent: "flex-end" },
   },
   // Named at the height of the incident bars the plot draws beside it.
   incidentsLabel: { position: "absolute", right: tokens.spacingHorizontalS, top: `${(INCIDENT_BAND[0] + INCIDENT_BAND[1]) / 2 - 6}px`, lineHeight: "12px" },

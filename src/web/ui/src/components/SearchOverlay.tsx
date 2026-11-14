@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX, KeyboardEvent } from "react";
 import {
   Dialog,
@@ -119,9 +119,10 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
     inputRef.current?.focus();
   }, [open]);
 
+  const deferredQuery = useDeferredValue(query);
   const hits = useMemo(
-    () => searchGraph(query, entities, relationships),
-    [query, entities, relationships],
+    () => searchGraph(deferredQuery, entities, relationships),
+    [deferredQuery, entities, relationships],
   );
 
   const dismiss = (): void => {
@@ -161,28 +162,25 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      dismiss();
-      return;
-    }
+    // Keys act on the hits of what is typed, which the deferred list may not show yet.
+    const current = query === deferredQuery ? hits : searchGraph(query, entities, relationships);
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActive((current) => (hits.length === 0 ? 0 : (current + 1) % hits.length));
+      setActive((index) => (current.length === 0 ? 0 : (Math.min(index, current.length - 1) + 1) % current.length));
       return;
     }
     if (event.key === "ArrowUp") {
       event.preventDefault();
-      setActive((current) => (hits.length === 0 ? 0 : (current - 1 + hits.length) % hits.length));
+      setActive((index) => (current.length === 0 ? 0 : (Math.min(index, current.length - 1) - 1 + current.length) % current.length));
       return;
     }
-    if (event.key === "Enter") {
+    if (event.key === "Enter" && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      choose(hits[active]);
+      choose(current[Math.min(active, current.length - 1)]);
     }
   };
 
-  const activeHit = hits[active];
+  const activeHit = hits[Math.min(active, hits.length - 1)];
 
   return (
     <Dialog open={open} onOpenChange={(_, data) => (data.open ? undefined : dismiss())}>
@@ -198,9 +196,11 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
           appearance="filled-lighter"
           contentBefore={<Search20Regular />}
           data-testid="search-input"
-          type="text"
+          type="search"
+          enterKeyHint="search"
           role="combobox"
           autoComplete="off"
+          spellCheck={false}
           placeholder="Search entities, relationships and signals"
           aria-label="Search this model"
           aria-expanded={hits.length > 0}
@@ -243,9 +243,9 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
             </div>
           ))}
         </div>
-        {query.trim().length > 0 && hits.length === 0 ? (
+        {deferredQuery.trim().length > 0 && hits.length === 0 ? (
           <Text as="p" className={styles.empty} data-testid="search-empty">
-            No matches for “{query}”
+            No matches for “{deferredQuery}”
           </Text>
         ) : null}
       </DialogSurface>

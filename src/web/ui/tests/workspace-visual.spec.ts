@@ -155,6 +155,7 @@ test.describe("more states, light theme", () => {
     await openForm(page);
     await page.getByTestId("task-type-design").click();
     await page.getByTestId("task-repository").fill("https://example.com/owner/repo");
+    await page.getByTestId("task-repository").blur();
     await shot(page, "design-form-error", "light");
     await page.getByTestId("task-repository").fill("");
     await page.getByTestId("task-type-review").click();

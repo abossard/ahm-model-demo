@@ -165,7 +165,7 @@ const EventRow = memo(function EventRow({
             <Text as="p" weight="semibold" size={200} className={styles.detailHeading}>
               {shown.icon === "text" ? "More detail" : "Technical details"}
             </Text>
-            <pre className={styles.detail}>{shown.detail}</pre>
+            <pre className={styles.detail} tabIndex={0} role="region" aria-label={shown.icon === "text" ? "More detail" : "Technical details"}>{shown.detail}</pre>
           </PopoverSurface>
         </Popover>
       ) : null}

@@ -1,4 +1,3 @@
-import ELK from "elkjs/lib/elk.bundled.js";
 import type { ElkNode } from "elkjs/lib/elk-api";
 import { boundsOf, linkedRelationships, type GraphLayout, type NodeSize, type Point, type SizeOf } from "./layout";
 import { ranksFromPositions } from "./customOrder";
@@ -8,7 +7,18 @@ export type ElkAlgorithm = "layered" | "radial";
 
 // The bundled build runs on the main thread. The worker build would fetch a script URL and trip the
 // served `script-src 'self'` policy.
-const elk = new ELK();
+let elk: Promise<InstanceType<(typeof import("elkjs/lib/elk.bundled.js"))["default"]>> | undefined;
+
+function elkEngine() {
+  elk ??= import("elkjs/lib/elk.bundled.js").then(
+    ({ default: ELK }) => new ELK(),
+    (error: unknown) => {
+      elk = undefined;
+      throw error;
+    },
+  );
+  return elk;
+}
 
 const OPTIONS: Readonly<Record<ElkAlgorithm, Record<string, string>>> = {
   layered: {
@@ -134,7 +144,7 @@ async function runElk(
     })),
   };
 
-  const laid = await elk.layout(graph);
+  const laid = await (await elkEngine()).layout(graph);
   const positions = new Map<string, Point>();
   for (const child of laid.children ?? []) {
     positions.set(child.id, { x: child.x ?? 0, y: child.y ?? 0 });

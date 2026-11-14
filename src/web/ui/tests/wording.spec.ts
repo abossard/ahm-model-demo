@@ -47,7 +47,7 @@ const JARGON: readonly { readonly word: string; readonly pattern: RegExp }[] = [
   { word: "an identifier with underscores", pattern: /\b[a-z]+_[a-z]+(_[a-z]+)*\b/ },
 ];
 
-/** What a person reads: the text on screen, and the names, titles and hints assistive technology and tooltips give. */
+/** What a person reads: the text on screen, and the names, titles, descriptions and hints assistive technology and tooltips give. */
 async function language(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const found: string[] = [];
@@ -69,6 +69,14 @@ async function language(page: Page): Promise<string[]> {
       for (const name of ["aria-label", "title", "placeholder"]) {
         const value = element.getAttribute(name);
         if (value) found.push(value);
+      }
+    }
+    // A tooltip is read where it describes: its text sits in the page, hidden, and the control points to it.
+    for (const element of Array.from(document.querySelectorAll("[aria-describedby]"))) {
+      if (quiet(element) || !shown(element)) continue;
+      for (const id of (element.getAttribute("aria-describedby") ?? "").split(/\s+/)) {
+        const text = id ? document.getElementById(id)?.textContent?.trim() : undefined;
+        if (text) found.push(text);
       }
     }
     return found;

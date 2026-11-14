@@ -28,6 +28,7 @@ import { actions, useStore } from "../store/store";
 import { selectModelState, selectedMoment } from "../store/timelineSlice";
 import { useAtMoment } from "../timeline/useAtMoment";
 import { HealthBadge } from "./HealthBadge";
+import { HealthTally } from "./HealthTally";
 import { ModelPicker } from "./ModelPicker";
 import { LiveControl } from "../live/LiveControl";
 import { TimelineToggle } from "../timeline/TimelineToggle";
@@ -46,19 +47,29 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground2,
     borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
   },
+  // The model's side gives way first: its caption shortens before the controls wrap under it.
   status: {
+    flex: "1 1 0",
+    minWidth: 0,
     display: "flex",
+    "& > :not(div)": { flexShrink: 0 },
     alignItems: "center",
     columnGap: tokens.spacingHorizontalS,
     color: tokens.colorBrandForeground1,
   },
-  title: { display: "flex", alignItems: "center", columnGap: tokens.spacingHorizontalS },
-  name: { color: tokens.colorNeutralForeground1 },
+  identity: { minWidth: 0, flexShrink: 1 },
+  title: { display: "flex", alignItems: "center", columnGap: tokens.spacingHorizontalS, minWidth: 0, "& > :not(strong)": { flexShrink: 0 } },
+  // A long model name gives way before its state does.
+  name: { color: tokens.colorNeutralForeground1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   caption: {
     display: "flex",
     alignItems: "center",
-    columnGap: tokens.spacingHorizontalS,
-    minHeight: tokens.lineHeightBase200,
+    columnGap: tokens.spacingHorizontalL,
+    whiteSpace: "nowrap",
+    minWidth: 0,
+    overflow: "hidden",
+    // The height of the tiny spinner that comes and goes in this row, so its arrival moves nothing below.
+    minHeight: "20px",
     color: tokens.colorNeutralForeground2,
   },
   controls: {
@@ -80,7 +91,6 @@ function RefreshIndicator(): JSX.Element | null {
       size="tiny"
       label="Refreshing…"
       labelPosition="after"
-      role="status"
       data-testid="refresh-indicator"
     />
   ) : null;
@@ -183,7 +193,7 @@ function ModelTime({ observedAt }: { readonly observedAt: string }): JSX.Element
   const moment = useAtMoment(selectedMoment);
   const shown = moment === null ? observedAt : new Date(moment).toISOString();
   return (
-    <Text size={200} title={shown} data-testid="model-observed" data-moment={moment === null ? "now" : "past"}>
+    <Text size={200} wrap={false} truncate style={{ minWidth: 0 }} title={shown} data-testid="model-observed" data-moment={moment === null ? "now" : "past"}>
       {moment === null ? "Updated" : "As of"} {formatUpdated(shown)}
     </Text>
   );
@@ -203,9 +213,9 @@ export function StatusBar(): JSX.Element {
         <div className={styles.status}>
           <WorkspaceToggle />
           <HeartPulse24Regular aria-hidden="true" />
-          <div>
+          <div className={styles.identity}>
             <div className={styles.title}>
-              <Text as="strong" size={500} weight="bold" className={styles.name} data-testid="model-name">
+              <Text as="strong" size={500} weight="bold" className={styles.name} title={model.kind === "success" ? model.value.model.name : undefined} data-testid="model-name">
                 {model.kind === "success" ? model.value.model.name : "Health Pulse"}
               </Text>
               {model.kind === "success" ? <ModelState /> : null}
@@ -214,6 +224,7 @@ export function StatusBar(): JSX.Element {
               {model.kind === "loading" ? (
                 <Spinner size="tiny" label="Loading…" labelPosition="after" />
               ) : null}
+              {model.kind === "success" ? <HealthTally /> : null}
               {model.kind === "success" ? <ModelTime observedAt={lastObservedAt ?? model.value.observedAt} /> : null}
               <RefreshIndicator />
             </div>

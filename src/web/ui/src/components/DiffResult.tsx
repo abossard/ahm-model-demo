@@ -34,7 +34,7 @@ const useStyles = makeStyles({
   root: { display: "flex", flexDirection: "column", rowGap: tokens.spacingVerticalS, minHeight: 0, flex: 1 },
   // The parts around the change list keep their height; only the list takes what is left.
   top: { display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gridAutoRows: "max-content", rowGap: tokens.spacingVerticalS, flex: "0 0 auto" },
-  scroll: { maxHeight: "30vh", overflowY: "auto" },
+  scroll: { maxHeight: ["30vh", "30dvh"], overflowY: "auto" },
   finding: {
     display: "flex",
     alignItems: "flex-start",

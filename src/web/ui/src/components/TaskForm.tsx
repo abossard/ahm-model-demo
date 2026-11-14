@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import {
   Button,
@@ -51,6 +51,8 @@ export function TaskForm(): JSX.Element {
   const styles = useStyles();
   const descriptionId = useId("task-type-description");
   const repositoryRef = useRef<HTMLInputElement>(null);
+  // The repository error waits until the field was left, and goes again while the user edits it.
+  const [repositoryLeft, setRepositoryLeft] = useState(false);
   const instructionRef = useRef<HTMLTextAreaElement>(null);
   const focusForm = useStore((state) => state.focusForm);
   const draft = useStore((state) => state.draft);
@@ -85,12 +87,18 @@ export function TaskForm(): JSX.Element {
   );
   const design = draft.type === "design" ? designModelOf(catalogValue) : null;
   const typeInfo = TASK_TYPES.find((item) => item.type === draft.type) ?? TASK_TYPES[0]!;
-  const repositoryError = draft.type === "design" ? repositoryProblem(draft.repositoryUrl) : null;
+  const repositoryProblemNow = draft.type === "design" ? repositoryProblem(draft.repositoryUrl) : null;
+  const repositoryError = repositoryLeft ? repositoryProblemNow : null;
   const instructionError = instructionProblem(draft.instruction);
   // Every other reason a Task cannot start is shown at the field it is about.
   const blocked = running ? "The assistant is still working on something. Ask the next question when it is done." : null;
 
   const submit = (): void => {
+    if (repositoryProblemNow !== null) {
+      setRepositoryLeft(true);
+      repositoryRef.current?.focus();
+      return;
+    }
     if (ready.input !== null && !running && !starts) void actions.startTask(draft);
   };
 
@@ -167,7 +175,11 @@ export function TaskForm(): JSX.Element {
               inputMode="url"
               placeholder="https://github.com/owner/repository"
               value={draft.repositoryUrl}
-              onChange={(_, data) => actions.updateDraft({ repositoryUrl: data.value })}
+              onChange={(_, data) => {
+                setRepositoryLeft(false);
+                actions.updateDraft({ repositoryUrl: data.value });
+              }}
+              onBlur={() => setRepositoryLeft(true)}
               data-testid="task-repository"
             />
           </Field>
@@ -178,7 +190,7 @@ export function TaskForm(): JSX.Element {
             label="Model"
             hint={selected ? "The health model you are looking at." : null}
             validationState={selected ? "none" : "warning"}
-            validationMessage={selected ? null : "Choose a health model first."}
+            validationMessage={selected ? null : { role: undefined, children: "Choose a health model first." }}
           >
             <Input readOnly value={selected ? targetLabel(selected) : ""} data-testid="task-target" />
           </Field>
@@ -186,7 +198,7 @@ export function TaskForm(): JSX.Element {
             <Field
               label="Entity"
               validationState={explainNeedsEntity ? "warning" : "none"}
-              validationMessage={explainNeedsEntity ? "Select an entity in the graph first." : null}
+              validationMessage={explainNeedsEntity ? { role: undefined, children: "Select an entity in the graph first." } : null}
               hint={explainNeedsEntity ? null : "The entity selected in the graph."}
             >
               <Input readOnly value={entityLabel ?? ""} data-testid="task-entity" />
@@ -221,7 +233,8 @@ export function TaskForm(): JSX.Element {
         <Button
           appearance="primary"
           type="submit"
-          disabled={ready.input === null || running || starts}
+          disabled={starts}
+          disabledFocusable={ready.input === null || running}
           {...(starts ? { icon: <Spinner size="tiny" /> } : {})}
           data-testid="task-submit"
         >

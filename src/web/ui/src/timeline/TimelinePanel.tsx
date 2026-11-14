@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import { Button, MenuButton, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarActions, MessageBarBody, Spinner, ToggleButton, mergeClasses } from "@fluentui/react-components";
+import { Button, MenuButton, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarActions, MessageBarBody, Spinner, ToggleButton, Tooltip, mergeClasses } from "@fluentui/react-components";
 import { Dismiss20Regular, FullScreenMaximize20Regular, FullScreenMinimize20Regular } from "@fluentui/react-icons";
 import { formatDuration } from "../model/duration";
 import { seriesKey, stateName, type EntityInfo, type StateCode } from "../model/timeline";
@@ -12,6 +12,7 @@ import { allKeys, buildRows, entityShown, heldRows, moveFocus, revealKeys, rootE
 import { PRESETS, formatClock, formatDay, formatInstant, offsetAt, padView, presetOf, presetView } from "../model/timelineScale";
 import { actions, useStore } from "../store/store";
 import { TIMELINE_MAX_HEIGHT, TIMELINE_MIN_HEIGHT, selectedMoment, timelineBounds } from "../store/timelineSlice";
+import { escapeIsFree } from "../components/escapeFree";
 import { readColors, type TimelineColors } from "./colors";
 import { AXIS_HEIGHT } from "./draw";
 import { Plot, type PlotModel } from "./plot";
@@ -42,6 +43,9 @@ export function TimelinePanel(): JSX.Element {
   const expanded = useStore((state) => state.timelineExpanded);
   const order = useStore((state) => state.timelineOrder);
   const fullscreen = useStore((state) => state.timelineFullscreen);
+  // Controlled from the start: a tooltip still up after the click would take the Escape that leaves full screen.
+  const [fullscreenTip, setFullscreenTip] = useState(false);
+  useEffect(() => setFullscreenTip(false), [fullscreen]);
   const focus = useStore((state) => state.timelineFocus);
   const theme = useStore((state) => state.theme);
   const selectedName = useStore((state) => state.selectedName);
@@ -72,11 +76,11 @@ export function TimelinePanel(): JSX.Element {
   useInertElsewhere(rootRef, fullscreen);
 
   // Escape leaves full screen from wherever the focus is, unless it is closing something that opened over the timeline:
-  // a dialog, a menu, or the assistant's panel, which closes first and hands the focus back.
+  // a dialog, a menu or a reorder, or the assistant's panel, which closes first and hands the focus back.
   useEffect(() => {
     if (!fullscreen) return;
     const leave = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector('[role="dialog"], [role="menu"]')) return;
+      if (event.key !== "Escape" || !escapeIsFree(event)) return;
       if (event.target instanceof Element && event.target.closest("#session-workspace") !== null) {
         actions.setWorkspaceOpen(false);
         return;
@@ -446,15 +450,11 @@ export function TimelinePanel(): JSX.Element {
             {formatDay(view.t0, offsetAt)} {formatClock(view.t0, offsetAt)} to {formatDay(view.t1, offsetAt)} {formatClock(view.t1, offsetAt)} · {formatDuration(view.t1 - view.t0)}
           </span>
         ) : null}
-        <ToggleButton
-          size="small"
-          checked={follow}
-          onClick={() => actions.followTimeline(!follow)}
-          data-testid="tl-live-toggle"
-          title="Keep now at the right edge while new points arrive"
-        >
-          Live
-        </ToggleButton>
+        <Tooltip content="Keep now at the right edge while new points arrive" relationship="description">
+          <ToggleButton size="small" checked={follow} onClick={() => actions.followTimeline(!follow)} data-testid="tl-live-toggle">
+            Live
+          </ToggleButton>
+        </Tooltip>
         <ToggleButton size="small" checked={order === "worst"} onClick={() => actions.setTimelineOrder(order === "worst" ? "structure" : "worst")} data-testid="tl-order">
           Worst first
         </ToggleButton>
@@ -510,15 +510,22 @@ export function TimelinePanel(): JSX.Element {
           </Button>
         ) : null}
         <span className={styles.spacer} />
-        <Button
-          size="small"
-          appearance="subtle"
-          icon={fullscreen ? <FullScreenMinimize20Regular /> : <FullScreenMaximize20Regular />}
-          aria-label={fullscreen ? "Leave full screen" : "Full screen"}
-          title={fullscreen ? "Leave full screen (Escape)" : "Full screen"}
-          onClick={() => actions.setTimelineFullscreen(!fullscreen)}
-          data-testid="tl-fullscreen"
-        />
+        <Tooltip
+          content={fullscreen ? "Leave full screen" : "Full screen"}
+          relationship="label"
+          visible={fullscreenTip && !fullscreen}
+          onVisibleChange={(_, data) => setFullscreenTip(data.visible)}
+        >
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={fullscreen ? <FullScreenMinimize20Regular /> : <FullScreenMaximize20Regular />}
+            aria-label={fullscreen ? "Leave full screen" : "Full screen"}
+            aria-keyshortcuts={fullscreen ? "Escape" : undefined}
+            onClick={() => actions.setTimelineFullscreen(!fullscreen)}
+            data-testid="tl-fullscreen"
+          />
+        </Tooltip>
         <Button size="small" appearance="subtle" icon={<Dismiss20Regular />} aria-label="Close the timeline" onClick={() => actions.closeTimeline()} data-testid="tl-close" />
       </div>
       {status === "failed" && error ? (

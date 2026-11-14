@@ -38,9 +38,10 @@ export function TimelineAnnouncer(): JSX.Element {
   });
   const announced = useRef(0);
   const previous = useRef(status);
-  const [lines, setLines] = useState<readonly string[]>([]);
+  const nextId = useRef(0);
+  const [lines, setLines] = useState<readonly { readonly id: number; readonly text: string }[]>([]);
 
-  const say = (line: string): void => setLines((current) => [...current, line].slice(-KEPT));
+  const say = (text: string): void => setLines((current) => [...current, { id: nextId.current++, text }].slice(-KEPT));
 
   useEffect(() => {
     const fresh = events.filter((event) => event.seq > announced.current);
@@ -71,8 +72,8 @@ export function TimelineAnnouncer(): JSX.Element {
       className={styles.visuallyHidden}
       data-testid="timeline-log"
     >
-      {lines.map((line, index) => (
-        <p key={index}>{line}</p>
+      {lines.map((line) => (
+        <p key={line.id}>{line.text}</p>
       ))}
     </div>
   );

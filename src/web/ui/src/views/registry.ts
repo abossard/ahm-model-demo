@@ -1,13 +1,48 @@
+import { Component, Suspense, createElement, lazy, type ComponentType, type ReactNode } from "react";
+import { MessageBar, MessageBarBody, MessageBarTitle } from "@fluentui/react-components";
 import { DEFAULT_VIEW, VIEWS, type BuiltViewId, type ViewId } from "../model/views";
-import type { ViewDefinition } from "./types";
+import type { ViewDefinition, ViewProps } from "./types";
 import { CausePathView } from "./CausePathView";
-import { CoverageView } from "./CoverageView";
 import { OutlineControls } from "./OutlineControls";
-import { OutlineView } from "./OutlineView";
-import { SwimlanesView } from "./SwimlanesView";
-import { TidyView } from "./TidyView";
 import { ZoomControls } from "./ZoomControls";
-import { ZoomView } from "./ZoomView";
+
+/** Shows a view that failed to load as a message, so the rest of the app stays up. */
+class ViewLoadBoundary extends Component<{ readonly children: ReactNode }, { readonly failed: boolean }> {
+  override state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  override render(): ReactNode {
+    if (!this.state.failed) return this.props.children;
+    return createElement(
+      MessageBar,
+      { intent: "error", role: "alert" },
+      createElement(MessageBarBody, null, createElement(MessageBarTitle, null, "This view could not load"), "Reload the page to try again."),
+    );
+  }
+}
+
+/**
+ * A view fetched when it is first shown. The fallback fills the same flex space the view does, so nothing moves
+ * when the view arrives. The default view stays in the main bundle: it is what the first load draws.
+ */
+function lazyView(load: () => Promise<ComponentType<ViewProps>>): ComponentType<ViewProps> {
+  const View = lazy(async () => ({ default: await load() }));
+  return (props) =>
+    createElement(
+      ViewLoadBoundary,
+      null,
+      createElement(Suspense, { fallback: createElement("div", { style: { flex: 1, minWidth: 0, minHeight: 0 } }) }, createElement(View, props)),
+    );
+}
+
+const SwimlanesView = lazyView(async () => (await import("./SwimlanesView")).SwimlanesView);
+const TidyView = lazyView(async () => (await import("./TidyView")).TidyView);
+const ZoomView = lazyView(async () => (await import("./ZoomView")).ZoomView);
+const OutlineView = lazyView(async () => (await import("./OutlineView")).OutlineView);
+const CoverageView = lazyView(async () => (await import("./CoverageView")).CoverageView);
 
 type Parts = Omit<ViewDefinition, "id" | "label" | "description">;
 

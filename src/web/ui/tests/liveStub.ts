@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Page, Request } from "@playwright/test";
 import type { LiveDelta } from "../src/model/live";
 import type { Entity, HealthModel } from "../src/model/types";
 import { healthModel } from "./fixture";
@@ -29,6 +29,7 @@ export interface LiveStub {
 
 interface Waiter {
   resolve: (text: string) => void;
+  request?: Request;
 }
 
 /**
@@ -50,6 +51,11 @@ export async function installStream(page: Page, options: { first?: string; refus
     }
   };
 
+  // A connection the page dropped (a pause, a model change) takes nothing more: what is pushed goes to the next one.
+  page.on("requestfailed", (request) => {
+    for (const [key, waiter] of waiters) if (waiter.request === request) waiters.delete(key);
+  });
+
   await page.route("**/api/health-model/stream**", async (route) => {
     const request = route.request();
     requests.push({ lastEventId: request.headers()["last-event-id"] ?? null, at: Date.now() });
@@ -58,7 +64,7 @@ export async function installStream(page: Page, options: { first?: string; refus
       return;
     }
     const key = `${request.url()}${(counter += 1)}`;
-    const waiter: Waiter = { resolve: () => undefined };
+    const waiter: Waiter = { resolve: () => undefined, request };
     const text = new Promise<string>((resolve) => {
       waiter.resolve = resolve;
     });

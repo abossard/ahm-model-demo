@@ -27,7 +27,7 @@ const useStyles = makeStyles({
     minWidth: 0,
     display: "flex",
     flexDirection: "row",
-    "@media (max-width: 720px)": { flexDirection: "column" },
+    "@container graph (max-width: 720px)": { flexDirection: "column" },
   },
   side: {
     flex: "1 1 0",
@@ -37,13 +37,13 @@ const useStyles = makeStyles({
     flexDirection: "column",
     ":not(:first-child)": { borderLeft: `2px solid ${tokens.colorNeutralStroke1}` },
     // Stacked on a phone, each graph keeps its own height and the page scrolls.
-    "@media (max-width: 720px)": {
+    "@container graph (max-width: 720px)": {
       flex: "0 0 auto",
       ":not(:first-child)": { borderLeft: "none", borderTop: `2px solid ${tokens.colorNeutralStroke1}` },
     },
   },
   // A merged view is one drawing: it fills the area on a phone too, as it does when nothing is compared.
-  whole: { "@media (max-width: 720px)": { flex: "1 1 0" } },
+  whole: { "@container graph (max-width: 720px)": { flex: "1 1 0" } },
 });
 
 /** What the drawings of a view have in common, whichever side they are: the selection, the chain and what opens an entity. */

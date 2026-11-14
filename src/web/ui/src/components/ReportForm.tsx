@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { FormEvent, JSX } from "react";
 import {
   Button,
@@ -20,6 +20,7 @@ import type {
   SignalValue,
 } from "../model/types";
 import { accessMessage } from "../model/errors";
+import { formatUpdated } from "../model/wording";
 import { reportTokens, type ReportState, type ReportTokens } from "../model/palette";
 import { actions, useStore } from "../store/store";
 
@@ -71,12 +72,14 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
   );
   const [customReason, setCustomReason] = useState("");
   const [reasonError, setReasonError] = useState<string | null>(null);
+  const reasonRef = useRef<HTMLTextAreaElement>(null);
 
   const send = (state: HealthState): void => {
     if (reasonPreset === CUSTOM_PRESET) {
       const trimmed = customReason.trim();
       if (trimmed.length < REASON_MIN || trimmed.length > REASON_MAX) {
         setReasonError("Enter a reason of 1 to 280 characters.");
+        reasonRef.current?.focus();
         return;
       }
     }
@@ -114,7 +117,7 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
         ))}
       </div>
 
-      <Field label="State to report">
+      <Field label={{ children: "State to report", htmlFor: "report-state" }}>
         <Select
           id="report-state"
           value={healthState}
@@ -128,7 +131,7 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
         </Select>
       </Field>
 
-      <Field label="Value">
+      <Field label={{ children: "Value", htmlFor: "report-value" }}>
         <Select
           id="report-value"
           value={valueIndex}
@@ -142,7 +145,7 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
         </Select>
       </Field>
 
-      <Field label="Report expires after (minutes)">
+      <Field label={{ children: "Report expires after (minutes)", htmlFor: "report-expiry" }}>
         <Select
           id="report-expiry"
           value={expiresInMinutes}
@@ -156,7 +159,7 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
         </Select>
       </Field>
 
-      <Field label="Reason">
+      <Field label={{ children: "Reason", htmlFor: "report-reason" }}>
         <Select
           id="report-reason"
           value={reasonPreset}
@@ -175,7 +178,7 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
 
       {reasonPreset === CUSTOM_PRESET ? (
         <Field
-          label="Your reason"
+          label={{ children: "Your reason", htmlFor: "report-custom-reason" }}
           validationState={reasonError ? "error" : "none"}
           validationMessage={
             reasonError ? { id: "report-custom-reason-error", children: reasonError } : null
@@ -183,9 +186,13 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
         >
           <Textarea
             id="report-custom-reason"
+            textarea={{ ref: reasonRef }}
             resize="vertical"
             value={customReason}
-            onChange={(_, data) => setCustomReason(data.value)}
+            onChange={(_, data) => {
+              setCustomReason(data.value);
+              setReasonError(null);
+            }}
           />
         </Field>
       ) : null}
@@ -198,7 +205,9 @@ export function ReportForm({ entityName, options }: ReportFormProps): JSX.Elemen
         <MessageBar intent="success" role="status" data-testid="report-confirmation">
           <MessageBarBody>
             Report <strong data-testid="report-id">{result.value.reportId}</strong> accepted. It expires at{" "}
-            <time data-testid="report-expires">{result.value.expiresAt}</time>.
+            <time data-testid="report-expires" dateTime={result.value.expiresAt}>
+              {formatUpdated(result.value.expiresAt)}
+            </time>.
           </MessageBarBody>
         </MessageBar>
       ) : null}

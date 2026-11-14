@@ -43,13 +43,15 @@ async function bootTopology(page: Page): Promise<void> {
   await page.waitForSelector(".react-flow__node .entity-node");
 }
 
-test("shell is one document with a single script and no server-rendered state", async ({ page }) => {
+test("shell is one document with the app bundle, the theme boot script and no server-rendered state", async ({ page }) => {
   const shell = await page.request.get("/");
   expect(shell.status()).toBe(200);
   const html = await shell.text();
 
-  const scriptSrcCount = (html.match(/<script\b[^>]*\bsrc=/g) ?? []).length;
-  expect(scriptSrcCount).toBe(1);
+  // The CSP allows no inline script, so the theme is set before the first paint by one small file of the page's own origin.
+  const scriptSrcs = [...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map((match) => match[1]);
+  expect(scriptSrcs).toHaveLength(2);
+  expect(scriptSrcs[0]).toBe("/assets/theme-boot.js");
 
   for (const entity of healthModel.entities) {
     expect(html, `shell must not server-render ${entity.displayName}`).not.toContain(entity.displayName);
@@ -57,7 +59,7 @@ test("shell is one document with a single script and no server-rendered state", 
 
   await openView(page, "zoom");
   const domScriptSrc = await page.evaluate(() => document.querySelectorAll("script[src]").length);
-  expect(domScriptSrc).toBe(1);
+  expect(domScriptSrc).toBe(2);
 });
 
 test("AC1 — one React Flow node per entity and one edge per valid relationship", async ({ page }) => {
@@ -239,7 +241,7 @@ test("report submission posts the exact body and shows the receipt", async ({ pa
   });
 
   await expect(page.getByTestId("report-id")).toHaveText(reportResponse.reportId);
-  await expect(page.getByTestId("report-expires")).toHaveText(reportResponse.expiresAt);
+  await expect(page.getByTestId("report-expires")).toHaveText(/^30 Jul \d{2}:21:00$/);
 });
 
 test("empty custom reason blocks submission and announces the error", async ({ page }) => {

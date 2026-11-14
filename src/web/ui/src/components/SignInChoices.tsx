@@ -30,6 +30,7 @@ export function SignInChoices({ openDirectory, loginHint }: { readonly openDirec
 
   const submit = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
+    if (busy) return;
     setProblem(null);
     setBusy(true);
     try {
@@ -64,7 +65,7 @@ export function SignInChoices({ openDirectory, loginHint }: { readonly openDirec
           <Field label="Subscription ID, directory domain or directory ID" validationState={problem ? "error" : "none"} validationMessage={problem}>
             <div className={styles.row}>
               <Input className={styles.grow} value={text} onChange={(_, data) => setText(data.value)} autoComplete="off" spellCheck={false} data-testid="directory-input" />
-              <Button type="submit" appearance="primary" disabled={busy || text.trim() === ""} data-testid="directory-continue">
+              <Button type="submit" appearance="primary" disabledFocusable={busy || text.trim() === ""} data-testid="directory-continue">
                 Continue
               </Button>
             </div>

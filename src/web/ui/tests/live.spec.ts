@@ -18,8 +18,30 @@ const MODEL = `model=hm-demo&resourceGroup=rg-demo&subscription=${SUBSCRIPTION_A
 const node = (page: Page, name: string) => page.locator(`.react-flow__node[data-id="${name}"]`);
 const status = (page: Page) => page.getByTestId("live-status");
 
+/**
+ * The stub ends every connection, so "Live" shows only until the client reconnects (about 100 ms). A page counts each
+ * time its status turns "Live", and a test waits for that count rather than polling for a moment it can miss.
+ */
+async function countLive(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const counter = window as unknown as { liveSeen: number };
+    counter.liveSeen = 0;
+    let last: string | null = null;
+    new MutationObserver(() => {
+      const text = document.querySelector('[data-testid="live-status"]')?.textContent ?? null;
+      if (text === "Live" && last !== "Live") counter.liveSeen += 1;
+      last = text;
+    }).observe(document, { subtree: true, childList: true, characterData: true });
+  });
+}
+
+async function becameLive(page: Page, times = 1): Promise<void> {
+  await expect.poll(() => page.evaluate(() => (window as unknown as { liveSeen: number }).liveSeen)).toBeGreaterThanOrEqual(times);
+}
+
 async function open(page: Page, stream: Parameters<typeof installStream>[1] = {}, search = "") {
   await installStubs(page, { healthModelFails: false });
+  await countLive(page);
   const requests = { health: 0 };
   page.on("request", (request) => {
     if (new URL(request.url()).pathname === "/api/health-model") requests.health += 1;
@@ -37,7 +59,7 @@ async function shot(page: Page, name: string): Promise<void> {
 
 test("an open model is live, and a state change in a delta updates its node without reading the model again", async ({ page }) => {
   const { live, requests } = await open(page);
-  await expect(status(page)).toHaveText("Live");
+  await becameLive(page);
   expect(live.requests.length).toBeGreaterThanOrEqual(1);
   expect(requests.health).toBe(1);
   await expect(node(page, "svc-d")).not.toContainText("Unhealthy");
@@ -54,7 +76,7 @@ test("an open model is live, and a state change in a delta updates its node with
 
 test("a connection that ends is taken up again with the last id and nothing is read twice", async ({ page }) => {
   const { live } = await open(page);
-  await expect(status(page)).toHaveText("Live");
+  await becameLive(page);
 
   live.push(delta({ entities: { upsert: [withState("svc-d", "Degraded")] } }, 1));
   await expect(node(page, "svc-d")).toContainText("Degraded");
@@ -66,7 +88,7 @@ test("a connection that ends is taken up again with the last id and nothing is r
 
 test("a reconnect event, for an expired token, resumes at once with the last id", async ({ page }) => {
   const { live } = await open(page);
-  await expect(status(page)).toHaveText("Live");
+  await becameLive(page);
 
   const before = live.requests.length;
   live.push('event: reconnect\ndata: {"reason":"token_expired"}\n\n');
@@ -77,7 +99,7 @@ test("a reconnect event, for an expired token, resumes at once with the last id"
 
 test("a resync event starts again from a snapshot", async ({ page }) => {
   const { live } = await open(page);
-  await expect(status(page)).toHaveText("Live");
+  await becameLive(page);
 
   const before = live.requests.length;
   live.push('event: resync\ndata: {"reason":"slow"}\n\n');
@@ -90,7 +112,7 @@ test("a resync event starts again from a snapshot", async ({ page }) => {
 
 test("pausing holds the graph still, and resuming takes a snapshot and goes on", async ({ page }) => {
   const { live } = await open(page);
-  await expect(status(page)).toHaveText("Live");
+  await becameLive(page);
 
   await page.getByTestId("live-toggle").click();
   await expect(status(page)).toHaveText("Paused");
@@ -102,13 +124,13 @@ test("pausing holds the graph still, and resuming takes a snapshot and goes on",
   await page.getByTestId("live-toggle").click();
 
   await expect.poll(() => live.requests.length).toBeGreaterThan(during);
-  await expect(status(page)).toHaveText("Live");
+  await becameLive(page, 2);
   await expect(node(page, "svc-d")).toContainText("Unhealthy");
 });
 
 test("the refresh button still reads the model by hand", async ({ page }) => {
   const { requests } = await open(page);
-  await expect(status(page)).toHaveText("Live");
+  await becameLive(page);
 
   await page.getByTestId("refresh-now").click();
 

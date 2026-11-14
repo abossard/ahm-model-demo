@@ -1,4 +1,8 @@
+import { useId } from "react";
 import type { JSX } from "react";
+import { Button } from "@fluentui/react-components";
+import { ChevronDown16Regular } from "@fluentui/react-icons";
+import { useDisclosure } from "../components/useDisclosure";
 import { MARK } from "./tooltip";
 import { useStyles } from "./styles";
 
@@ -9,9 +13,14 @@ const COLOURS = [
   { state: "Unknown", word: "Unknown or no data" },
 ] as const;
 
-/** What the colours and marks of the plot mean. The bars of an entity and the line of a signal share one set of colours, the bars fainter for a quiet state. */
+/**
+ * What the colours and marks of the plot mean. The bars of an entity and the line of a signal share one set of colours, the
+ * bars fainter for a quiet state. The key stays on one row; how to read the bars and lines opens below it.
+ */
 export function TimelineLegend({ standby }: { readonly standby: boolean }): JSX.Element {
   const styles = useStyles();
+  const [open, toggle, fresh] = useDisclosure("timeline-key");
+  const regionId = useId();
   return (
     <ul className={styles.legend} aria-label="Legend" data-testid="tl-legend">
       {COLOURS.map((item) => (
@@ -26,15 +35,6 @@ export function TimelineLegend({ standby }: { readonly standby: boolean }): JSX.
           Standby
         </li>
       ) : null}
-      <li className={styles.legendItem} data-testid="tl-legend-bars">
-        An entity's bar fills its row: faint while Healthy or Unknown, strong while Degraded or Unhealthy.
-      </li>
-      <li className={styles.legendItem} data-testid="tl-legend-line">
-        A signal's line turns orange past its Degraded threshold and red past its Unhealthy one.
-      </li>
-      <li className={styles.legendItem} data-testid="tl-legend-zones">
-        Behind it the value ranges are shaded green, orange and red, and the one it was in is stronger.
-      </li>
       <li className={styles.legendItem} data-testid="tl-legend-annotation">
         <span className="tl-mark" data-mark="annotation" aria-hidden="true">{MARK.annotation}</span>
         Annotation
@@ -54,6 +54,37 @@ export function TimelineLegend({ standby }: { readonly standby: boolean }): JSX.
       <li className={styles.legendItem} data-testid="tl-legend-pinned">
         <span className="tl-pin" aria-hidden="true" />
         Selected moment
+      </li>
+      <li className={styles.legendToggle}>
+        <Button
+          className="hp-invite"
+          size="small"
+          appearance="transparent"
+          icon={<ChevronDown16Regular className="hp-chevron" data-open={open || undefined} />}
+          iconPosition="after"
+          aria-expanded={open}
+          aria-controls={regionId}
+          onClick={toggle}
+          data-fresh={fresh || undefined}
+          data-testid="tl-legend-toggle"
+        >
+          {fresh ? "New here? How to read this" : "How to read this"}
+        </Button>
+      </li>
+      <li className={`hp-reveal ${styles.legendReveal}`} data-open={open || undefined} id={regionId} inert={!open}>
+        <div>
+          <ul className={styles.legendLessons}>
+            <li data-testid="tl-legend-bars">
+              An entity's bar fills its row: faint while Healthy or Unknown, strong while Degraded or Unhealthy.
+            </li>
+            <li data-testid="tl-legend-line">
+              A signal's line turns orange past its Degraded threshold and red past its Unhealthy one.
+            </li>
+            <li data-testid="tl-legend-zones">
+              Behind it the value ranges are shaded green, orange and red, and the one it was in is stronger.
+            </li>
+          </ul>
+        </div>
       </li>
     </ul>
   );

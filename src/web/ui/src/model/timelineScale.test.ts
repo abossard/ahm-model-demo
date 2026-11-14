@@ -153,7 +153,7 @@ describe("ticks", () => {
 
     const ticks = timeTicks(view, 900, 80, () => 0);
 
-    expect(ticks.filter((tick) => tick.major).map((tick) => tick.label)).toEqual(["Nov 11"]);
+    expect(ticks.filter((tick) => tick.major).map((tick) => tick.label)).toEqual(["11 Nov"]);
   });
 
   it.each([
@@ -168,13 +168,13 @@ describe("ticks", () => {
   it("formats a day and an instant", () => {
     const t = Date.UTC(2026, 10, 10, 9, 5, 7);
 
-    expect(formatDay(t, () => 0)).toBe("Nov 10");
-    expect(formatInstant(t, () => 0)).toBe("Nov 10 09:05:07");
+    expect(formatDay(t, () => 0)).toBe("10 Nov");
+    expect(formatInstant(t, () => 0)).toBe("10 Nov 09:05:07");
   });
 
   it.each([
-    [Date.UTC(2026, 10, 10, 9, 5, 7), 0, "Nov 10 2026, 09:05:07"],
-    [Date.UTC(2026, 11, 31, 23, 30, 0), -60, "Jan 1 2027, 00:30:00"],
+    [Date.UTC(2026, 10, 10, 9, 5, 7), 0, "10 Nov 2026, 09:05:07"],
+    [Date.UTC(2026, 11, 31, 23, 30, 0), -60, "1 Jan 2027, 00:30:00"],
   ])("says the moment %d at offset %d in full: %s", (t, offset, expected) => {
     expect(formatMoment(t, () => offset)).toBe(expected);
   });
@@ -207,8 +207,8 @@ describe("ticks", () => {
     });
 
     it.each([
-      ["Europe/Zurich", "2026-03-28T22:00:00Z", "2026-03-29T04:00:00Z", ["23:00", "Mar 29", "01:00", "03:00", "04:00", "05:00", "06:00"]],
-      ["America/New_York", "2026-11-01T03:00:00Z", "2026-11-01T09:00:00Z", ["23:00", "Nov 1", "01:00", "02:00", "03:00", "04:00"]],
+      ["Europe/Zurich", "2026-03-28T22:00:00Z", "2026-03-29T04:00:00Z", ["23:00", "29 Mar", "01:00", "03:00", "04:00", "05:00", "06:00"]],
+      ["America/New_York", "2026-11-01T03:00:00Z", "2026-11-01T09:00:00Z", ["23:00", "1 Nov", "01:00", "02:00", "03:00", "04:00"]],
     ])("%s: ticks across the change of the clock fall on the hour of each instant", (tz, from, to, labels) => {
       process.env["TZ"] = tz;
       const ticks = timeTicks({ t0: Date.parse(from), t1: Date.parse(to) }, 700, 90, offsetAt);

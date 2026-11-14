@@ -1,6 +1,7 @@
 import type { JSX } from "react";
 import { Text, makeStyles, tokens } from "@fluentui/react-components";
 import { formatSignalValue } from "../model/signalValue";
+import { formatUpdated } from "../model/wording";
 import type { EntityDetail, SignalValue } from "../model/types";
 import { HealthBadge } from "./HealthBadge";
 
@@ -40,10 +41,6 @@ function formatValue(value: SignalValue): string {
   return value === null ? "no value" : formatSignalValue(value);
 }
 
-function formatTime(value: string | null): string {
-  return value ?? "no time recorded";
-}
-
 /** The health reports sent for an entity: the history of the signal that carries them. */
 export function SignalHistory({ detail }: { readonly detail: EntityDetail }): JSX.Element {
   const styles = useStyles();
@@ -63,7 +60,13 @@ export function SignalHistory({ detail }: { readonly detail: EntityDetail }): JS
             <li key={index} data-testid="signal-history-row" className={styles.row}>
               <HealthBadge state={item.healthState ?? "Unknown"}>{item.healthState ?? "unknown"}</HealthBadge>
               <span className={styles.value}>{formatValue(item.value)}</span>
-              <time className={styles.time}>{formatTime(item.occurredAt)}</time>
+              {item.occurredAt === null ? (
+                <span className={styles.time}>no time recorded</span>
+              ) : (
+                <time className={styles.time} dateTime={item.occurredAt}>
+                  {formatUpdated(item.occurredAt)}
+                </time>
+              )}
               {item.reason ? <span className={styles.reason}>{item.reason}</span> : null}
             </li>
           ))}

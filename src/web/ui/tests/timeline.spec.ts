@@ -343,6 +343,36 @@ test("a pinch or Control and the wheel zooms around the pointer, a drag pans, an
   expect(brushed.span).toBeGreaterThan(panned.span * 0.1);
 });
 
+test.describe("a fling of the plot", () => {
+  for (const { motion, coasts } of [
+    { motion: "no-preference", coasts: true },
+    { motion: "reduce", coasts: false },
+  ] as const) {
+    test(`${coasts ? "coasts on" : "stops at the release"} under ${motion} motion`, async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: motion });
+      await open(page);
+      await openTimeline(page);
+      await page.getByTestId("tl-expand-all").click();
+      await settled(page);
+      const box = await plotBox(page);
+      await page.mouse.move(box.x + box.width * 0.75, box.y + 120);
+      await pinch(page, -100, 3);
+      const zoomed = await windowOf(page);
+
+      await page.mouse.move(box.x + 100, box.y + 120);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 500, box.y + 120, { steps: 6 });
+      await page.mouse.up();
+      const released = await windowOf(page);
+      await page.waitForTimeout(2500);
+      const rested = await windowOf(page);
+
+      expect(rested.from).toBeLessThan(zoomed.from);
+      expect(rested.from === released.from).toBe(!coasts);
+    });
+  }
+});
+
 test("a vertical wheel scrolls the rows over the plot as over the tree, and never changes the time window", async ({ page }) => {
   await open(page);
   await openTimeline(page);
@@ -453,7 +483,7 @@ test("the selected moment is dragged by its line or its label; a drag beside it 
   let box = await plotBox(page);
   const at = (fraction: number): number => box.x + box.width * fraction;
   const moment = page.getByTestId("tl-model-at");
-  // What the header says the moment is: "The model at Nov 11 22:45:42".
+  // What the header says the moment is: "The model at 11 Nov 22:45:42".
   const said = moment.locator("span").first();
   const drag = async (from: number, to: number, height = box.y + 120): Promise<void> => {
     await page.mouse.move(from, height);
@@ -802,6 +832,14 @@ test("full screen fills the window below the top bar, Escape or the button leave
   await page.keyboard.press("Escape");
   await expect(panel).toHaveAttribute("data-fullscreen", "false");
   expect(new URL(page.url()).searchParams.get("fullscreen")).toBeNull();
+
+  // The button keeps the focus and no tooltip takes the Escape: one press leaves full screen.
+  await page.getByTestId("tl-fullscreen").click();
+  await expect(panel).toHaveAttribute("data-fullscreen", "true");
+  await page.getByTestId("tl-fullscreen").focus();
+  await page.waitForTimeout(400);
+  await page.keyboard.press("Escape");
+  await expect(panel).toHaveAttribute("data-fullscreen", "false");
 
   await page.getByTestId("tl-fullscreen").click();
   await page.getByTestId("tl-close").click();

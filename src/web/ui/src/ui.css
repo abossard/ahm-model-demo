@@ -1,22 +1,16 @@
-/* First paint, before the Fluent provider mounts. */
+/* First paint, before the Fluent provider mounts. `data-theme` pins one scheme; without it the system decides. */
 :root {
+  color-scheme: light dark;
+  --page-bg: light-dark(#ffffff, #292929);
+  --page-ink: light-dark(#242424, #ffffff);
+}
+
+:root[data-theme="light"] {
   color-scheme: light;
-  --page-bg: #ffffff;
-  --page-ink: #242424;
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --page-bg: #292929;
-  --page-ink: #ffffff;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) {
-    color-scheme: dark;
-    --page-bg: #292929;
-    --page-ink: #ffffff;
-  }
 }
 
 * {
@@ -35,7 +29,19 @@ body {
   color: var(--page-ink);
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
   font-size: 14px;
-  overflow-x: hidden;
+}
+
+/* The graph area is what its views measure, not the window: the assistant panel takes part of the width. */
+[data-testid="app-shell"] main {
+  container: graph / inline-size;
+}
+
+/* On a phone the assistant panel is a sheet over the graph: a list that reaches its end stays put. */
+@media (max-width: 720px) {
+  #session-workspace,
+  #session-workspace * {
+    overscroll-behavior: contain;
+  }
 }
 
 /*
@@ -53,6 +59,14 @@ body {
   color: var(--colorNeutralForeground1);
   border: 1px solid var(--colorNeutralStroke1);
   border-radius: var(--borderRadiusLarge);
+}
+
+.react-flow__attribution {
+  --xy-attribution-background-color: color-mix(in srgb, var(--colorNeutralBackground1) 86%, transparent);
+}
+
+.react-flow__attribution a {
+  color: var(--colorNeutralForeground3);
 }
 
 .entity-node--dot {
@@ -89,7 +103,6 @@ body {
   box-shadow: var(--card-shadow);
   font-family: var(--fontFamilyBase);
   cursor: pointer;
-  outline: none;
   pointer-events: all;
 }
 
@@ -101,39 +114,42 @@ body {
   box-shadow: 0 0 0 2px var(--select-ring), var(--card-shadow-lift);
 }
 
-.entity-node:focus-visible {
-  box-shadow: 0 0 0 2px var(--colorStrokeFocus1), 0 0 0 4px var(--colorStrokeFocus2);
+/* Focus is an outline, so a selected, highlighted or marked card cannot paint over it and it shows in forced colours. */
+.entity-node:focus-visible,
+.cause-node:focus-visible {
+  outline: 2px solid var(--colorStrokeFocus2);
+  outline-offset: 2px;
 }
 
 .entity-node.is-highlighted {
   box-shadow: 0 0 0 3px var(--highlight-ring), var(--card-shadow-lift);
 }
 
-.entity-node.is-chain {
-  outline: 2px dashed var(--select-ring);
-  outline-offset: 3px;
+/* The chain mark sits outside the focus ring, on its own element, so the two never share an outline. */
+.entity-node.is-chain::after,
+.cause-node.is-chain::after {
+  content: "";
+  position: absolute;
+  inset: -9px;
+  border: 2px dashed var(--select-ring);
+  border-radius: calc(var(--borderRadiusXLarge) + 7px);
+  pointer-events: none;
+}
+
+.entity-node--pill.is-chain::after,
+.entity-node--dot.is-chain::after,
+.entity-node--speck.is-chain::after,
+.cause-node--pill.is-chain::after {
+  border-radius: inherit;
 }
 
 .entity-node.is-marked {
   box-shadow: 0 0 0 3px var(--mark-ring), var(--card-shadow-lift);
 }
 
-/* A card on its way to another place: it stays where its place would be, dimmed, and a see-through copy follows the pointer. */
-.entity-node.is-dragging {
-  opacity: 0.35;
-}
-
+/* A card on its way to another place is dimmed and followed by a copy, as views/reorder.css draws it; the copy of a card also lifts. */
 .entity-node.is-ghost {
-  opacity: 0.6;
-  pointer-events: none;
-  cursor: grabbing;
   box-shadow: var(--shadow16);
-}
-
-.entity-node.is-ghost.is-blocked {
-  opacity: 0.4;
-  outline: 2px dashed var(--colorPaletteRedBorder2);
-  outline-offset: 3px;
 }
 
 .drop-indicator {
@@ -146,21 +162,6 @@ body {
 
 .topology--reordering .entity-node {
   cursor: grabbing;
-}
-
-/* The others make room as the card passes over the places; the copy follows the pointer without lag. */
-.topology--reordering .react-flow__node {
-  transition: transform 160ms ease;
-}
-
-.topology--reordering .react-flow__node[data-id="__ghost__"] {
-  transition: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .topology--reordering .react-flow__node {
-    transition: none;
-  }
 }
 
 .entity-node__badge {
@@ -473,7 +474,6 @@ body {
   box-shadow: var(--card-shadow);
   font-family: var(--fontFamilyBase);
   cursor: pointer;
-  outline: none;
   pointer-events: all;
 }
 
@@ -498,21 +498,12 @@ body {
   box-shadow: 0 0 0 2px var(--select-ring), var(--card-shadow-lift);
 }
 
-.cause-node:focus-visible {
-  box-shadow: 0 0 0 2px var(--colorStrokeFocus1), 0 0 0 4px var(--colorStrokeFocus2);
-}
-
 .cause-node.is-highlighted {
   box-shadow: 0 0 0 3px var(--highlight-ring), var(--card-shadow-lift);
 }
 
 .cause-node.is-marked {
   box-shadow: 0 0 0 3px var(--mark-ring), var(--card-shadow-lift);
-}
-
-.cause-node.is-chain {
-  outline: 2px dashed var(--select-ring);
-  outline-offset: 3px;
 }
 
 .cause-node__step {
@@ -649,6 +640,30 @@ body {
   outline-offset: 2px;
 }
 
+/* Forced colours strip box-shadows: the state of a card is drawn as an outline whose style differs, and a focused card keeps the ring. */
+@media (forced-colors: active) {
+  .entity-node.is-selected,
+  .cause-node.is-selected {
+    outline: 3px solid Highlight;
+  }
+
+  .entity-node.is-highlighted,
+  .cause-node.is-highlighted {
+    outline: 3px dotted Highlight;
+  }
+
+  .entity-node.is-marked,
+  .cause-node.is-marked {
+    outline: 3px double Highlight;
+  }
+
+  .entity-node:focus-visible,
+  .cause-node:focus-visible {
+    outline: 3px solid Highlight;
+    outline-offset: 4px;
+  }
+}
+
 /* Coverage view: one SVG, the model as a partition. */
 .coverage {
   display: block;
@@ -762,4 +777,136 @@ body {
 /* Far out, the words on the lines are too small to read and only cover the connections. */
 .topology--far .react-flow__edge-textwrapper {
   display: none;
+}
+
+/*
+ * Shared motion. One ease for everything that settles, short enough to never hold the viewer up. Every rule below is
+ * still when the viewer asks for less motion.
+ */
+:root {
+  --hp-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --hp-quick: 180ms;
+  --hp-settle: 320ms;
+}
+
+/* The page's own surfaces carry the brand colour: selected text, the caret, the scrollbars. */
+::selection {
+  background: color-mix(in srgb, var(--colorBrandBackground, #0f6cbd) 32%, transparent);
+}
+
+input,
+textarea {
+  caret-color: var(--colorBrandForeground1, #0f6cbd);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--colorNeutralStrokeAccessible, #8a8a8a) transparent;
+}
+
+/* An explanation that opens under its key: the rows grow from nothing, so what is below slides rather than jumps. */
+.hp-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--hp-settle) var(--hp-ease), opacity var(--hp-quick) ease-out;
+}
+
+.hp-reveal[data-open] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.hp-reveal > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.hp-chevron {
+  transition: transform var(--hp-quick) var(--hp-ease);
+}
+
+.hp-chevron[data-open] {
+  transform: rotate(180deg);
+}
+
+/* The tally's segments grow and shrink as entities change state. */
+.hp-tally-segment {
+  flex-basis: 0;
+  min-width: 0;
+  transition: flex-grow var(--hp-settle) var(--hp-ease);
+}
+
+/* A card that changes state fades into its new colours instead of snapping. */
+.entity-node {
+  transition: background-color var(--hp-settle) ease-out, border-color var(--hp-settle) ease-out, box-shadow var(--hp-quick) ease-out;
+}
+
+/* The assistant panel and the past-moment bar arrive from where they live. */
+@keyframes hp-from-left {
+  from { opacity: 0; transform: translateX(-12px); }
+}
+
+@keyframes hp-from-above {
+  from { opacity: 0; transform: translateY(-6px); }
+}
+
+#session-workspace > :first-child {
+  animation: hp-from-left var(--hp-settle) var(--hp-ease);
+}
+
+[data-testid="moment-bar"] {
+  animation: hp-from-above var(--hp-settle) var(--hp-ease);
+}
+
+/* While live, a ring grows from the dot and fades: slow enough to read as alive, not as an alert. */
+@keyframes hp-breathe {
+  0% { opacity: 0.55; scale: 1; }
+  70%, 100% { opacity: 0; scale: 2.5; }
+}
+
+[data-testid="live-control"][data-status="live"] > span:first-child {
+  position: relative;
+}
+
+[data-testid="live-control"][data-status="live"] > span:first-child::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--healthy-dot, #3b8a1f);
+  opacity: 0;
+  animation: hp-breathe 2.4s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hp-reveal,
+  .hp-chevron,
+  .hp-tally-segment {
+    transition: none;
+  }
+
+  #session-workspace > :first-child,
+  [data-testid="moment-bar"],
+  [data-testid="live-control"][data-status="live"] > span:first-child::after {
+    animation: none;
+  }
+}
+
+/* Until a first-time viewer has opened an explanation, its toggle speaks in the brand colour and glows three times. */
+@keyframes hp-invite {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--colorBrandBackground, #0f6cbd) 22%, transparent); }
+}
+
+.hp-invite[data-fresh] {
+  color: var(--colorBrandForeground1);
+  font-weight: var(--fontWeightSemibold);
+  animation: hp-invite 1.6s ease-in-out 600ms 3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hp-invite[data-fresh] {
+    animation: none;
+  }
 }

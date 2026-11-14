@@ -255,6 +255,8 @@ test.describe("starting Tasks", () => {
     await expect(page.getByTestId("task-workload")).toHaveValue("rg-demo");
 
     await page.getByTestId("task-repository").fill("https://example.com/owner/repo");
+    await expect(page.getByTestId("task-form")).not.toContainText("Enter a public GitHub repository");
+    await page.getByTestId("task-repository").blur();
     await expect(page.getByTestId("task-form")).toContainText("Enter a public GitHub repository, such as https://github.com/owner/repository.");
     await expect(page.getByTestId("task-submit")).toBeDisabled();
 
