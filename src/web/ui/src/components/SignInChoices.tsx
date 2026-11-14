@@ -30,6 +30,7 @@ export function SignInChoices({ openDirectory, loginHint }: { readonly openDirec
 
   const submit = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
+    if (busy) return;
     setProblem(null);
     setBusy(true);
     try {
