@@ -794,7 +794,7 @@ test("the Order control offers the view's own order and Custom, and the card gra
     await openIn(page, view);
     expect(await options(), view.id).toEqual(view.id === "zoom" ? ["shortest", "name", "observed", "health", "custom"] : [view.own, "custom"].sort((left, right) => (left === "custom" ? 1 : right === "custom" ? -1 : 0)));
     await expect(page.getByTestId("sort-reverse")).toHaveCount(view.id === "zoom" ? 1 : 0);
-    await expect(page.getByTestId("custom-order-reset")).toHaveText("Reset custom order");
+    await expect(page.getByTestId("custom-order-reset")).toHaveAccessibleName("Reset custom order");
   }
 });
 

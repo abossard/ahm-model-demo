@@ -21,6 +21,7 @@ import { OrderControls } from "../views/OrderControls";
 import { viewDefinition } from "../views/registry";
 import { actions, useStore } from "../store/store";
 import type { ExcludedEntityMode, HealthFilterState } from "../store/uiSlice";
+import { COMPACT, visuallyHidden } from "./inlineField";
 import { ViewSwitch } from "./ViewSwitch";
 
 const HEALTH_STATES: readonly HealthFilterState[] = ["Healthy", "Degraded", "Unhealthy", "Unknown"];
@@ -62,6 +63,20 @@ const useStyles = makeStyles({
     borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   option: { display: "inline-flex", alignItems: "center", columnGap: tokens.spacingHorizontalS },
+  // Beside the assistant panel the toolbar keeps one row: Search shows its icon alone and keeps its name.
+  compact: { [`@container graph (max-width: ${COMPACT}px)`]: { minWidth: "auto" } },
+  compactLabel: { [`@container graph (max-width: ${COMPACT}px)`]: visuallyHidden },
+  // The states a filter keeps, in their colours, so a filtered graph never passes for the whole model.
+  shown: { display: "inline-flex", columnGap: "2px" },
+  dot: { width: "8px", height: "8px", borderRadius: tokens.borderRadiusCircular },
+  // Between the views and what works inside a view; a phone shows the views as a dropdown and needs the room.
+  divider: {
+    alignSelf: "stretch",
+    width: "1px",
+    marginBlock: tokens.spacingVerticalXS,
+    backgroundColor: tokens.colorNeutralStroke2,
+    "@media (max-width: 960px)": { display: "none" },
+  },
   swatch: {
     width: "10px",
     height: "10px",
@@ -85,6 +100,7 @@ function HealthFilter(): JSX.Element {
   const selectedHealth = useStore((state) => state.selectedHealth);
   const excludedEntityMode = useStore((state) => state.excludedEntityMode);
   const [open, setOpen] = useState(false);
+  const filtered = selectedHealth.length < HEALTH_STATES.length;
   const popupId = useId();
   const stateLegendId = useId();
 
@@ -114,10 +130,24 @@ function HealthFilter(): JSX.Element {
           size="small"
           icon={<Filter20Regular />}
           data-testid="health-filter-toggle"
+          data-filtered={filtered || undefined}
+          // No wider than its unfiltered label, so filtering never moves the toolbar.
+          aria-label={filtered ? `Filter by state, ${selectedHealth.length} of ${HEALTH_STATES.length} shown` : undefined}
           aria-expanded={open}
           aria-controls={popupId}
         >
-          Filter by state
+          {filtered ? (
+            <span className={styles.option}>
+              <span className={styles.shown} aria-hidden="true">
+                {HEALTH_STATES.filter((state) => selectedHealth.includes(state)).map((state) => (
+                  <span key={state} className={styles.dot} style={{ background: tokensFor(state).dot }} />
+                ))}
+              </span>
+              {selectedHealth.length} of {HEALTH_STATES.length}
+            </span>
+          ) : (
+            "Filter by state"
+          )}
         </Button>
       </PopoverTrigger>
       <PopoverSurface id={popupId} className={styles.surface} data-testid="health-filter-popup">
@@ -191,16 +221,18 @@ export function GraphToolbar({ entities, relationships }: GraphToolbarProps): JS
   return (
     <div className={styles.root} data-testid="graph-toolbar" role="group" aria-label="View controls">
       <ViewSwitch />
+      <span className={styles.divider} aria-hidden="true" />
       {Controls ? <Controls entities={entities} relationships={relationships} /> : null}
       {definition.cardSignals ? <SignalsToggle /> : null}
       <OrderControls />
       <Button
         size="small"
         icon={<Search20Regular />}
+        className={styles.compact}
         data-testid="search-open"
         onClick={() => actions.openSearch()}
       >
-        Search…
+        <span className={styles.compactLabel}>Search…</span>
       </Button>
       <HealthFilter />
       <Announcement />

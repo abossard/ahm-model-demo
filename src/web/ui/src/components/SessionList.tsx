@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useId, useMemo, useState } from "react";
 import type { JSX } from "react";
 import {
   Button,
@@ -15,7 +15,7 @@ import {
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import { Add20Regular } from "@fluentui/react-icons";
+import { Add20Regular, ChevronRight16Regular, History24Regular } from "@fluentui/react-icons";
 import { formatWhen } from "../model/duration";
 import { plural } from "../model/wording";
 import { historyFailure, sessionFailure } from "../model/errors";
@@ -63,15 +63,16 @@ const useStyles = makeStyles({
     paddingBlock: 0,
     height: "100%",
     display: "flex",
-    flexDirection: "column",
-    justifyContent: "center",
-    rowGap: "2px",
+    alignItems: "center",
+    columnGap: tokens.spacingHorizontalS,
     paddingInline: tokens.spacingHorizontalM,
     cursor: "pointer",
     color: tokens.colorNeutralForeground1,
     ":hover": { backgroundColor: tokens.colorSubtleBackgroundHover },
     ...createCustomFocusIndicatorStyle({ outline: `2px solid ${tokens.colorStrokeFocus2}`, outlineOffset: "-2px" }),
   },
+  text: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", rowGap: "2px" },
+  chevron: { flexShrink: 0, color: tokens.colorNeutralForeground3 },
   title: {
     fontWeight: tokens.fontWeightSemibold,
     overflow: "hidden",
@@ -79,8 +80,23 @@ const useStyles = makeStyles({
     whiteSpace: "nowrap",
   },
   meta: { fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground2 },
-  empty: { padding: tokens.spacingHorizontalM, color: tokens.colorNeutralForeground2 },
+  empty: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    rowGap: tokens.spacingVerticalXS,
+    padding: `${tokens.spacingVerticalXXL} ${tokens.spacingHorizontalL}`,
+    textAlign: "center",
+    color: tokens.colorNeutralForeground2,
+    border: `1px dashed ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusMedium,
+  },
+  emptyIcon: { color: tokens.colorBrandForeground1, marginBottom: tokens.spacingVerticalXS },
+  emptyTitle: { margin: 0, color: tokens.colorNeutralForeground1 },
+  emptyText: { margin: 0, maxWidth: "34ch", textAlign: "center" },
   start: { display: "flex", flexDirection: "column", rowGap: tokens.spacingVerticalS, flexShrink: 0 },
+  introHeading: { margin: 0, fontSize: tokens.fontSizeBase400, lineHeight: tokens.lineHeightBase400, fontWeight: tokens.fontWeightSemibold },
+  intro: { margin: 0, maxWidth: "52ch", color: tokens.colorNeutralForeground2 },
   hint: { fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground2 },
 });
 
@@ -111,12 +127,15 @@ const SessionRow = memo(function SessionRow({
         onClick={() => void actions.openSession(session.id)}
         data-testid={`session-open-${session.id}`}
       >
-        <span className={styles.title} title={session.title}>
-          {session.title}
+        <span className={styles.text}>
+          <span className={styles.title} title={session.title}>
+            {session.title}
+          </span>
+          <span className={styles.meta}>
+            {plural(session.taskCount, "question")}, last asked {formatWhen(session.lastTaskAt ?? session.createdAt)}
+          </span>
         </span>
-        <span className={styles.meta}>
-          {plural(session.taskCount, "question")}, last asked {formatWhen(session.lastTaskAt ?? session.createdAt)}
-        </span>
+        <ChevronRight16Regular className={`hp-row-chevron ${styles.chevron}`} aria-hidden="true" />
       </button>
     </div>
   );
@@ -130,9 +149,15 @@ function Rows({ listed }: { readonly listed: readonly SessionSummary[] }): JSX.E
   const rows = useWindowedRows(heights);
   if (sessions.length === 0) {
     return (
-      <Text as="p" className={styles.empty} data-testid="session-list-empty">
-        Nothing asked yet. Ask the assistant above and your question is kept here.
-      </Text>
+      <div className={styles.empty} data-testid="session-list-empty">
+        <History24Regular className={styles.emptyIcon} aria-hidden="true" />
+        <Text as="p" weight="semibold" className={styles.emptyTitle}>
+          Nothing asked yet
+        </Text>
+        <Text as="p" className={styles.emptyText}>
+          Each question and its answer is kept here, grouped by topic, so you can come back to it.
+        </Text>
+      </div>
     );
   }
   return (
@@ -164,6 +189,7 @@ export function SessionList(): JSX.Element {
   const sessions = useStore((state) => state.sessions);
   const creating = useStore((state) => state.creatingSession);
   const [title, setTitle] = useState("");
+  const introId = useId();
 
   // Opening the list again shows what changed since: new Tasks, a new order.
   useEffect(() => {
@@ -180,10 +206,16 @@ export function SessionList(): JSX.Element {
   return (
     <div className={styles.root} data-testid="session-list-view">
       <WorkspaceHeader title="History" titleTestId="session-list-heading" />
-      <section className={styles.start} aria-label="Ask the assistant">
+      <section className={styles.start} aria-labelledby={introId}>
+        <Text as="h3" id={introId} className={styles.introHeading}>
+          Ask the assistant
+        </Text>
+        <Text as="p" className={styles.intro}>
+          It reads this model&apos;s signals and history and answers in plain words. A change it proposes reaches the model only when you apply it.
+        </Text>
         <StartButtons />
         <Text className={styles.hint}>
-          A question asked here starts a new topic in History. To ask about an entity, select it in the graph first.
+          A question asked here starts a new topic in History. To ask about one entity, select it in the graph first.
         </Text>
       </section>
       <form
@@ -202,7 +234,6 @@ export function SessionList(): JSX.Element {
           />
         </Field>
         <Button
-          appearance="primary"
           type="submit"
           icon={creating.kind === "loading" ? <Spinner size="tiny" /> : <Add20Regular />}
           disabled={creating.kind === "loading"}

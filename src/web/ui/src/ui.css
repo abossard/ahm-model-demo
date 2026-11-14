@@ -855,6 +855,28 @@ textarea {
   animation: hp-from-left var(--hp-settle) var(--hp-ease);
 }
 
+/* Inside the panel, History, a topic and the form fade in place of each other. */
+@keyframes hp-fade-in {
+  from { opacity: 0; }
+}
+
+[data-testid="session-list-view"],
+[data-testid="session-view"],
+[data-testid="new-task-view"] {
+  animation: hp-fade-in var(--hp-quick) ease-out;
+}
+
+/* A row's chevron leans toward where the click goes. */
+.hp-row-chevron {
+  transition: transform var(--hp-quick) var(--hp-ease), color var(--hp-quick) ease-out;
+}
+
+button:hover > .hp-row-chevron,
+button:focus-visible > .hp-row-chevron {
+  transform: translateX(3px);
+  color: var(--colorBrandForeground1);
+}
+
 [data-testid="moment-bar"] {
   animation: hp-from-above var(--hp-settle) var(--hp-ease);
 }
@@ -882,11 +904,15 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .hp-reveal,
   .hp-chevron,
+  .hp-row-chevron,
   .hp-tally-segment {
     transition: none;
   }
 
   #session-workspace > :first-child,
+  [data-testid="session-list-view"],
+  [data-testid="session-view"],
+  [data-testid="new-task-view"],
   [data-testid="moment-bar"],
   [data-testid="live-control"][data-status="live"] > span:first-child::after {
     animation: none;

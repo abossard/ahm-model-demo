@@ -7,6 +7,7 @@ import {
   mergeClasses,
   tokens,
 } from "@fluentui/react-components";
+import { ChevronRight16Regular } from "@fluentui/react-icons";
 import { formatDuration, taskDuration } from "../model/duration";
 import { isUnfinished, targetLabel, taskTitle } from "../model/tasks";
 import type { TaskSummary } from "../model/types";
@@ -48,9 +49,8 @@ const useStyles = makeStyles({
     paddingBlock: 0,
     height: "100%",
     display: "flex",
-    flexDirection: "column",
-    justifyContent: "center",
-    rowGap: "2px",
+    alignItems: "center",
+    columnGap: tokens.spacingHorizontalS,
     paddingInline: tokens.spacingHorizontalM,
     cursor: "pointer",
     color: tokens.colorNeutralForeground1,
@@ -58,6 +58,8 @@ const useStyles = makeStyles({
     ...createCustomFocusIndicatorStyle({ outline: `2px solid ${tokens.colorStrokeFocus2}`, outlineOffset: "-2px" }),
   },
   current: { backgroundColor: tokens.colorSubtleBackgroundSelected },
+  text: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", rowGap: "2px" },
+  chevron: { flexShrink: 0, color: tokens.colorNeutralForeground3 },
   line: { display: "flex", alignItems: "center", columnGap: tokens.spacingHorizontalS, minWidth: 0 },
   title: { fontWeight: tokens.fontWeightSemibold, whiteSpace: "nowrap", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" },
   grow: { flex: 1 },
@@ -116,17 +118,20 @@ const TaskRow = memo(function TaskRow({
         onClick={() => void actions.openTask(task.seq)}
         data-testid={`task-open-${task.seq}`}
       >
-        <span className={styles.line}>
-          <span className={styles.title} title={title}>
-            {title}
+        <span className={styles.text}>
+          <span className={styles.line}>
+            <span className={styles.title} title={title}>
+              {title}
+            </span>
+            <TaskStatusBadge status={task.status} />
+            <span className={styles.grow} />
+            {elapsed !== null ? <span className={styles.duration}>{formatDuration(elapsed)}</span> : null}
           </span>
-          <TaskStatusBadge status={task.status} />
-          <span className={styles.grow} />
-          {elapsed !== null ? <span className={styles.duration}>{formatDuration(elapsed)}</span> : null}
+          <span className={styles.meta} title={targetLabel(task.target)}>
+            {targetLabel(task.target)}
+          </span>
         </span>
-        <span className={styles.meta} title={targetLabel(task.target)}>
-          {targetLabel(task.target)}
-        </span>
+        <ChevronRight16Regular className={`hp-row-chevron ${styles.chevron}`} aria-hidden="true" />
       </button>
     </div>
   );
