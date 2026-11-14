@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "web" / "ap
 
 import history_store  # noqa: E402
 import timeline  # noqa: E402
-from test_timeline import NOW, Recording, Clock, entity, relationship  # noqa: E402
+from test_timeline import NOW, Recording, Clock, azure_error, entity, relationship  # noqa: E402
 
 DAY = history_store.DAY_MS
 WEEK = history_store.WEEK_MS
@@ -418,6 +418,16 @@ class Windowed(Recording):
     def serve(self, kind, name, signal, body):
         with self.lock:
             self.calls.append((kind, name, signal, dict(body)))
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            time.sleep(self.delay)
+            return self.answer(kind, name, signal, body)
+        finally:
+            with self.lock:
+                self.active -= 1
+
+    def answer(self, kind, name, signal, body):
         failure = self.errors.get((kind, name, signal)) or self.errors.get(kind)
         error = failure() if callable(failure) else failure
         if error is not None:
@@ -559,13 +569,14 @@ class ReaderCacheTests(unittest.TestCase):
     def test_a_day_that_could_not_be_read_in_full_is_not_kept_and_the_result_says_it_was_cut(self):
         many = [{"occurredAt": NOW - timedelta(days=2) + timedelta(seconds=i * 20), "value": 1.0, "healthState": "Healthy"} for i in range(4000)]
         source = Windowed([entity("root"), entity("api", ["cpu"])], [relationship("root", "api")], {("signal", "api", "cpu"): many}, page_limit=500)
-        memory = history_store.MemoryBuckets()
+        history = store()
 
         with mock.patch.object(timeline, "TIMELINE_SIGNAL_PAGES", 1):
-            result = signals(reader(store(memory=memory)), source, 72)
+            result = signals(reader(history), source, 72)
 
+        kept = [days for days in (1, 2, 3) if history.piece(SCOPE, "signal", 0, "api", "cpu", timeline.to_ms(day_start(days)), history_store.Tally())]
         self.assertFalse(result["complete"])
-        self.assertEqual(memory.size, 0)
+        self.assertEqual(kept, [3], "only the empty day before the cut ones is whole")
         self.assertIsNotNone(result["earliest"])
 
     def test_closed_history_is_not_shared_between_models(self):
@@ -626,6 +637,93 @@ class ReaderCacheTests(unittest.TestCase):
         self.assertEqual(len(source.calls_of("signal")), 1, "only the day nobody recorded was read")
         self.assertGreater(len(from_azure["points"]), 1)
         self.assertEqual(again["points"], from_azure["points"])
+
+
+class Uneven(Windowed):
+    """A service that answers the older days of a signal sooner than the newer ones, and cuts, skips or refuses one day of
+    `cpu`. An empty `mem` beside it keeps a refused `cpu` from failing the whole answer."""
+
+    def __init__(self, failing=None, how=None):
+        super().__init__([entity("root"), entity("api", ["cpu", "mem"])], [relationship("root", "api")], {("signal", "api", "cpu"): series(days=6)})
+        self.failing = failing
+        self.how = how
+
+    def answer(self, kind, name, signal, body):
+        start = body["startAt"]
+        time.sleep(0.01 * (6 - (NOW - start).days))
+        if self.failing is None or signal != "cpu" or timeline.to_ms(start) != timeline.to_ms(day_start(self.failing)):
+            return super().answer(kind, name, signal, body)
+        if self.how == "refused":
+            raise azure_error(500)
+        if self.how == "skipped":
+            raise timeline.Skipped("deadline", "The history was not read in time.", True)
+        page = super().answer(kind, name, signal, body)
+        return {**page, "history": page["history"][: len(page["history"]) // 2], "nextMarker": "more"}
+
+
+class ParallelReadTests(unittest.TestCase):
+    """The open tail and every missing piece of a request are read side by side and joined newest first."""
+
+    def test_the_days_of_a_week_are_read_side_by_side(self):
+        delay = 0.2
+        end = timeline.to_ms(NOW) // WEEK * WEEK
+        params = {"include": "signals", "from": timeline.iso_ms(end - WEEK), "to": timeline.iso_ms(end), "resolution": "3600"}
+        table = [("one signal is one round of calls", 1, 1), ("two signals are two rounds", 2, 2)]
+        for label, count, rounds in table:
+            with self.subTest(label):
+                names = [f"s{index}" for index in range(count)]
+                source = backend({("signal", "api", name): series(days=14) for name in names}, signals=names)
+                source.delay = delay
+
+                began = time.monotonic()
+                body = reader(store()).read(SimpleNamespace(oid="ada", owner="ada"), source, SCOPE, params, ["api"])
+                took = time.monotonic() - began
+
+                self.assertEqual([item["complete"] for item in body["series"]], [True] * count)
+                self.assertEqual(len(source.calls), 7 * count)
+                self.assertLess(took, (rounds + 0.75) * delay, "7 days one after another would take 7 rounds")
+                self.assertLessEqual(source.peak, timeline.TIMELINE_CALL_CONCURRENCY)
+
+    def test_a_history_read_out_of_order_is_the_one_read_in_turn_and_keeps_only_whole_days(self):
+        closed = (1, 2, 3, 4, 5)
+        table = [(f"day {days} {how}", days, how) for how in ("cut", "skipped", "refused") for days in (1, 3, 5)]
+        for label, days, how in table:
+            with self.subTest(label):
+                history = store()
+                with mock.patch.object(timeline, "TIMELINE_SIGNAL_PAGES", 1):
+                    body = signals(reader(history), Uneven(days, how), start=day_start(5))
+                    with mock.patch.object(timeline, "TIMELINE_CALL_CONCURRENCY", 1):
+                        in_turn = signals(reader(store()), Uneven(days, how), start=day_start(5))
+
+                kept = [day for day in closed if history.piece(SCOPE, "signal", 0, "api", "cpu", timeline.to_ms(day_start(day)), history_store.Tally())]
+                self.assertEqual(body, in_turn)
+                self.assertFalse(body["complete"])
+                self.assertEqual(kept, [day for day in closed if day != days], "every whole day is kept, the failing one is not")
+                if how == "refused":
+                    self.assertEqual((body["error"]["code"], body["points"]), ("unavailable", []))
+                    continue
+                oldest = timeline.to_ms(day_start(days)) + (0 if how == "cut" else DAY)
+                self.assertGreaterEqual(body["points"][0][0], oldest, "nothing older than the hole")
+                self.assertEqual(body["earliest"], body["points"][0][0])
+
+    def test_the_call_budget_and_the_deadline_hold_for_the_reads_of_a_request(self):
+        table = [
+            ("a budget for every read", "TIMELINE_MAX_CALLS", 12, 12, True, None),
+            ("a budget for half of them", "TIMELINE_MAX_CALLS", 6, 6, False, None),
+            ("no budget", "TIMELINE_MAX_CALLS", 0, 0, False, "call_budget"),
+            ("past the deadline", "TIMELINE_DEADLINE_SECONDS", -1, 0, False, "deadline"),
+        ]
+        params = {"include": "signals", "from": day_start(5).isoformat()}
+        for label, name, value, calls, complete, code in table:
+            with self.subTest(label):
+                source = Uneven()
+
+                with mock.patch.object(timeline, name, value):
+                    body = reader(store()).read(SimpleNamespace(oid="ada", owner="ada"), source, SCOPE, params, ["api"])
+
+                self.assertEqual((len(source.calls), body["partial"]), (calls, not complete))
+                if code:
+                    self.assertEqual([item["error"]["code"] for item in body["series"]], [code, code])
 
 
 class LargeModelTests(unittest.TestCase):

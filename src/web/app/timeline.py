@@ -438,7 +438,7 @@ class TimelineReader:
             budget = Budget(TIMELINE_MAX_CALLS, self._clock() + TIMELINE_DEADLINE_SECONDS, self._clock, tally)
             cache = self._live if window["live"] else self._past
             batch = history_store.Batch()
-            results = self._run(jobs, lambda job: self._job(cache, scope, client, group, model, window, budget, job, level_of(job), batch))
+            results = self._histories(cache, scope, client, group, model, window, budget, jobs, level_of, batch)
             if len(batch):
                 self._history.write(batch, tally)
             return self._assemble(model, now, window, query, wanted, jobs, results, missing)
@@ -524,65 +524,125 @@ class TimelineReader:
         with ThreadPoolExecutor(max_workers=min(TIMELINE_CALL_CONCURRENCY, len(jobs))) as pool:
             return list(pool.map(run, jobs))
 
-    def _job(self, cache, scope, client, group, model, window, budget, job, level=0, batch=None):
-        kind, entity, signal = job
-        key = (*scope, kind, entity, signal, level, window["from"], window["to"])
-        try:
-            return cached(cache, key, lambda: self._load(kind, client, group, model, entity, signal, window, budget, scope[1:], level, batch))
-        except Skipped as skipped:
-            return {"error": {"code": skipped.code, "message": skipped.message, "retryable": skipped.retryable}}
-        except AzureError as error:
-            logger.warning("timeline history failed kind=%s status=%s", kind, getattr(error, "status_code", None))
-            return {"error": series_error(error), "cause": error}
-
     def _floor_ms(self, now_ms):
         return now_ms - TIMELINE_RETENTION_DAYS * 24 * 3600 * 1000 + int(RETENTION_MARGIN.total_seconds() * 1000)
 
-    def _load(self, kind, client, group, model, entity, signal, window, budget, model_scope, level=0, batch=None):
-        """One history over a window. Whole days (or weeks) that are over are read once and kept, at every level; the open
-        tail is always read. A signal at a kept level is served as stored, already thinned."""
+    def _histories(self, cache, scope, client, group, model, window, budget, jobs, level_of, batch):
+        """Every history of a request. Its open tail and each closed piece the store lacks are reads of their own, and every
+        read of every history runs side by side, at most TIMELINE_CALL_CONCURRENCY at once. A history is then put together
+        newest first as if read in turn: it stops at the first piece that was cut or not read."""
+        if not jobs:
+            return []
+        with ThreadPoolExecutor(max_workers=TIMELINE_CALL_CONCURRENCY) as pool:
+            plans = []
+            for job in jobs:
+                key = (*scope, *job, level_of(job), window["from"], window["to"])
+                found = cache.get(key)
+                if found is MISSING:
+                    plans.append({"key": key, **self._plan(pool, client, group, model, window, budget, job, level_of(job), scope[1:], batch)})
+                else:
+                    plans.append({"key": key, "found": found})
+            for plan in plans:
+                if "lookup" in plan:
+                    plan["pieces"] = self._missing(pool, plan)
+            return [self._finish(cache, plan) for plan in plans]
+
+    def _plan(self, pool, client, group, model, window, budget, job, level, model_scope, batch):
+        """Starts the reads of one history that need no lookup: the whole window without a store, else the open tail and
+        the lookup of its closed pieces, newest first."""
+        kind, entity, signal = job
+
+        def read(span):
+            return self._load_raw(kind, client, group, model, entity, signal, span, budget)
+
         if self._history is None:
-            return self._load_raw(kind, client, group, model, entity, signal, window, budget)
+            return {"whole": pool.submit(read, window)}
         size = history_store.PIECE_MS[kind]
         now_ms = to_ms(self._now())
         limit = history_store.closed_before(now_ms, size)
         start, end = window["from"], now_ms if window["to"] is None else window["to"]
-        floor_ms = self._floor_ms(now_ms)
-        parts, complete, earliest = [], True, None
         tail_start = max(start, limit)
-        if tail_start < end:
-            tail = self._load_raw(kind, client, group, model, entity, signal, {**window, "from": tail_start}, budget)
+        buckets = history_store.buckets(start, end, size, limit)
+        return {
+            "job": job,
+            "level": level,
+            "read": read,
+            "budget": budget,
+            "batch": batch,
+            "model_scope": model_scope,
+            "start": start,
+            "end": end,
+            "floor": self._floor_ms(now_ms),
+            "buckets": buckets,
+            "lookup": pool.submit(lambda: [self._stored(model_scope, kind, level, entity, signal, first, budget.tally, batch) for first, _ in buckets]),
+            "tail": pool.submit(read, {**window, "from": tail_start}) if tail_start < end else None,
+        }
+
+    def _missing(self, pool, plan):
+        """The closed pieces of a history in order, newest first: the rows the store holds, or the read of a missing one."""
+        return [
+            (found, None if found is not None else pool.submit(self._piece, plan, first, last))
+            for (first, last), found in zip(plan["buckets"], plan["lookup"].result())
+        ]
+
+    def _piece(self, plan, first, last):
+        """One closed piece from Azure, as (rows at the plan's level, complete, earliest). A piece read in full is kept at
+        every level. The service refuses a start more than 30 days back: the oldest piece is read from the floor and, being
+        partial, not kept."""
+        kind, entity, signal = plan["job"]
+        raw = plan["read"]({"from": max(first, plan["floor"]), "to": last, "live": False})
+        rows = history_store.within(kind, raw, first, last)
+        if not raw["complete"]:
+            return rows, False, raw.get("earliest")
+        plan["budget"].tally.add("pieces_read")
+        levels = levels_of(kind, rows)
+        if first >= plan["floor"] and plan["batch"] is not None:
+            plan["batch"].add(plan["model_scope"], kind, entity, signal, first, history_store.AZURE, levels)
+        return levels[plan["level"]], True, None
+
+    def _finish(self, cache, plan):
+        if "found" in plan:
+            return plan["found"]
+        try:
+            value = plan["whole"].result() if "whole" in plan else self._join(plan)
+        except Skipped as skipped:
+            return {"error": {"code": skipped.code, "message": skipped.message, "retryable": skipped.retryable}}
+        except AzureError as error:
+            logger.warning("timeline history failed kind=%s status=%s", plan["key"][4], getattr(error, "status_code", None))
+            return {"error": series_error(error), "cause": error}
+        cache.put(plan["key"], value)
+        return value
+
+    def _join(self, plan):
+        """One history over its window from its tail and pieces, newest first. Whatever comes after the first piece that
+        was cut or not read is left out, however soon it was read, so nothing older than a hole is reported as held."""
+        kind = plan["job"][0]
+        parts, complete, earliest = [], True, None
+        if plan["tail"] is not None:
+            tail = plan["tail"].result()
             parts.append(tail)
             complete, earliest = tail["complete"], tail.get("earliest")
         if complete:
-            for first, last in history_store.buckets(start, end, size, limit):
-                found = self._stored(model_scope, kind, level, entity, signal, first, budget.tally, batch)
+            for found, read in plan["pieces"]:
                 if found is not None:
-                    budget.tally.add("pieces_stored")
-                else:
-                    try:
-                        # The service refuses a start more than 30 days back: the oldest piece is read from the floor and, being partial, not kept.
-                        raw = self._load_raw(kind, client, group, model, entity, signal, {"from": max(first, floor_ms), "to": last, "live": False}, budget)
-                    except Skipped:
-                        if not parts:
-                            raise
-                        complete, earliest = False, self._oldest(kind, parts)
-                        break
-                    rows = history_store.within(kind, raw, first, last)
-                    if not raw["complete"]:
-                        parts.append(rows)
-                        complete, earliest = False, raw.get("earliest")
-                        break
-                    budget.tally.add("pieces_read")
-                    levels = levels_of(kind, rows)
-                    if first >= floor_ms and batch is not None:
-                        batch.add(model_scope, kind, entity, signal, first, history_store.AZURE, levels)
-                    found = levels[level]
-                parts.append(found)
+                    plan["budget"].tally.add("pieces_stored")
+                    parts.append(found)
+                    continue
+                try:
+                    rows, whole, cut_at = read.result()
+                except Skipped:
+                    if not parts:
+                        raise
+                    complete, earliest = False, self._oldest(kind, parts)
+                    break
+                parts.append(rows)
+                if not whole:
+                    complete, earliest = False, cut_at
+                    break
         merged = history_store.merge_parts(kind, parts)
         for part, rows in merged.items():
             time_of = history_store.KEYS[part]
-            merged[part] = [row for row in rows if start <= time_of(row) <= end]
+            merged[part] = [row for row in rows if plan["start"] <= time_of(row) <= plan["end"]]
         return {**merged, "complete": complete, "earliest": earliest if not complete else self._oldest(kind, [merged])}
 
     def _stored(self, model_scope, kind, level, entity, signal, start, tally, batch):
