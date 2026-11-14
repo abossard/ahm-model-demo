@@ -120,7 +120,7 @@ The caps are constants in `src/web/app/config.py`. A refused request carries the
 - 50 Tasks per Session. The next Task returns `task_limit`: start a new Session.
 - 1 Task running at a time per user, and 3 across the app. Another start returns `task_running` or `agents_busy`: try again in a few minutes.
 - 6 live streams per user, 50 viewers per model and 8 models kept warm across the app.
-- The timeline reads at most 120 signals, 400 Azure calls and 40 seconds per request, 8 calls at a time per request and 24 across the app. Beyond that it returns `too_many_series` or reports the series it skipped.
+- The timeline reads at most 120 signals, 400 Azure calls and 40 seconds per request, 16 calls at a time per request and 24 across the app. Beyond that it returns `too_many_series` or reports the series it skipped.
 - Opening a model's timeline reads its missing history of the last 30 days in the background, with your sign-in: one fill a model and two across the app, 2 calls at a time a fill, 4 at a time and 300 a minute across the app, at most 8000 calls a fill, and only while no request waits for Azure. It stops at a 429 that three waits do not clear, after three failures in a row, or 2 minutes before your sign-in expires, and the next opening after 10 minutes starts it again.
 - 64 KB per request body. A larger body returns `payload_too_large`.
 - 10 minutes per Task. A longer Task fails with `timeout`.
