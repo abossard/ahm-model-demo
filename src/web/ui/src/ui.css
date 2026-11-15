@@ -917,6 +917,17 @@ button:focus-visible > .hp-row-chevron {
   [data-testid="live-control"][data-status="live"] > span:first-child::after {
     animation: none;
   }
+
+  [data-graph-area]::view-transition-group(*),
+  [data-graph-area]::view-transition-old(*),
+  [data-graph-area]::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+/* A new view fades in over the last one, quick enough not to hold up the next click. */
+[data-graph-area]::view-transition-group(*) {
+  animation-duration: 180ms;
 }
 
 /* Until a first-time viewer has opened an explanation, its toggle speaks in the brand colour and glows three times. */

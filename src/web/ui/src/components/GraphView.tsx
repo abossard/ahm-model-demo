@@ -63,7 +63,7 @@ export const GraphView = memo(function GraphView(): JSX.Element | null {
 
   if (model === null || shown === null) return null;
   return (
-    <div className={styles.root}>
+    <div className={styles.root} data-graph-area>
       <GraphToolbar entities={shown.entities} relationships={shown.relationships} />
       <Legend diff={comparing !== null} {...(definition.legendNotes ? { notes: definition.legendNotes } : {})} />
       {comparing ? (
