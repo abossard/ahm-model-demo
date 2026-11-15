@@ -65,7 +65,7 @@ export function OrderControls(): JSX.Element {
           icon={<ArrowReset20Regular />}
           aria-label="Reset custom order"
           data-testid="custom-order-reset"
-          disabled={!hasCustom}
+          disabledFocusable={!hasCustom}
           onClick={() => {
             actions.resetCustomOrder();
             actions.announce(`Custom order reset. The order is now ${own}.`);
