@@ -91,6 +91,23 @@ test.describe("the workspace pane", () => {
     await page.getByTestId("workspace-close").click();
     await expect(workspace(page)).toBeHidden();
   });
+
+  test("is a modal on a phone: it takes the focus, the page under it is out of reach, and Escape gives the focus back", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 800 });
+    await boot(page);
+    const toggle = page.getByTestId("workspace-toggle");
+    const outOfReach = (locator: Locator): Promise<boolean> => locator.evaluate((element) => element.closest("[inert]") !== null);
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(workspace(page)).toBeFocused();
+    expect(await outOfReach(page.locator("main"))).toBe(true);
+    expect(await outOfReach(toggle)).toBe(true);
+
+    await page.keyboard.press("Escape");
+    await expect(workspace(page)).toBeHidden();
+    await expect(toggle).toBeFocused();
+    expect(await outOfReach(page.locator("main"))).toBe(false);
+  });
 });
 
 test.describe("Sessions", () => {

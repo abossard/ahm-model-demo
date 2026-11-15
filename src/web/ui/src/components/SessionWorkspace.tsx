@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { CSSProperties, JSX, KeyboardEvent, PointerEvent } from "react";
 import { makeStyles, mergeClasses, tokens } from "@fluentui/react-components";
 import { actions, useStore } from "../store/store";
@@ -11,10 +11,21 @@ import { LaunchNotice } from "./LaunchNotice";
 import { NewTaskView } from "./NewTaskView";
 import { SessionList } from "./SessionList";
 import { SessionView } from "./SessionView";
-import { OVER_TIMELINE } from "../timeline/useInertElsewhere";
+import { OVER_TIMELINE, useInertElsewhere } from "../timeline/useInertElsewhere";
+import { escapeIsFree } from "./escapeFree";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
 const KEY_STEP = 16;
+const PHONE = "(max-width: 720px)";
+
+function watchPhone(change: () => void): () => void {
+  if (typeof window.matchMedia !== "function") return () => undefined;
+  const media = window.matchMedia(PHONE);
+  media.addEventListener("change", change);
+  return () => media.removeEventListener("change", change);
+}
+
+const isPhone = (): boolean => typeof window.matchMedia === "function" && window.matchMedia(PHONE).matches;
 const KEY_STEP_LARGE = 64;
 
 // Layout never sets `display` on the aside itself, so the `hidden` attribute still hides it.
@@ -143,14 +154,17 @@ export function SessionWorkspace(): JSX.Element {
   const launching = useStore((state) => state.launch.kind !== "idle");
   const form = useStore((state) => state.workspaceTab === "new");
   const over = useStore((state) => state.timelineOpen && state.timelineFullscreen);
+  // On a phone the panel is a sheet over the whole page: a modal, so what it covers is out of reach until it closes.
+  const sheet = useSyncExternalStore(watchPhone, isPhone, () => false) && open;
   const asideRef = useRef<HTMLElement | null>(null);
   const opener = useRef<HTMLElement | null>(null);
+  useInertElsewhere(asideRef, sheet, '[data-testid="app-shell"]');
 
-  // Over the full-screen timeline the panel takes the focus when it opens and gives it back when it closes: the keyboard
-  // and a screen reader meet it where it appears, and leave it where they were.
+  // Over the full-screen timeline or as a phone sheet, the panel takes the focus when it opens and gives it back when it
+  // closes: the keyboard and a screen reader meet it where it appears, and leave it where they were.
   useEffect(() => {
     const aside = asideRef.current;
-    if (!over || !open || !aside) return;
+    if (!(over || sheet) || !open || !aside) return;
     const active = document.activeElement;
     if (active instanceof HTMLElement && !aside.contains(active)) {
       // A toast fades: the timeline is where to come back to, not the link that opened the panel.
@@ -162,10 +176,17 @@ export function SessionWorkspace(): JSX.Element {
       opener.current = null;
       if (document.activeElement !== document.body && !aside.contains(document.activeElement)) return;
       // What opened it may be gone (a toast) or be the page itself: the timeline is where the user was.
-      const target = back !== null && back !== document.body && back.isConnected ? back : document.querySelector<HTMLElement>('#timeline-panel [data-testid="tl-stage"]');
+      const target = back !== null && back !== document.body && back.isConnected ? back : over ? document.querySelector<HTMLElement>('#timeline-panel [data-testid="tl-stage"]') : null;
       target?.focus({ preventScroll: true });
     };
-  }, [over, open]);
+  }, [over, sheet, open]);
+
+  // Escape puts the sheet away, once nothing inside it takes the Escape for itself.
+  const onKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
+    if (!sheet || event.key !== "Escape" || !escapeIsFree(event.nativeEvent)) return;
+    event.preventDefault();
+    actions.setWorkspaceOpen(false);
+  };
 
   return (
     <aside
@@ -176,6 +197,7 @@ export function SessionWorkspace(): JSX.Element {
       {...(over ? { [OVER_TIMELINE]: "" } : {})}
       style={{ "--workspace-width": `${width}px` } as CSSProperties}
       aria-label="Assistant"
+      onKeyDown={onKeyDown}
       hidden={!open}
       data-testid="session-workspace"
     >
