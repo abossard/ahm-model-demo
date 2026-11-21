@@ -145,5 +145,6 @@ resource blobPrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZ
 }
 
 output storageName string = storage.name
+output storageId string = storage.id
 output blobServiceId string = blobService.id
 output sessionsContainerName string = sessionsContainer.name

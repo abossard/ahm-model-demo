@@ -6,7 +6,7 @@ param modelName string
 @description('Entity names, sourced from the entity module so the endpoints of every edge exist first.')
 param entityNames object
 
-@description('Application Insights resource whose discovered topology supplements this graph. Returned so the discovery rule is created after the hand-authored relationships.')
+@description('Application Insights resource whose discovered topology supplements this graph.')
 param discoverySourceId string
 
 resource model 'Microsoft.CloudHealth/healthmodels@2026-05-01-preview' existing = {
@@ -43,6 +43,16 @@ resource relRootRunAgentTasks 'Microsoft.CloudHealth/healthmodels/relationships@
   }
 }
 
+resource relRootApplyHealthModelChanges 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-root-apply-health-model-changes'
+  properties: {
+    parentEntityName: entityNames.root
+    childEntityName: entityNames.applyHealthModelChanges
+    displayName: 'serves'
+  }
+}
+
 resource relRootPlatform 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
   name: 'r-root-platform'
@@ -73,13 +83,53 @@ resource relViewHealthModelAppHosting 'Microsoft.CloudHealth/healthmodels/relati
   }
 }
 
+resource relViewHealthModelModelRead 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-view-health-model-model-read'
+  properties: {
+    parentEntityName: entityNames.viewHealthModel
+    childEntityName: entityNames.systemModelRead
+    displayName: 'reads through'
+  }
+}
+
+resource relAppHostingContainerApp 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-app-hosting-container-app'
+  properties: {
+    parentEntityName: entityNames.systemAppHosting
+    childEntityName: entityNames.containerApp
+    displayName: 'hosted by'
+  }
+}
+
 resource relSendHealthReportsAppHosting 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
   name: 'r-send-health-reports-app-hosting'
   properties: {
     parentEntityName: entityNames.sendHealthReports
-    childEntityName: entityNames.systemAppHosting
+    childEntityName: entityNames.systemAppHostingReports
     displayName: 'runs on'
+  }
+}
+
+resource relSendHealthReportsIngest 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-send-health-reports-ingest'
+  properties: {
+    parentEntityName: entityNames.sendHealthReports
+    childEntityName: entityNames.systemReportIngest
+    displayName: 'reports through'
+  }
+}
+
+resource relReportAppHostingContainerApp 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-report-app-hosting-container-app'
+  properties: {
+    parentEntityName: entityNames.systemAppHostingReports
+    childEntityName: entityNames.containerAppReports
+    displayName: 'hosted by'
   }
 }
 
@@ -88,7 +138,7 @@ resource relRunAgentTasksAppHosting 'Microsoft.CloudHealth/healthmodels/relation
   name: 'r-run-agent-tasks-app-hosting'
   properties: {
     parentEntityName: entityNames.runAgentTasks
-    childEntityName: entityNames.systemAppHosting
+    childEntityName: entityNames.systemAppHostingTasks
     displayName: 'runs on'
   }
 }
@@ -99,7 +149,7 @@ resource relRunAgentTasksAgentRuntime 'Microsoft.CloudHealth/healthmodels/relati
   properties: {
     parentEntityName: entityNames.runAgentTasks
     childEntityName: entityNames.systemAgentRuntime
-    displayName: 'reasons through'
+    displayName: 'runs through'
   }
 }
 
@@ -123,12 +173,12 @@ resource relRunAgentTasksSessionStore 'Microsoft.CloudHealth/healthmodels/relati
   }
 }
 
-resource relAppHostingContainerApp 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+resource relTaskAppHostingContainerApp 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
-  name: 'r-app-hosting-container-app'
+  name: 'r-task-app-hosting-container-app'
   properties: {
-    parentEntityName: entityNames.systemAppHosting
-    childEntityName: entityNames.containerApp
+    parentEntityName: entityNames.systemAppHostingTasks
+    childEntityName: entityNames.containerAppTasks
     displayName: 'hosted by'
   }
 }
@@ -173,7 +223,57 @@ resource relSessionStoreSessionStorage 'Microsoft.CloudHealth/healthmodels/relat
   }
 }
 
-@description('The discovery source, now safe to attach because every hand-authored edge exists.')
+resource relApplyAppHosting 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-apply-app-hosting'
+  properties: {
+    parentEntityName: entityNames.applyHealthModelChanges
+    childEntityName: entityNames.systemAppHostingApply
+    displayName: 'runs on'
+  }
+}
+
+resource relApplyModelWrite 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-apply-model-write'
+  properties: {
+    parentEntityName: entityNames.applyHealthModelChanges
+    childEntityName: entityNames.systemModelWrite
+    displayName: 'writes through'
+  }
+}
+
+resource relApplyState 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-apply-state'
+  properties: {
+    parentEntityName: entityNames.applyHealthModelChanges
+    childEntityName: entityNames.systemApplyState
+    displayName: 'records the result in'
+  }
+}
+
+resource relApplyAppHostingContainerApp 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-apply-app-hosting-container-app'
+  properties: {
+    parentEntityName: entityNames.systemAppHostingApply
+    childEntityName: entityNames.containerAppApply
+    displayName: 'hosted by'
+  }
+}
+
+resource relApplyStateStorage 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
+  parent: model
+  name: 'r-apply-state-storage'
+  properties: {
+    parentEntityName: entityNames.systemApplyState
+    childEntityName: entityNames.sessionStorageApply
+    displayName: 'backed by'
+  }
+}
+
+@description('The discovery source, attached after every hand-authored relationship exists.')
 output discoverySourceId string = discoverySourceId
 
-output deterministicRelationshipCount int = 16
+output deterministicRelationshipCount int = 26

@@ -344,7 +344,7 @@ module healthModelAccess 'modules/health-model-access.bicep' = {
       mcpApp: mcp.outputs.containerAppId
       foundryProject: foundry.outputs.projectId
       foundryAccount: foundry.outputs.accountId
-      sessionsBlobService: storage.outputs.blobServiceId
+      sessionsStorageAccount: storage.outputs.storageId
       logAnalyticsWorkspace: foundation.outputs.workspaceId
       applicationInsights: foundation.outputs.applicationInsightsId
     }
@@ -358,6 +358,7 @@ module healthModelEntities 'modules/health-model-entities.bicep' = {
     modelName: healthModel.outputs.modelName
     authenticationSettingName: healthModel.outputs.authenticationSettingName
     rootActionGroupId: healthModel.outputs.rootActionGroupId
+    appRoleName: namePrefix
     monitoredResources: healthModelAccess.outputs.monitoredResources
     availabilityTestName: availabilityTests.outputs.availabilityTestName
     mcpAvailabilityTestName: availabilityTests.outputs.mcpAvailabilityTestName
