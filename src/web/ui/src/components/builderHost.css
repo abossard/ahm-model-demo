@@ -1,0 +1,5 @@
+.hp-builder-host {display:flex;flex-direction:column;height:100dvh;background:Canvas;color:CanvasText;font-family:"Segoe UI",system-ui,sans-serif}
+.hp-builder-nav {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px clamp(16px,4vw,60px);border-bottom:1px solid color-mix(in srgb, CanvasText 15%, Canvas)}
+.hp-builder-nav a {color:inherit;text-underline-offset:3px}
+.hp-builder-host > p,.hp-builder-host > [role="alert"] {margin:24px auto}
+.hp-builder-host iframe {width:100%;flex:1;min-height:0;border:0}

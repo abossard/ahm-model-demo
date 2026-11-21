@@ -1,0 +1,35 @@
+.plan-decisions ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.plan-decisions li {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.plan-decisions li p {
+  margin: 3px 0 7px;
+  max-width: 86ch;
+}
+.decision-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  font-size: .875rem;
+}
+.decision-sources [data-basis] {
+  --source-color: var(--accent);
+  color: var(--source-color);
+  background: color-mix(in srgb, var(--source-color) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--source-color) 38%, var(--surface));
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-weight: 600;
+}
+.decision-sources small { min-width: 0; max-width: 100%; }
+.decision-sources .show-me-button { white-space: normal; }
+.decision-sources [data-basis="measurement"] { --source-color: light-dark(#006765, #89dcd7); }
+.decision-sources [data-basis="assumption"] { --source-color: light-dark(#8a5100, #efc187); }
+.decision-sources [data-basis="userInput"] { --source-color: light-dark(#6944a4, #cfb4f9); }

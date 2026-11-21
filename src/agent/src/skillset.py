@@ -7,6 +7,7 @@ from pathlib import Path
 from agent_framework import CachingSkillsSource, DelegatingSkillsSource, FileSkillsSource, Skill, SkillsProvider, SkillsSourceContext
 
 from tools import CURRENT_RUN
+from builder import BUILDER_SKILLS
 
 TASK_SKILLS = {
     "explain": ("healthmodel-analyze",),
@@ -27,6 +28,8 @@ class TaskSkills(DelegatingSkillsSource):
     async def get_skills(self, context: SkillsSourceContext) -> list[Skill]:
         record = CURRENT_RUN.get()
         wanted = TASK_SKILLS.get(record.task_type if record else "", TASK_SKILLS["design"])
+        if record and record.builder:
+            wanted = BUILDER_SKILLS
         skills = [skill for skill in await self.inner_source.get_skills(context) if skill.frontmatter.name in wanted]
         for skill in skills:
             skill.frontmatter.description = DESCRIPTIONS.get(skill.frontmatter.name, skill.frontmatter.description)

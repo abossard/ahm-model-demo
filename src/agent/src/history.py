@@ -198,13 +198,17 @@ def widened(read: tuple[datetime, datetime] | None, window: tuple[datetime, date
     return window if read is None else (min(read[0], window[0]), max(read[1], window[1]))
 
 
+def read_period(window: tuple[datetime, datetime] | None) -> dict[str, str] | None:
+    return {"from": iso(window[0]), "to": iso(window[1])} if window is not None else None
+
+
 def window_problems(result: Mapping[str, Any], window: tuple[datetime, datetime] | None) -> list[str]:
     """An explain result names the window it read: `window` is there when history was read, with that window, and only then."""
     if result["kind"] != "explain":
         return []
     given = result.get("window")
     if window is None:
-        return ["window: no history was read in this Task: leave `window` out"] if given is not None else []
+        return ["window: no history was read in this Task: leave `window` out"] if "window" in result else []
     wanted = {"from": iso(window[0]), "to": iso(window[1])}
     start, end = instant((given or {}).get("from")), instant((given or {}).get("to"))
     if start and end and abs(start - window[0]) <= TOLERANCE and abs(end - window[1]) <= TOLERANCE:

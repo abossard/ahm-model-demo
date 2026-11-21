@@ -257,11 +257,13 @@ What a user of another directory needs the first time, because every call runs a
   subscription of a health model to list and read it, more for reports and Apply. Nothing in this deployment grants it.
 - A personal Microsoft account has no Azure in the personal-account tenant (`tid` `9188040d-6c67-4c5b-b112-36a304b66dad`).
   It reaches Azure through a directory where it is a member or a guest, for example the default directory that Azure
-  creates when someone signs up with it. The sign-in page's "Guest, personal account or a specific directory" takes a
-  subscription ID of that directory (or its domain or ID) and signs in there. In a directory the user created, the
-  user is Global Administrator by default and consents for it. A personal account that signs in at `organizations`
-  lands in the personal-account tenant and is asked for the directory; the web app refuses its token with 403
-  `personal_account` if one reaches it.
+  creates when someone signs up with it. After Microsoft sign-in, the chooser can read Azure Resource Manager's membership list through a known
+  guest directory if the home directory requires consent. Azure supplies the deployment tenant and ARM returns
+  the account's directory memberships. If a cached guest token cannot be obtained, the chooser can use the
+  existing Microsoft session in a top-level request that cannot display a consent prompt. A tenant-scoped token and a delegated Resource Graph read
+  verify a workspace. Other returned memberships can be checked on selection. A guest can also enter a domain,
+  directory ID or subscription ID. The web API accepts organizational
+  workspace tokens and returns 403 `personal_account` for tokens issued by the personal-account tenant.
 - Design Tasks stay with the app's own directory: their target is the deployment's design model.
 
 Check this live after the first provision of this version; the tests cannot reach another directory. With a work
@@ -283,12 +285,10 @@ account of a second directory and a personal account that owns an Azure subscrip
    the model, its live stream and its timeline open, and an Explain Task reads Azure through the MCP server. The MCP
    server's log shows no on-behalf-of failure and the token request does not answer AADSTS70025, AADSTS700211 or
    AADSTS7000112, which would mean the federated credential is not accepted across tenants.
-6. Sign in with the personal account at `organizations`: the page says it landed in a directory-less account and asks
-   for a directory. Enter a subscription ID of its default directory: the lookup runs from the browser (Azure answers
-   an anonymous request with the CORS headers that let it), the sign-in goes to that directory, and the account signs
-   in as a guest or member. Consent as its Global Administrator, then the catalog lists the models it can read and a
-   Task runs. If the Task's on-behalf-of exchange fails for this account only, note the error code and the `idp` claim
-   of its token.
+6. Sign in with the personal account, choose its Azure directory and open the workspace. Repeat with a subscription ID
+   through the manual entry field. Check that both routes open the same catalog and that refreshing keeps the selected
+   directory. Sign out, choose the second directory, then open a saved link from the first. The app should identify
+   the directory required by the link and offer sign-out.
 7. Set `ENTRA_ALLOWED_TENANTS` to this directory's id and provision: the second directory's users get 403
    `tenant_not_allowed`, this directory's users are unaffected.
 

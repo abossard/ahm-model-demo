@@ -7,6 +7,8 @@ describe("the address kept through a sign-in redirect", () => {
   it.each([
     "?model=hm-demo&resourceGroup=rg&subscription=11111111-1111-1111-1111-111111111111",
     "?model=hm-demo&resourceGroup=rg&subscription=s&session=c4c19c774d06&task=2",
+    "/builder",
+    "/builder?session=c4c19c774d06",
   ])("gives back %s once", (search) => {
     rememberReturn(window.sessionStorage, search);
     expect(takeReturn(window.sessionStorage)).toBe(search);
@@ -18,6 +20,9 @@ describe("the address kept through a sign-in redirect", () => {
     { name: "the address had no query", kept: "" },
     { name: "what was kept is not a query", kept: "https://evil.example/?x=1" },
     { name: "what was kept carries a fragment", kept: "?model=a#token=1" },
+    { name: "an unknown local path was kept", kept: "/builder/elsewhere" },
+    { name: "an external host was kept", kept: "//other.example/builder?session=s" },
+    { name: "a builder fragment was kept", kept: "/builder?session=s#access_token=x" },
   ])("gives back nothing when $name", ({ kept }) => {
     if (kept !== null) window.sessionStorage.setItem("health-pulse-return-query", kept);
     if (kept === "") rememberReturn(window.sessionStorage, "?model=old");

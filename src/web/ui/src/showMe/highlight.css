@@ -1,0 +1,58 @@
+:root {
+  --show-me-blue: #1967b3;
+  --show-me-amber: #965400;
+  --show-me-violet: #7542ab;
+}
+
+[data-show-me-highlight], [data-show-me-annotation] {
+  --show-me-color: var(--show-me-blue);
+}
+[data-show-me-highlight="amber"], [data-show-me-annotation="amber"] {
+  --show-me-color: var(--show-me-amber);
+}
+[data-show-me-highlight="violet"], [data-show-me-annotation="violet"] {
+  --show-me-color: var(--show-me-violet);
+}
+
+[data-show-me-highlight] {
+  outline: 3px solid var(--show-me-color) !important;
+  outline-offset: -3px;
+  anchor-name: var(--show-me-anchor);
+}
+
+[data-show-me-annotation] {
+  position: fixed;
+  inset: auto auto 8px 8px;
+  z-index: 1;
+  width: max-content;
+  max-width: min(28ch, calc(100vw - 16px));
+  box-sizing: border-box;
+  margin: 0;
+  border: 1px solid white;
+  border-radius: 4px;
+  padding: 3px 8px;
+  background-color: var(--show-me-color);
+  color: white;
+  font: 600 13px/1.4 system-ui, sans-serif;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+@supports (position-area: block-end) {
+  [data-show-me-annotation] {
+    inset: auto;
+    position-area: block-end span-inline-end;
+    justify-self: start;
+    margin: 3px;
+    position-try-fallbacks: flip-inline, flip-block, flip-block flip-inline, --show-me-inside;
+    position-visibility: anchors-visible;
+  }
+  @position-try --show-me-inside {
+    position-area: center;
+    align-self: start;
+  }
+}
+
+@media (forced-colors: active) {
+  [data-show-me-highlight] { outline-color: Highlight !important; }
+}

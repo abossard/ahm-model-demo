@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Show me · Release review</title>
+    <link rel="stylesheet" href="./example.css">
+  </head>
+  <body>
+    <header><span>Show me playground</span><span>Local example</span></header>
+    <main>
+      <aside aria-label="Assistant" id="assistant"></aside>
+      <section id="release" aria-labelledby="release-title">
+        <h1 id="release-title">Release 2.8</h1>
+        <nav aria-label="Release views"><a href="#checks">Checks</a><a href="#history">History</a></nav>
+        <section id="checks" aria-label="Release checks">
+          <h2>Preflight checks</h2>
+          <ul>
+            <li><button id="migration" type="button">Database migration</button><strong>Pending</strong></li>
+            <li><span>Contract tests</span><span>Passed</span></li>
+            <li><span>Rollback rehearsal</span><span>Passed</span></li>
+          </ul>
+          <dialog id="migration-detail" aria-labelledby="migration-title">
+            <h3 id="migration-title">Database migration</h3>
+            <p>The migration to add the order index is waiting for the database owner’s review.</p>
+            <form method="dialog"><button>Close details</button></form>
+          </dialog>
+        </section>
+        <section id="history" aria-label="Release history" hidden>
+          <h2>Release history</h2>
+          <ul>
+            <li><span>Rollback rehearsal passed</span><time>10:18</time></li>
+            <li><span>Contract tests passed</span><time>10:12</time></li>
+            <li><span>Database review requested</span><time>09:45</time></li>
+          </ul>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="./example.tsx"></script>
+  </body>
+</html>

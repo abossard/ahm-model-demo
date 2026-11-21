@@ -13,6 +13,7 @@ import { openView } from "./views";
 
 const TENANT = "7f1c0b1e-0000-4000-8000-00000000aaaa";
 const CONSUMERS = "9188040d-6c67-4c5b-b112-36a304b66dad";
+const BLOCKED = "bbbbbbbb-0000-4000-8000-00000000aaaa";
 const CLIENT = "c11e47aa-0000-4000-8000-00000000bbbb";
 const SCOPE = `api://${CLIENT}/access_as_user`;
 /** What the app asks of Entra: every permission of its API at once, so one consent covers the Azure access too. */
@@ -20,7 +21,13 @@ const DEFAULT_SCOPE = `${CLIENT}/.default`;
 const AUTHORITY = "https://login.microsoftonline.com";
 const OID = "5d0e0f2a-0000-4000-8000-00000000cccc";
 const HOME_DIRECTORY = "22222222-2222-4222-8222-222222222222";
+const GUEST_DIRECTORY = "33333333-3333-4333-8333-333333333333";
 const ENTRA_CONFIG = { authMode: "entra", clientId: CLIENT, apiScope: SCOPE, homeDirectory: HOME_DIRECTORY } as const;
+function apiToken(tenant: string, claims = false): string {
+  const prefix = claims ? "access-with-claims" : "access-1";
+  return tenant === TENANT ? prefix : `${prefix}.${tenant}`;
+}
+
 const CLAIMS = '{"access_token":{"acr":{"essential":true,"value":"c1"}}}';
 const DEEP_LINK = `${MODEL_QUERY}&session=${SESSION_ID}&task=1`;
 
@@ -51,10 +58,17 @@ function comeBack(route: Route, location: string): Promise<void> {
 interface Idp {
   /** Whether the user has a session with Entra: without one the sign-in page asks, and with one it grants at once. */
   session: boolean;
-  /** The authorizations Entra granted, one per sign-in or interactive step. */
+  /** Authorize endpoint requests, including prompt-free requests refused by Entra. */
   readonly authorizations: URL[];
   /** How often Entra asked the user instead, because they had no session. */
   prompts: number;
+  needsConsent?: "discovery" | "workspace";
+  consentTenant?: string;
+  invalidGrantTenant?: string;
+  refusePromptNone?: boolean;
+  /** Memberships returned by ARM, including guests absent from MSAL's account cache on first sign-in. */
+  readonly directories: {tenantId: string; displayName: string; defaultDomain: string}[];
+  readonly inventoryTenants: string[];
   readonly tokenRequests: URLSearchParams[];
   readonly logouts: URL[];
   /** Every host the page asked other than its own: the origins the policy has to name. */
@@ -67,8 +81,25 @@ interface Idp {
 
 /** A stand-in for the Entra endpoints MSAL calls in the auth code flow with PKCE: metadata, authorize, token and logout. */
 async function installIdp(page: Page, tenant = TENANT): Promise<Idp> {
-  const idp: Idp = { session: true, prompts: 0, authorizations: [], tokenRequests: [], logouts: [], hosts: new Set(), tenant, authorities: new Set() };
+  const idp: Idp = {
+    session: true, prompts: 0, authorizations: [], tokenRequests: [], logouts: [], hosts: new Set(), tenant, authorities: new Set(),
+    directories: [
+      { tenantId: TENANT, displayName: "Contoso", defaultDomain: "contoso.com" },
+      { tenantId: HOME_DIRECTORY, displayName: "Fabrikam", defaultDomain: "fabrikam.com" },
+      { tenantId: BLOCKED, displayName: "Blocked directory", defaultDomain: "blocked.example" },
+    ],
+    inventoryTenants: [],
+  };
+  await page.route("https://management.azure.com/tenants?**", async (route) => {
+    if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: CORS });
+    const prefix = "Bearer directory-list.";
+    const bearer = route.request().headers()["authorization"] ?? "";
+    expect(bearer).toMatch(/^Bearer directory-list\.[\da-f-]{36}$/);
+    idp.inventoryTenants.push(bearer.slice(prefix.length));
+    return route.fulfill({ headers: CORS, json: { value: idp.directories } });
+  });
   const codes = new Map<string, { nonce: string; claims: string | null }>();
+  const approved = new Set<string>();
 
   await page.route(`${AUTHORITY}/**`, async (route: Route) => {
     const request = route.request();
@@ -80,7 +111,8 @@ async function installIdp(page: Page, tenant = TENANT): Promise<Idp> {
       return;
     }
     const json = (body: unknown): Promise<void> => route.fulfill({ status: 200, contentType: "application/json", headers: CORS, body: JSON.stringify(body) });
-    const tenant = idp.tenant;
+    const authority = url.pathname.split("/")[1] ?? "";
+    const tenant = idp.directories.some(directory => directory.tenantId === authority) ? authority : idp.tenant;
     const base = `${AUTHORITY}/${tenant}`;
 
     if (url.pathname.endsWith("/.well-known/openid-configuration")) {
@@ -117,6 +149,18 @@ async function installIdp(page: Page, tenant = TENANT): Promise<Idp> {
     }
 
     if (url.pathname.endsWith("/oauth2/v2.0/authorize")) {
+      if (url.searchParams.get("prompt") === "none") expect(request.frame()).toBe(page.mainFrame());
+      if (url.searchParams.get("prompt") === "none" && (idp.refusePromptNone || !idp.session)) {
+        idp.authorizations.push(url);
+        const answer = new URLSearchParams({
+          error: "interaction_required",
+          error_description: "The user must verify access in this directory.",
+          state: url.searchParams.get("state") ?? "",
+        });
+        const separator = url.searchParams.get("response_mode") === "query" ? "?" : "#";
+        await comeBack(route, url.searchParams.get("redirect_uri") + separator + answer);
+        return;
+      }
       if (!idp.session && url.searchParams.get("__granted") !== "1") {
         idp.prompts += 1;
         // Entra asks who the user is: a page with one button, which grants the sign-in it was asked for.
@@ -136,7 +180,7 @@ async function installIdp(page: Page, tenant = TENANT): Promise<Idp> {
       const challenge = asked !== null && "access_token" in (JSON.parse(asked) as object);
       codes.set(code, { nonce: url.searchParams.get("nonce") ?? "", claims: challenge ? asked : null });
       const redirect = new URL(url.searchParams.get("redirect_uri") ?? "");
-      const answer = new URLSearchParams({ code, state: url.searchParams.get("state") ?? "", client_info: b64url({ uid: OID, utid: tenant }) }).toString();
+      const answer = new URLSearchParams({ code, state: url.searchParams.get("state") ?? "", client_info: b64url({ uid: OID, utid: idp.tenant }) }).toString();
       const location = url.searchParams.get("response_mode") === "query" ? `${redirect.origin}${redirect.pathname}?${answer}` : `${redirect.origin}${redirect.pathname}#${answer}`;
       await comeBack(route, location);
       return;
@@ -152,15 +196,30 @@ async function installIdp(page: Page, tenant = TENANT): Promise<Idp> {
         b64url({ iss: `${base}/v2.0`, sub: "subject-1", aud: CLIENT, exp: now + 3600, iat: now, nbf: now, name: "Ada Lovelace", preferred_username: "ada@contoso.com", oid: OID, tid: tenant, nonce: issued.nonce, ver: "2.0" }),
         "signature",
       ].join(".");
+      const scopes = form.get("scope") ?? "";
+      const discovery = /management\.(?:azure\.com|core\.windows\.net)/.test(scopes);
+      const api = scopes.includes(CLIENT);
+      const required = discovery ? "discovery" : api ? "workspace" : undefined;
+      const grant = tenant + ":" + required;
+      if (required && idp.needsConsent === required && (!idp.consentTenant || idp.consentTenant === tenant) && !approved.has(grant)) {
+        if (form.get("grant_type") === "refresh_token") {
+          const denied = tenant === idp.invalidGrantTenant
+            ? { error: "invalid_grant", error_description: "The refresh grant is no longer valid." }
+            : { error: "interaction_required", suberror: "consent_required", error_description: "User consent required." };
+          await route.fulfill({ status: 400, headers: CORS, json: denied });
+          return;
+        }
+        approved.add(grant);
+      }
       await json({
         token_type: "Bearer",
-        scope: `openid profile offline_access ${SCOPE}`,
+        scope: api ? SCOPE : scopes,
         expires_in: 3600,
         ext_expires_in: 3600,
-        access_token: issued.claims ? "access-with-claims" : "access-1",
+        access_token: discovery ? `directory-list.${tenant}` : api ? apiToken(tenant, Boolean(issued.claims)) : "identity-only",
         refresh_token: "refresh-1",
         id_token: idToken,
-        client_info: b64url({ uid: OID, utid: tenant }),
+        client_info: b64url({ uid: OID, utid: idp.tenant }),
       });
       return;
     }
@@ -180,21 +239,24 @@ async function installIdp(page: Page, tenant = TENANT): Promise<Idp> {
 interface ApiCall {
   readonly path: string;
   readonly authorization: string | null;
+  readonly tenant: string | null;
   readonly status: number;
 }
 
 interface Scenario {
   /** The API stops accepting the sign-in: every call answers 401 `unauthenticated`, token or not. */
   readonly rejectAll?: boolean;
+  readonly deniedTenants?: readonly string[];
   /** A Conditional Access policy that wants `CLAIMS` first: until a token carries them the API answers 401 `interaction_required`. */
   readonly challenge?: boolean;
 }
 
 /** The app's API in Entra mode: every call but `/api/config` needs the bearer token the Entra stand-in issues. */
-async function installApi(page: Page, scenario: Scenario = {}): Promise<{ readonly calls: ApiCall[]; readonly challenges: () => number }> {
+async function installApi(page: Page, scenario: Scenario = {}): Promise<{ readonly calls: ApiCall[]; readonly accessChecks: ApiCall[]; readonly challenges: () => number }> {
   await installStubs(page, { healthModelFails: false, catalog: catalogWithDesign, authConfig: ENTRA_CONFIG });
   await installWorkspace(page, SESSION_WITH_TASK());
   const calls: ApiCall[] = [];
+  const accessChecks: ApiCall[] = [];
   let challenges = 0;
 
   // Registered last, so it sees every call first and passes the ones it accepts on to the stubs above.
@@ -206,11 +268,21 @@ async function installApi(page: Page, scenario: Scenario = {}): Promise<{ readon
       return;
     }
     const authorization = request.headers()["authorization"] ?? null;
+    const tenant = request.headers()["x-workspace-tenant"] ?? null;
+    if (pathname === "/api/workspace/access") {
+      const hasToken = tenant && [apiToken(tenant), apiToken(tenant, true)].some(token => authorization === "Bearer " + token);
+      const status = !hasToken ? 401 : (scenario.deniedTenants ?? [BLOCKED]).includes(tenant) ? 403 : 200;
+      accessChecks.push({path: pathname, tenant, authorization, status});
+      await route.fulfill({status, json: status === 200 ? {tenantId: tenant} : {error: {
+        code: status === 401 ? "unauthenticated" : "workspace_access_denied", message: "Directory unavailable"
+      }}});
+      return;
+    }
     const refuse = async (status: number, code: string, extra: Record<string, unknown> = {}): Promise<void> => {
-      calls.push({ path: pathname, authorization, status });
+      calls.push({ path: pathname, authorization, tenant, status });
       await route.fulfill({ status, contentType: "application/json", body: JSON.stringify({ error: { code, message: `message of ${code}`, retryable: false, operationId: "op", ...extra } }) });
     };
-    if (scenario.rejectAll || authorization === null || !/^Bearer access-(1|with-claims)$/.test(authorization)) {
+    if (scenario.rejectAll || tenant === null || ![apiToken(tenant), apiToken(tenant, true)].some(token => authorization === "Bearer " + token)) {
       await refuse(401, "unauthenticated");
       return;
     }
@@ -219,7 +291,7 @@ async function installApi(page: Page, scenario: Scenario = {}): Promise<{ readon
       await refuse(401, "interaction_required", { claims: CLAIMS });
       return;
     }
-    calls.push({ path: pathname, authorization, status: 200 });
+    calls.push({ path: pathname, authorization, tenant, status: 200 });
     if (pathname.endsWith("/events")) {
       // Answered here, from the app's own origin: the Session stub's event server is another origin, which the policy forbids.
       const frames = reviewEvents().map((event) => `id: ${event.seq}\nevent: activity\ndata: ${JSON.stringify(event)}\n\n`);
@@ -228,12 +300,17 @@ async function installApi(page: Page, scenario: Scenario = {}): Promise<{ readon
     }
     await route.fallback();
   });
-  return { calls, challenges: () => challenges };
+  return { calls, accessChecks, challenges: () => challenges };
 }
 
-/** The first visit shows the sign-in page, and nothing has left for Entra until the user asks to sign in. */
+async function chooseDirectory(page: Page, name = "Contoso"): Promise<void> {
+  await page.getByRole("radio", { name: new RegExp(name) }).check();
+  await page.getByTestId("directory-continue").click();
+}
+
 async function signIn(page: Page): Promise<void> {
   await page.getByTestId("sign-in").click();
+  await chooseDirectory(page);
 }
 
 /** Serves the document under the policy the web app sends. The Entra stand-in answers its own origin. */
@@ -250,6 +327,7 @@ async function underPolicy(page: Page, baseURL: string, policy = servedPolicy())
   });
   const origin = new URL(baseURL).origin;
   await page.route((url) => url.origin === origin && !url.pathname.startsWith("/api/"), async (route) => {
+    if (!route.request().isNavigationRequest()) return route.fallback();
     const response = await route.fetch();
     const headers = response.headers();
     if ((headers["content-type"] ?? "").includes("text/html")) headers["content-security-policy"] = policy;
@@ -271,16 +349,20 @@ test("no API call leaves without the bearer token, and the user menu shows who s
 
   // The address a visitor opens: the model, the Session and the Task. The page asks to sign in, and that goes through Entra and back.
   await openView(page, "zoom", `/?${DEEP_LINK}`);
-  await expect(page.getByTestId("sign-in-choices")).toBeVisible();
+  await expect(page.getByTestId("sign-in")).toBeVisible();
   expect(idp.authorizations).toHaveLength(0);
-  await signIn(page);
+  await page.getByTestId("sign-in").click();
+  await expect(page.getByTestId("directory-options")).toBeVisible();
+  expect(calls).toHaveLength(0);
+  await chooseDirectory(page);
   await expect(page.getByTestId("diff-result")).toBeVisible();
   await expect(page.locator(".react-flow__node .entity-node").first()).toBeVisible();
 
-  expect(idp.authorizations).toHaveLength(1);
-  // Any work or school directory, and the whole API in one consent.
-  expect([...idp.authorities].filter((authority) => authority !== "")).toEqual(expect.arrayContaining(["organizations"]));
-  expect(idp.authorizations[0]!.searchParams.get("scope")).toContain(DEFAULT_SCOPE);
+  expect(idp.authorities.has("common")).toBe(true);
+  expect(idp.authorities.has(TENANT)).toBe(true);
+  expect(idp.authorizations[0]!.searchParams.get("scope")).toContain("openid");
+  expect(idp.authorizations[0]!.searchParams.get("scope")).not.toContain(DEFAULT_SCOPE);
+  expect(new URL(page.url()).searchParams.get("tenant")).toBe(TENANT);
   expect(idp.authorizations[0]!.searchParams.get("prompt")).toBe("select_account");
   expect(idp.authorizations[0]!.searchParams.get("code_challenge_method")).toBe("S256");
   expect(idp.authorizations[0]!.searchParams.get("redirect_uri")).toBe(`${new URL(page.url()).origin}/`);
@@ -292,7 +374,7 @@ test("no API call leaves without the bearer token, and the user menu shows who s
 
   // Every call but the one that asks how to sign in carries the token, and none was refused for lacking it.
   expect(calls.length).toBeGreaterThan(3);
-  for (const call of calls) expect(call, call.path).toMatchObject({ authorization: "Bearer access-1", status: 200 });
+  for (const call of calls) expect(call, call.path).toMatchObject({ authorization: "Bearer access-1", tenant: TENANT, status: 200 });
   expect([...new Set(calls.map((call) => call.path))]).toEqual(expect.arrayContaining(["/api/health-models", "/api/health-model", "/api/sessions/s-demo", "/api/sessions/s-demo/tasks/1", "/api/sessions/s-demo/tasks/1/diff", "/api/sessions/s-demo/tasks/1/events"]));
   // The activity stream is read with fetch, so it can send the header an EventSource cannot.
   expect(requested).toEqual(["Bearer access-1"]);
@@ -300,7 +382,7 @@ test("no API call leaves without the bearer token, and the user menu shows who s
   await expect(page.getByTestId("user-name")).toHaveText("Ada Lovelace");
   await page.getByTestId("user-menu").click();
   await expect(page.getByTestId("user-account")).toContainText("ada@contoso.com");
-  await expect(page.getByTestId("user-account")).toContainText(`Tenant ${TENANT}`);
+  await expect(page.getByTestId("user-account")).toContainText(TENANT);
   await expect(page.getByTestId("sign-out")).toBeVisible();
 
   // MSAL asked one host besides the app, opened no frame, and the policy stopped nothing.
@@ -320,7 +402,7 @@ test("the policy is what lets MSAL reach Entra: without the authority in connect
   await installApi(page);
 
   await openView(page, "zoom");
-  await signIn(page);
+  await page.getByTestId("sign-in").click();
 
   await expect(page.getByTestId("auth-failed")).toBeVisible();
   await expect(page.getByTestId("status-bar")).toHaveCount(0);
@@ -341,6 +423,11 @@ test("an address with no model in it still signs in and lands on the default mod
 test("signing out leaves the app, and the next visit asks Entra who the user is", async ({ page, baseURL }) => {
   const idp = await installIdp(page);
   await installApi(page);
+  await page.route("**/api/health-models", async route => {
+    if (route.request().headers()["x-workspace-tenant"] === HOME_DIRECTORY) {
+      await route.fulfill({ json: {models: [], default: null} });
+    } else await route.fallback();
+  });
   await openView(page, "zoom", `/?${MODEL_QUERY}`);
   await signIn(page);
   await expect(page.getByTestId("user-menu")).toBeVisible();
@@ -349,18 +436,21 @@ test("signing out leaves the app, and the next visit asks Entra who the user is"
   await page.getByTestId("sign-out").click();
 
   // Entra ends the session and the app, back at its root, finds nobody signed in: the page asks to sign in again.
-  await expect(page.getByTestId("sign-in-choices")).toBeVisible();
+  await expect(page.getByTestId("sign-in")).toBeVisible();
   expect(idp.logouts).toHaveLength(1);
   expect(idp.logouts[0]!.searchParams.get("post_logout_redirect_uri")).toBe(`${new URL(baseURL!).origin}/`);
   expect(await page.evaluate(() => Object.keys(sessionStorage).filter((key) => key.includes("accesstoken") || key.includes("idtoken")).length)).toBe(0);
 
-  await signIn(page);
+  await page.getByTestId("sign-in").click();
   await expect(page.locator("#idp-sign-in")).toBeVisible();
   expect(idp.prompts).toBe(1);
 
   await page.locator("#idp-sign-in").click();
+  await chooseDirectory(page, "Fabrikam");
   await expect(page.getByTestId("user-name")).toHaveText("Ada Lovelace");
-  expect(idp.authorizations).toHaveLength(2);
+  expect(new URL(page.url()).searchParams.get("tenant")).toBe(HOME_DIRECTORY);
+  await expect(page.getByTestId("no-models")).toBeVisible();
+  await expect(page.getByTestId("model-name")).not.toContainText("Contoso Platform Health");
 });
 
 test("a Conditional Access challenge sends the user through one interactive step and then goes on with the token it gets", async ({ page, baseURL }) => {
@@ -372,11 +462,10 @@ test("a Conditional Access challenge sends the user through one interactive step
   await signIn(page);
   await expect(page.getByTestId("diff-result")).toBeVisible();
 
-  // First sign-in without claims, then exactly one more authorization, the one that carries the claims the server named.
-  expect(idp.authorizations).toHaveLength(2);
-  const asked = idp.authorizations.map((url) => JSON.parse(url.searchParams.get("claims") ?? "{}") as Record<string, unknown>);
-  expect(asked.map((claims) => "access_token" in claims)).toEqual([false, true]);
-  expect(asked[1]).toMatchObject({ access_token: { acr: { essential: true, value: "c1" } } });
+  const challenges = idp.authorizations.map((url) => JSON.parse(url.searchParams.get("claims") ?? "{}") as Record<string, unknown>)
+    .filter(claims => "access_token" in claims);
+  expect(challenges).toHaveLength(1);
+  expect(challenges[0]).toMatchObject({access_token: {acr: {essential: true, value: "c1"}}});
   expect(api.challenges()).toBeGreaterThanOrEqual(1);
   const answered = api.calls.filter((call) => call.status === 200);
   expect(answered.length).toBeGreaterThan(3);
@@ -396,11 +485,11 @@ test("a sign-in the API stops accepting is retried once with a fresh token, then
   await expect(page.getByTestId("catalog-error")).toContainText("Your sign-in has expired. Sign in again to continue.");
   // One try, then one retry with a token renewed from the refresh token, and no more.
   expect(calls.filter((call) => call.path === "/api/health-models")).toHaveLength(2);
-  expect(idp.tokenRequests.map((form) => form.get("grant_type"))).toEqual(["authorization_code", "refresh_token"]);
-  expect(idp.authorizations).toHaveLength(1);
-
+  expect(idp.tokenRequests.at(-1)?.get("grant_type")).toBe("refresh_token");
+  const before = idp.authorizations.length;
   await page.getByTestId("catalog-sign-in").click();
-  await expect.poll(() => idp.authorizations.length).toBe(2);
+  await expect.poll(() => idp.authorizations.length).toBe(before + 1);
+  expect(idp.authorizations.at(-1)?.pathname).toContain(TENANT);
 });
 
 test.describe("who signs in and how", () => {
@@ -408,37 +497,219 @@ test.describe("who signs in and how", () => {
   const SUBSCRIPTION = "11111111-1111-4111-8111-111111111111";
   const ARM_HEADERS = { "access-control-allow-origin": "*", "access-control-expose-headers": "WWW-Authenticate" };
 
-  test("a directory domain signs in at that directory and nowhere else", async ({ page }) => {
+  test("offers only directories where the app confirmed delegated Azure access", async ({page}) => {
     const idp = await installIdp(page);
-    await installApi(page);
-
+    const {accessChecks, calls} = await installApi(page, {deniedTenants: [TENANT, BLOCKED]});
     await openView(page, "zoom");
-    await expect(page.getByTestId("directory-form")).toHaveCount(0);
-    await page.getByTestId("directory-toggle").click();
-    await expect(page.getByTestId("directory-continue")).toBeDisabled();
-    await page.getByTestId("directory-input").fill(" Contoso.com ");
-    await page.getByTestId("directory-continue").click();
-
-    await expect(page.getByTestId("user-name")).toHaveText("Ada Lovelace");
-    expect(idp.authorities.has("contoso.com")).toBe(true);
+    await page.getByTestId("sign-in").click();
+    await expect(page.getByRole("radio", {name: /Fabrikam/})).toBeChecked();
+    await expect(page.getByRole("radio")).toHaveCount(1);
+    expect(accessChecks.map(c => [c.tenant, c.status])).toEqual(expect.arrayContaining([
+      [TENANT, 403], [BLOCKED, 403], [HOME_DIRECTORY, 200]
+    ]));
     expect(idp.authorizations).toHaveLength(1);
-    expect(idp.authorizations[0]!.searchParams.get("scope")).toContain(DEFAULT_SCOPE);
-    // The code is redeemed at the directory that was asked, and no other directory is asked for a token.
-    expect(idp.tokenRequests.map((form) => form.get("grant_type"))).toEqual(["authorization_code"]);
-    expect(idp.authorities.has("organizations")).toBe(false);
+    expect(calls).toHaveLength(0);
+    await page.getByTestId("directory-continue").click();
+    await expect(page.getByTestId("user-menu")).toBeVisible();
+    expect(calls.every(call => call.tenant === HOME_DIRECTORY)).toBe(true);
   });
 
-  test("a member or guest of the app's directory signs in to it with one click", async ({ page }) => {
+  test("recovers the membership inventory through the guest Microsoft session without prompting or opening a workspace", async ({page}) => {
     const idp = await installIdp(page);
-    await installApi(page);
+    idp.needsConsent = "discovery";
+    idp.directories.push({tenantId: GUEST_DIRECTORY, displayName: "Northwind", defaultDomain: "northwind.example"});
+    const {calls} = await installApi(page, {deniedTenants: [TENANT, BLOCKED]});
+    await openView(page, "zoom");
+    await page.getByTestId("sign-in").click();
+    const choices = page.getByTestId("directory-options");
+    await expect(choices.getByRole("radio", {name: /Fabrikam/})).toBeVisible();
+    await expect(choices.getByRole("radio", {name: /Northwind/})).toBeVisible();
+    expect(idp.authorizations).toHaveLength(2);
+    expect(idp.authorizations[1]?.pathname).toContain(HOME_DIRECTORY);
+    expect(idp.authorizations[1]?.searchParams.get("prompt")).toBe("none");
+    expect(idp.authorizations[1]?.searchParams.get("scope")).toContain("https://management.azure.com//user_impersonation");
+    expect(idp.prompts).toBe(0);
+    expect(idp.inventoryTenants).toContain(HOME_DIRECTORY);
+    expect(calls).toHaveLength(0);
+    await expect(page.getByTestId("directory-continue")).toBeDisabled();
+    await chooseDirectory(page, "Northwind");
+    await expect(page.getByTestId("user-menu")).toBeVisible();
+    await expect(page).toHaveURL(new RegExp("tenant=" + GUEST_DIRECTORY));
+  });
+
+  for (const next of ["open cached workspace", "look up directories through the app directory", "look up directories through the sign-in directory"] as const) {
+    test(`a refused prompt-free guest check returns once to the chooser and allows the user to ${next}`, async ({page}) => {
+      const idp = await installIdp(page);
+      idp.needsConsent = "discovery";
+      idp.refusePromptNone = true;
+      const useSignInDirectory = next === "look up directories through the sign-in directory";
+      if (useSignInDirectory) idp.invalidGrantTenant = HOME_DIRECTORY;
+      const {calls} = await installApi(page, {deniedTenants: [TENANT, BLOCKED]});
+      await openView(page, "zoom");
+      await page.getByTestId("sign-in").click();
+      const available = page.getByRole("radio");
+      await expect(available).toHaveValue(HOME_DIRECTORY);
+      await expect(available).toBeChecked();
+      expect(idp.authorizations).toHaveLength(2);
+      expect(idp.authorizations[1]?.pathname).toContain(HOME_DIRECTORY);
+      expect(idp.authorizations[1]?.searchParams.get("prompt")).toBe("none");
+      expect(idp.inventoryTenants).toEqual([]);
+      await page.reload();
+      await expect(available).toBeChecked();
+      expect(idp.authorizations).toHaveLength(2);
+      expect(calls).toHaveLength(0);
+
+      if (next !== "open cached workspace") {
+        await page.getByTestId("directory-discovery-options").getByText("Find more directories").click();
+        const lookup = page.getByRole("combobox", {name: "Directory for lookup"});
+        await expect(lookup).toHaveValue(HOME_DIRECTORY);
+        await expect(lookup.getByRole("option")).toHaveCount(2);
+        const lookupTenant = useSignInDirectory ? TENANT : HOME_DIRECTORY;
+        if (useSignInDirectory) await lookup.selectOption(TENANT);
+        await expect(lookup).toHaveValue(lookupTenant);
+        expect(idp.authorizations).toHaveLength(2);
+        await page.getByTestId("directory-consent").click();
+        await expect(available).toHaveAccessibleName(/Fabrikam/);
+        expect(idp.authorizations).toHaveLength(3);
+        expect(idp.authorizations[2]?.pathname).toContain(lookupTenant);
+        expect(idp.authorizations[2]?.searchParams.get("prompt")).not.toBe("none");
+        expect(idp.inventoryTenants).toEqual([lookupTenant]);
+        expect(calls).toHaveLength(0);
+      }
+      await page.getByTestId("directory-continue").click();
+      await expect(page.getByTestId("user-menu")).toBeVisible();
+      expect(calls.every(call => call.tenant === HOME_DIRECTORY)).toBe(true);
+    });
+  }
+
+  test("discovers a new guest membership through the app directory when the home organization blocks the inventory", async ({page}) => {
+    const idp = await installIdp(page);
+    idp.needsConsent = "discovery";
+    idp.consentTenant = TENANT;
+    idp.directories.push({tenantId: GUEST_DIRECTORY, displayName: "Northwind", defaultDomain: "northwind.example"});
+    const {calls, accessChecks} = await installApi(page, {deniedTenants: [TENANT, BLOCKED]});
 
     await openView(page, "zoom");
-    await page.getByTestId("sign-in-home").click();
+    await page.getByTestId("sign-in").click();
+    const verified = page.getByTestId("directory-options");
+    await expect(verified.getByRole("radio")).toHaveCount(2);
+    await expect(verified.getByRole("radio", {name: /Fabrikam/})).toBeVisible();
+    const northwind = verified.getByRole("radio", {name: /Northwind/});
+    await expect(northwind).toBeVisible();
+    expect(idp.inventoryTenants).toEqual([HOME_DIRECTORY]);
+    expect(idp.authorizations).toHaveLength(1);
+    expect(calls).toHaveLength(0);
+    expect(accessChecks).toContainEqual(expect.objectContaining({tenant: GUEST_DIRECTORY, status: 200}));
 
+    await northwind.check();
+    await page.getByTestId("directory-continue").click();
+    await expect(page.getByTestId("user-menu")).toBeVisible();
+    await expect(page).toHaveURL(new RegExp("tenant=" + GUEST_DIRECTORY));
+    await expect.poll(() => calls.some(call => call.path === "/api/health-models")).toBe(true);
+    expect(calls.every(call => call.tenant === GUEST_DIRECTORY)).toBe(true);
+  });
+
+  test("can explicitly verify a named membership while keeping denied directories out of the chooser", async ({page}) => {
+    const idp = await installIdp(page);
+    idp.needsConsent = "workspace";
+    idp.consentTenant = HOME_DIRECTORY;
+    const {calls, accessChecks} = await installApi(page);
+    await openView(page, "zoom");
+    await page.getByTestId("sign-in").click();
+    await expect(page.getByTestId("directory-options").getByRole("radio", {name: /Contoso/})).toBeVisible();
+    await page.getByTestId("directory-verification-toggle").click();
+    await expect(page.getByRole("radio", {name: /Blocked directory/})).toHaveCount(0);
+    await page.getByTestId("directory-verification-options").getByRole("radio", {name: /Fabrikam/}).check();
+    expect(idp.authorizations).toHaveLength(1);
+    expect(accessChecks.every(call => call.tenant !== HOME_DIRECTORY)).toBe(true);
+    expect(calls).toHaveLength(0);
+
+    await page.getByRole("button", {name: "Check and open workspace"}).click();
+    await expect(page.getByTestId("user-menu")).toBeVisible();
+    expect(idp.authorizations).toHaveLength(2);
+    expect(idp.authorizations[1]?.pathname).toContain(HOME_DIRECTORY);
+    expect(accessChecks).toContainEqual(expect.objectContaining({tenant: HOME_DIRECTORY, status: 200}));
+    await expect(page).toHaveURL(new RegExp("tenant=" + HOME_DIRECTORY));
+    expect(calls.every(call => call.tenant === HOME_DIRECTORY)).toBe(true);
+    // A new link in this session asks the user to sign out before changing directories.
+    await page.goto(`/?tenant=${TENANT}`);
+    await expect(page.getByTestId("tenant-mismatch")).toContainText(TENANT);
+  });
+
+  test("leaves the chooser open when a manually entered directory fails its access check", async ({page}) => {
+    await installIdp(page);
+    const {calls} = await installApi(page, {deniedTenants: [TENANT, HOME_DIRECTORY, BLOCKED]});
+    await openView(page, "zoom", `/?tenant=${TENANT}`);
+    await page.getByTestId("sign-in").click();
+    await expect(page.getByTestId("directory-empty")).toBeVisible();
+    await expect(page.getByRole("radio")).toHaveCount(0);
+    await expect(page.getByTestId("directory-input")).toHaveValue(TENANT);
+    await page.getByTestId("directory-continue").click();
+    await expect(page.getByTestId("directory-error")).toBeVisible();
+    expect(calls).toHaveLength(0);
+    await expect(page.getByTestId("app-shell")).toHaveCount(0);
+  });
+
+  for (const permission of ["discovery", "workspace"] as const) {
+    test(`returns to the saved model when Microsoft requests ${permission} consent`, async ({page}) => {
+      const idp = await installIdp(page);
+      idp.needsConsent = permission;
+      const {calls} = await installApi(page);
+      await openView(page, "zoom", `/?${DEEP_LINK}&tenant=${TENANT}`);
+      await page.getByTestId("sign-in").click();
+      await expect(page.getByTestId("directory-chooser")).toBeVisible();
+      expect(calls).toHaveLength(0);
+      expect(idp.authorizations[0]?.pathname).toContain(TENANT);
+      if (permission === "discovery") {
+        await page.getByTestId("directory-discovery-options").getByText("Find more directories").click();
+        await page.getByTestId("directory-consent").click();
+        await expect(page.getByRole("radio", {name: /Contoso/})).toBeChecked();
+      } else {
+        await page.getByTestId("directory-verification-options").getByRole("radio", {name: /Contoso/}).check();
+      }
+      await page.getByTestId("directory-continue").click();
+      await expect(page.getByTestId("diff-result")).toBeVisible();
+      expect(idp.authorizations).toHaveLength(2);
+      expect(idp.authorizations[1]?.searchParams.get("scope")).toContain(
+        permission === "discovery" ? "https://management.azure.com//user_impersonation" : DEFAULT_SCOPE
+      );
+      expect(new URL(page.url()).searchParams.get("session")).toBe(SESSION_ID);
+      expect(calls.every(call => call.tenant === TENANT)).toBe(true);
+    });
+  }
+
+  test("a link to a different directory cannot open a saved builder session", async ({ page }) => {
+    await installIdp(page);
+    const { calls } = await installApi(page);
+    await openView(page, "zoom", `/?${DEEP_LINK}`);
+    await signIn(page);
+    await expect(page.getByTestId("diff-result")).toBeVisible();
+    await page.reload();
+    await expect(page.getByTestId("diff-result")).toBeVisible();
+    const builderCalls = calls.filter(call => call.path === "/api/builder/mcp");
+    await page.goto(`/builder?tenant=${HOME_DIRECTORY}&session=other-plan`);
+    await expect(page.getByTestId("tenant-mismatch")).toContainText(HOME_DIRECTORY);
+    expect(calls.filter(call => call.path === "/api/builder/mcp")).toEqual(builderCalls);
+    await page.getByRole("link", {name: "Open my current workspace"}).click();
+    await expect(page.getByTestId("model-name")).toHaveText("Contoso Platform Health");
+    expect(new URL(page.url()).searchParams.get("tenant")).toBe(TENANT);
+  });
+
+  test("the discovery list can fail and a signed-in guest can still enter a directory domain", async ({ page }) => {
+    const idp = await installIdp(page);
+    const { calls } = await installApi(page);
+    await page.route("https://management.azure.com/tenants?**", route => route.fulfill({ status: 403, headers: CORS, body: "" }));
+    await openView(page, "zoom");
+    await expect(page.getByRole("button")).toHaveCount(1);
+    await page.getByTestId("sign-in").click();
+    await expect(page.getByText("Retry lookup")).toBeVisible();
+    expect(calls).toHaveLength(0);
+    await page.getByTestId("directory-toggle").click();
+    await page.getByTestId("directory-input").fill(" Contoso.com ");
+    await page.getByTestId("directory-continue").click();
     await expect(page.getByTestId("user-name")).toHaveText("Ada Lovelace");
-    expect(idp.authorities.has(HOME_DIRECTORY)).toBe(true);
-    expect(idp.authorities.has("organizations")).toBe(false);
-    expect(idp.authorizations[0]!.searchParams.get("scope")).toContain(DEFAULT_SCOPE);
+    expect(idp.authorities.has("contoso.com")).toBe(true);
+    expect(calls.every(call => call.tenant === TENANT)).toBe(true);
   });
 
   test("a subscription ID is turned into its directory by an anonymous request to Azure, under the policy", async ({ page, baseURL }) => {
@@ -452,6 +723,7 @@ test.describe("who signs in and how", () => {
     });
 
     await openView(page, "zoom");
+    await page.getByTestId("sign-in").click();
     await page.getByTestId("directory-toggle").click();
     await page.getByTestId("directory-input").fill(SUBSCRIPTION);
     await page.getByTestId("directory-continue").click();
@@ -469,6 +741,7 @@ test.describe("who signs in and how", () => {
     await page.route(ARM, (route) => route.fulfill({ status: 404, headers: ARM_HEADERS, contentType: "application/json", body: JSON.stringify({ error: { code: "SubscriptionNotFound" } }) }));
 
     await openView(page, "zoom");
+    await page.getByTestId("sign-in").click();
     await page.getByTestId("directory-toggle").click();
     await page.getByTestId("directory-input").fill(TENANT);
     await page.getByTestId("directory-continue").click();
@@ -481,45 +754,35 @@ test.describe("who signs in and how", () => {
     { name: "a subscription that cannot be looked up", text: SUBSCRIPTION, message: "could not be looked up" },
     { name: "text that names no directory", text: "ada@contoso.com", message: "Enter a subscription ID" },
   ]) {
-    test(`says what to do about ${name}, and starts no sign-in`, async ({ page }) => {
+    test(`keeps the chooser open for ${name}`, async ({ page }) => {
       const idp = await installIdp(page);
       await installApi(page);
       await page.route(ARM, (route) => route.abort());
 
       await openView(page, "zoom");
+      await page.getByTestId("sign-in").click();
       await page.getByTestId("directory-toggle").click();
       await page.getByTestId("directory-input").fill(text);
       await page.getByTestId("directory-continue").click();
 
-      await expect(page.getByTestId("directory-form")).toContainText(message);
-      expect(idp.authorizations).toHaveLength(0);
-      await expect(page.getByTestId("sign-in")).toBeVisible();
+      await expect(page.getByTestId("directory-chooser")).toContainText(message);
+      expect(idp.authorizations).toHaveLength(1);
     });
   }
 
-  test("a personal account that lands in no directory is told why, and the directory it names gets the account first", async ({ page }) => {
-    const idp = await installIdp(page, CONSUMERS);
-    await installApi(page);
-
+  test("a personal identity can select a guest directory", async ({ page }) => {
+    await installIdp(page, CONSUMERS);
+    const { calls } = await installApi(page);
     await openView(page, "zoom");
-    await signIn(page);
-
-    await expect(page.getByTestId("auth-personal")).toContainText("ada@contoso.com");
-    await expect(page.getByTestId("auth-personal")).toContainText("reaches Azure through a directory");
-    await expect(page.getByTestId("directory-input")).toBeVisible();
-    await expect(page.getByTestId("status-bar")).toHaveCount(0);
-    // The personal account stays cached, and a reload says the same instead of calling the API with its token.
-    await page.reload();
-    await expect(page.getByTestId("auth-personal")).toBeVisible();
-
-    idp.tenant = TENANT;
-    await page.getByTestId("directory-input").fill("contoso.com");
+    await page.getByTestId("sign-in").click();
+    await expect(page.getByTestId("directory-chooser")).toBeVisible();
+    expect(calls).toHaveLength(0);
+    await page.getByTestId("directory-toggle").click();
+    await page.route(ARM, route => route.fulfill({ status: 404, headers: ARM_HEADERS, body: "" }));
+    await page.getByTestId("directory-input").fill(TENANT);
     await page.getByTestId("directory-continue").click();
-
     await expect(page.getByTestId("user-name")).toHaveText("Ada Lovelace");
-    expect(idp.authorizations).toHaveLength(2);
-    expect(idp.authorizations[1]!.searchParams.get("login_hint")).toBe("ada@contoso.com");
-    expect(idp.authorities.has("contoso.com")).toBe(true);
+    expect(calls.every(call => call.tenant === TENANT)).toBe(true);
   });
 
   test("a user who can read no health model is told what decides that", async ({ page }) => {
@@ -557,7 +820,7 @@ test.describe("when signing in fails", () => {
     });
 
     await openView(page, "zoom");
-    await signIn(page);
+    await page.getByTestId("sign-in").click();
 
     await expect(page.getByTestId("auth-failed")).toContainText("We could not sign you in");
     await expect(page.getByTestId("auth-failed-message")).toContainText("AADSTS50105");
@@ -586,11 +849,11 @@ test.describe("when signing in fails", () => {
     });
 
     await openView(page, "zoom");
-    await signIn(page);
+    await page.getByTestId("sign-in").click();
 
     await expect(page.getByTestId("auth-failed-hint")).toContainText("not a member or a guest of the directory you signed in to");
     await expect(page.getByTestId("auth-failed-message")).toContainText("AADSTS50020");
-    await expect(page.getByTestId("directory-input")).toBeVisible();
+    await expect(page.getByTestId("sign-in")).toBeVisible();
   });
 
   test("the sign-in settings that cannot be loaded are said as such, and Try again loads them", async ({ page }) => {

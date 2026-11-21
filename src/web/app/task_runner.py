@@ -11,7 +11,10 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
 import activity
+import builder_design
 import model_diff
+from contracts.builder_rules import expand_resource_refs, referenced_resources
+from contracts.show_me import result_problem
 from config import (
     BROKER_CALLS_PER_MINUTE,
     BUSY_RETRY_SECONDS,
@@ -29,6 +32,10 @@ from sessions_store import UNFINISHED, StoreUnavailable, utc_now
 
 logger = logging.getLogger("ahm-demo")
 tracer = trace.get_tracer("ahm-demo")
+
+# Foundry pins a conversation to the hosted agent that opened it. Sessions from
+# an earlier submit tool need a fresh sandbox for the current tool set.
+SUBMISSION_CONTRACT = "task-specific-v2-show-me"
 
 HEADLINES = {
     "review": "Review this health model and submit the result with submit_result.",
@@ -98,12 +105,17 @@ def agent_message(task, base, nonce):
             **{name: task.get(name) for name in ("id", "type", "target", "workload", "instruction")},
             # The moment an Explain is about: only a Task that has one names it, so every other Task is about now.
             **({"asOf": task["asOf"]} if task.get("asOf") else {}),
+            **({"showMeHandles": task["showMeHandles"]} if "showMeHandles" in task else {}),
             "nonce": nonce,
         }
     }
     if base is not None:
         envelope["relationships"] = model_diff.relationship_summaries(base)
     headline = EXPLAIN_AT.format(asOf=task["asOf"]) if task.get("asOf") else HEADLINES[task["type"]]
+    if task.get("builder"):
+        builder = task["builder"]
+        envelope["task"]["builder"] = {**builder, "resources": referenced_resources(builder["resources"])}
+        headline = "Complete the health model builder step and submit the structured result."
     return f"{headline}\n{json.dumps(envelope, ensure_ascii=False)}"
 
 
@@ -331,9 +343,38 @@ class TaskRunner:
 
     async def _execute(self, sid, run):
         task = run.task
-        await self._emit(sid, run, activity.draft("status", f"{task['type'].capitalize()} task started"))
-        base = await self._snapshot(sid, run) if task["type"] in ("review", "design") else None
-        conversation_id = await self._conversation(run.owner, sid)
+        builder = task.get("builder") or {}
+        if builder.get("revision") and builder["phase"] == "analyze":
+            started = f"Revising the plan from analysis {builder['revision']['analysisSeq']} with its saved signal checks"
+        elif builder.get("phase") == "analyze":
+            count = len(builder["resources"])
+            started = f"Azure inventory received for {count} selected resource{'s' if count != 1 else ''}"
+        else:
+            started = f"{task['type'].capitalize()} task started"
+        await self._emit(sid, run, activity.draft("status", started))
+        if builder.get("phase") == "analyze" and not builder.get("revision"):
+            resources = builder["resources"]
+            checks, observations = [], []
+            for first in range(0, len(resources), 4):
+                batch = resources[first:first + 4]
+                for resource in batch:
+                    await self._emit(sid, run, activity.draft("status", f"Checking Azure Monitor signals on {resource['name']}"))
+                results = await asyncio.gather(*(asyncio.to_thread(run.health.check_builder_signal, resource) for resource in batch))
+                for resource, check in zip(batch, results):
+                    if sample := check.pop("observation", None):
+                        observations.append(sample)
+                    checks.append(check)
+                    await self._emit(sid, run, activity.draft("status", f"{resource['name']}: {check['detail']}"))
+            run.task = {**run.task, "builder": {**builder, "observedMetrics": observations, "signalChecks": checks}}
+            await self._store.save_task(run.owner, sid, run.task)
+        base = await self._snapshot(sid, run) if task["type"] in ("review", "design") and not task.get("builder") else None
+        # Each analysis carries its own evidence and selection. Retries also start
+        # on the current agent, with only the references for this inventory.
+        conversation_id = (await self._new_conversation(run.owner, sid)
+                           if builder.get("phase") == "analyze"
+                           else await self._conversation(run.owner, sid))
+        if builder.get("phase") == "analyze":
+            await self._emit(sid, run, activity.draft("status", "Requesting workload analysis from Foundry"))
         state = await self._respond(sid, run, conversation_id, agent_message(run.task, base, run.nonce))
         await self._conclude(sid, run, state, base)
 
@@ -370,7 +411,9 @@ class TaskRunner:
 
     async def _conversation(self, owner, sid):
         session = await self._store.get_session(owner, sid)
-        return session.get("conversationId") or await self._new_conversation(owner, sid, session)
+        if session.get("submissionContract") == SUBMISSION_CONTRACT and session.get("conversationId"):
+            return session["conversationId"]
+        return await self._new_conversation(owner, sid, session)
 
     async def _new_conversation(self, owner, sid, session=None):
         session = session or await self._store.get_session(owner, sid)
@@ -378,7 +421,8 @@ class TaskRunner:
             conversation_id = await self._agent.create_conversation()
         except AgentError as error:
             raise TaskFailure(error.code, error.message) from error
-        await self._store.save_session(owner, {**session, "conversationId": conversation_id})
+        await self._store.save_session(owner, {**session, "conversationId": conversation_id,
+                                               "submissionContract": SUBMISSION_CONTRACT})
         return conversation_id
 
     async def _flush(self, sid, run, state):
@@ -460,12 +504,21 @@ class TaskRunner:
             raise TaskFailure(
                 "no_result", "The agent finished without submitting an accepted result."
             )
+        builder = run.task.get("builder")
         expected = "explain" if run.task["type"] == "explain" else "diff"
+        if builder:
+            expected = {"analyze": "builderAnalysis", "propose": "builderProposals"}[builder["phase"]]
+            result = expand_resource_refs(result, builder["resources"])
         if result.get("kind") != expected:
             raise TaskFailure(
                 "invalid_result", f"A {run.task['type']} task needs a {expected} result."
             )
         problems = model_diff.validate_result(result, base, run.task["target"])
+        if not problems:
+            if problem := result_problem(result, run.task.get("showMeHandles", [])):
+                problems.append(problem)
+        if builder and not problems:
+            problems = builder_design.validate(run.task, result)
         if problems:
             shown = activity.clip_problems(problems, each=None)
             more = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
@@ -477,5 +530,11 @@ class TaskRunner:
             )
             raise TaskFailure("invalid_result", message, reported=True, problems=shown)
         await self._emit(sid, run, activity.draft("status", "Result verified"))
+        if result["kind"] == "builderAnalysis":
+            # Resource Graph owns the display casing and order of the IDs the review form submits.
+            rows = {row["resourceId"].casefold(): row for row in builder.get("rows", result["rows"])}
+            result = {**result, "rows": [
+                {**rows[r["id"].casefold()], "resourceId": r["id"], "displayName": r["name"]} for r in builder["resources"]
+            ]}
         run.task = {**run.task, "status": "done", "result": result, "finishedAt": utc_now()}
         await self._save_final(sid, run)

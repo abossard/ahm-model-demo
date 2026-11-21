@@ -235,17 +235,25 @@ describe("selectEntity", () => {
     expect(useStore.getState().detail).toEqual({ kind: "success", value: DETAIL });
   });
 
-  it("drops a detail that arrives after another entity was selected", async () => {
+  it.each([
+    { next: "svc-b", switched: false },
+    { next: "svc-a", switched: false },
+    { next: "svc-a", switched: true },
+  ])("drops an older read when selecting $next again, switched model $switched", async ({ next, switched }) => {
     const slow = deferred<EntityDetail>();
     vi.mocked(api.fetchEntityDetail).mockReturnValueOnce(slow.promise);
     const first = actions.selectEntity("svc-a");
     vi.mocked(api.fetchEntityDetail).mockReturnValue(new Promise(() => {}));
-    void actions.selectEntity("svc-b");
+    if (switched) {
+      vi.mocked(api.fetchHealthModel).mockResolvedValue(HEALTH_MODEL);
+      actions.chooseModel(MODEL_B);
+    }
+    void actions.selectEntity(next);
 
     slow.resolve(DETAIL);
     await first;
 
-    expect(useStore.getState()).toMatchObject({ selectedName: "svc-b", detail: LOADING });
+    expect(useStore.getState()).toMatchObject({ selectedName: next, detail: LOADING });
   });
 
   it("clearEntity closes the panel and forgets its detail and report", () => {

@@ -150,12 +150,13 @@ export function SessionWorkspace(): JSX.Element {
   const styles = useStyles();
   const open = useStore((state) => state.workspaceOpen);
   const width = useStore((state) => state.workspaceWidth);
+  const target = useStore((state) => state.workspaceTarget);
   const inSession = useStore((state) => state.sessionId !== null);
   const launching = useStore((state) => state.launch.kind !== "idle");
   const form = useStore((state) => state.workspaceTab === "new");
   const over = useStore((state) => state.timelineOpen && state.timelineFullscreen);
   // On a phone the panel is a sheet over the whole page: a modal, so what it covers is out of reach until it closes.
-  const sheet = useSyncExternalStore(watchPhone, isPhone, () => false) && open;
+  const sheet = useSyncExternalStore(watchPhone, isPhone, () => false) && open && !target;
   const asideRef = useRef<HTMLElement | null>(null);
   const opener = useRef<HTMLElement | null>(null);
   useInertElsewhere(asideRef, sheet, '[data-testid="app-shell"]');
@@ -174,6 +175,7 @@ export function SessionWorkspace(): JSX.Element {
     return () => {
       const back = opener.current;
       opener.current = null;
+      if (useStore.getState().workspaceTarget) return;
       if (document.activeElement !== document.body && !aside.contains(document.activeElement)) return;
       // What opened it may be gone (a toast) or be the page itself: the timeline is where the user was.
       const target = back !== null && back !== document.body && back.isConnected ? back : over ? document.querySelector<HTMLElement>('#timeline-panel [data-testid="tl-stage"]') : null;
@@ -198,6 +200,7 @@ export function SessionWorkspace(): JSX.Element {
       style={{ "--workspace-width": `${width}px` } as CSSProperties}
       aria-label="Assistant"
       onKeyDown={onKeyDown}
+      data-showing-target={open ? target ?? undefined : undefined}
       hidden={!open}
       data-testid="session-workspace"
     >

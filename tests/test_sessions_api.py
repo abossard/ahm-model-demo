@@ -438,6 +438,38 @@ class TaskValidationTests(ApiCase):
 
         self.assertEqual(task["workload"], {"resourceGroup": GROUP})
 
+    def test_invalid_show_me_handles_are_rejected_before_task_creation(self):
+        node = {"name": "node-detail", "description": "Open an entity", "idDescription": "An entity id"}
+        cases = [None, {}, [node, node], [node] * 17, [{**node, "name": "node detail"}],
+                 [{**node, "description": ""}], [{**node, "idDescription": " "}],
+                 [{**node, "idDescription": "x" * 257}], [{**node, "description": "a\nb"}], [{**node, "url": "/"}]]
+        with TestClient(self.module.app) as client:
+            sid = self.new_session(client)
+            for handles in cases:
+                with self.subTest(handles=handles):
+                    response = self.start(client, sid, type="review", target=TARGET, showMeHandles=handles)
+                    self.assertEqual((response.status_code, response.json()["error"]["code"]), (400, "invalid_show_me_handles"))
+            self.assertEqual(client.get(f"/api/sessions/{sid}").json()["tasks"], [])
+
+    def test_the_saved_answer_uses_only_the_handles_of_its_own_task(self):
+        node = {"name": "node-detail", "description": "Open an entity", "idDescription": "An entity id"}
+        with TestClient(self.module.app) as client:
+            sid = self.new_session(client)
+            for seq, fields in enumerate(({"showMeHandles": [node]}, {"showMeHandles": []}, {}), 1):
+                with self.subTest(seq=seq):
+                    task = self.start(client, sid, type="explain", target={**TARGET, "entity": "orders-api"}, **fields)
+                    self.assertEqual(task.status_code, 202, task.text)
+                    stored = self.finish(client, sid, seq)
+                    self.assertEqual(stored["status"], "done", stored.get("error"))
+                    self.assertEqual(stored.get("showMeHandles"), fields.get("showMeHandles"))
+                    if seq == 1:
+                        self.assertIn("[[show:1]]", stored["result"]["causes"][0]["note"])
+                        self.assertEqual(stored["result"]["showMe"]["1"], {"handle": "node-detail", "id": "orders-api",
+                                         "highlight": {"color": "violet", "label": "Explained entity"}})
+                    else:
+                        self.assertNotIn("showMe", stored["result"])
+                        self.assertNotIn("[[show:", json.dumps(stored["result"]))
+
     def test_only_json_objects_are_accepted(self):
         cases = [
             ("empty body", {}, 400, "invalid_task_type"),

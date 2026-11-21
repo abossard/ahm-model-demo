@@ -1,0 +1,30 @@
+.builder-answer[data-inspecting] {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(18rem, 2fr);
+  background: var(--surface);
+}
+.builder-answer[data-inspecting] > * {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 1rem;
+  overscroll-behavior: contain;
+}
+.builder-inspector { border-inline-start: 1px solid var(--line); }
+.builder-inspector section { padding: .75rem; }
+.builder-inspector h3 { margin: 0 0 .5rem; }
+.builder-inspector :is(dl, p + p) { margin-top: .6rem; }
+.builder-inspector dt { color: var(--muted); }
+.builder-inspector dd { margin: 0 0 .5rem; }
+.builder-inspector .close-inspector { margin-block-end: .75rem; }
+.builder .show-me-button { padding: .05em .5em; min-height: 0; color: var(--accent); }
+@media (max-width: 700px) {
+  .builder-answer[data-inspecting] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .builder-inspector { border-inline-start: 0; border-block-start: 1px solid var(--line); }
+}

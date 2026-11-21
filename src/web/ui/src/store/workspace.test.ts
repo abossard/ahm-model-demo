@@ -219,6 +219,12 @@ describe("starting a Task with one click", () => {
   const recent = (id: string, patch: Partial<SessionSummary> = {}): SessionSummary => ({ ...SESSION, id, title: id, taskCount: 1, lastTaskAt: now(), ...patch });
 
   /** The model on screen is `hm-a` (not necessarily the catalog default) and an entity is selected. */
+  const showMeHandles = [
+    expect.objectContaining({ name: "graph", idDescription: expect.stringContaining("coverage") }),
+    expect.objectContaining({ name: "timeline", idDescription: expect.stringContaining("signal/") }),
+    expect.objectContaining({ name: "panel", idDescription: expect.stringContaining("entity/") }),
+  ];
+
   function onScreen(patch: Partial<ReturnType<typeof useStore.getState>> = {}): void {
     useStore.setState({
       selected: MODEL,
@@ -242,7 +248,7 @@ describe("starting a Task with one click", () => {
     await actions.startTask({ type: "review", instruction: "look" });
 
     expect(api.createSession).not.toHaveBeenCalled();
-    expect(api.postTask).toHaveBeenCalledWith("s1", { type: "review", target: BASE, instruction: "look" });
+    expect(api.postTask).toHaveBeenCalledWith("s1", { type: "review", target: BASE, instruction: "look", showMeHandles });
     expect(api.fetchTask).not.toHaveBeenCalled();
     expect(useStore.getState()).toMatchObject({
       launch: { kind: "idle" },
@@ -266,7 +272,7 @@ describe("starting a Task with one click", () => {
     await actions.startTask({ type });
 
     expect(vi.mocked(api.createSession).mock.calls[0]?.[0]).toMatch(title);
-    expect(api.postTask).toHaveBeenCalledWith("s1", { type, target, instruction: "" });
+    expect(api.postTask).toHaveBeenCalledWith("s1", { type, target, instruction: "", showMeHandles });
     expect(useStore.getState()).toMatchObject({ sessionId: "s1", taskSeq: 1, workspaceOpen: true, launch: { kind: "idle" } });
     expect(useStore.getState().sessionDetail).toMatchObject({ kind: "success", value: { tasks: [{ seq: 1 }] } });
   });
@@ -283,7 +289,7 @@ describe("starting a Task with one click", () => {
     await actions.startTask({ type });
 
     expect(vi.mocked(api.createSession).mock.calls[0]?.[0]).toMatch(title);
-    expect(api.postTask).toHaveBeenCalledWith("s1", asked);
+    expect(api.postTask).toHaveBeenCalledWith("s1", { ...asked, showMeHandles });
   });
 
   it("a question that is asked again is about the moment it was asked about, not the one on screen", async () => {
@@ -292,7 +298,7 @@ describe("starting a Task with one click", () => {
 
     await actions.rerunTask({ type: "explain", target: { ...BASE, entity: "svc-a" }, instruction: "", asOf: "2026-11-09T08:00:00Z" });
 
-    expect(vi.mocked(api.postTask).mock.calls[0]?.[1]).toEqual({ type: "explain", target: { ...BASE, entity: "svc-a" }, instruction: "", asOf: "2026-11-09T08:00:00Z" });
+    expect(vi.mocked(api.postTask).mock.calls[0]?.[1]).toEqual({ type: "explain", target: { ...BASE, entity: "svc-a" }, instruction: "", asOf: "2026-11-09T08:00:00Z", showMeHandles });
   });
 
   it("starts on the model on screen, not on the catalog default", async () => {
@@ -402,7 +408,7 @@ describe("starting a Task with one click", () => {
       await actions.retryStart();
 
       expect(api.createSession).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(api.postTask).mock.calls.at(-1)).toEqual(["s1", { type: "explain", target: { ...BASE, entity: "svc-a" }, instruction: "" }]);
+      expect(vi.mocked(api.postTask).mock.calls.at(-1)).toEqual(["s1", { type: "explain", target: { ...BASE, entity: "svc-a" }, instruction: "", showMeHandles }]);
       expect(useStore.getState()).toMatchObject({ launch: { kind: "idle" }, taskSeq: 1 });
     });
 
@@ -454,7 +460,7 @@ describe("starting a Task with one click", () => {
 
     await actions.rerunTask({ type: "explain", target, instruction: "why" });
 
-    expect(api.postTask).toHaveBeenCalledWith("s1", { type: "explain", target, instruction: "why" });
+    expect(api.postTask).toHaveBeenCalledWith("s1", { type: "explain", target, instruction: "why", showMeHandles: [] });
   });
 
   it("opens the Task a notice is about, in its Session", async () => {

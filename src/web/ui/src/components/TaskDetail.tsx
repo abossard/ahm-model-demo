@@ -21,7 +21,8 @@ import { WORDS } from "../model/wording";
 import type { Task, TaskSummary } from "../model/types";
 import { actions, useStore } from "../store/store";
 import { ActivityTimeline } from "./ActivityTimeline";
-import { AgentText } from "./AgentText";
+import { ShowMeResult } from "./ShowMeResult";
+import { AgentText, ResultAgentText } from "./AgentText";
 import { DiffResult } from "./DiffResult";
 import { ExplainResult } from "./ExplainResult";
 import { focusFirst, focusIsFree } from "./focus";
@@ -233,12 +234,12 @@ function TaskBody({ task }: { readonly task: Task }): JSX.Element {
       <TimelineAnnouncer />
       <div ref={paneRef} className={styles.pane} role={hasResult ? "tabpanel" : undefined} aria-label={hasResult ? (shown === "result" ? answerLabel : WORDS.stepsDone) : undefined}>
         {shown === "result" ? (
-          <>
+          <ShowMeResult task={task}>
             <Text as="h4" size={300} weight="semibold" tabIndex={-1} className={styles.heading} data-result-heading="" data-testid="result-heading">
-              <AgentText text={resultHeading(task, entityLabel)} />
+              <ResultAgentText text={resultHeading(task, entityLabel)} />
             </Text>
             <Result task={task} />
-          </>
+          </ShowMeResult>
         ) : (
           <ActivityTimeline
             onReading={(value) => {

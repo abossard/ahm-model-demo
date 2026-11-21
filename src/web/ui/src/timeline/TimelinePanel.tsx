@@ -8,7 +8,7 @@ import { holdOf, parseDuration } from "../model/timelineBands";
 import { signalFacts } from "../model/timelineTree";
 import { historyAt, stateAt, troubledAt } from "../model/timeTravel";
 import { detectIncidents, entityBands, incidentText, type Incident } from "../model/timelineIncidents";
-import { allKeys, buildRows, entityShown, heldRows, moveFocus, revealKeys, rootEntity, scrollToShow, type Row } from "../model/timelineRows";
+import { allKeys, buildRows, entityShown, heldRows, moveFocus, revealKeys, rootEntity, scrollToShow, signalKey, type Row } from "../model/timelineRows";
 import { PRESETS, formatClock, formatDay, formatInstant, offsetAt, padView, presetOf, presetView } from "../model/timelineScale";
 import { actions, useStore } from "../store/store";
 import { TIMELINE_MAX_HEIGHT, TIMELINE_MIN_HEIGHT, selectedMoment, timelineBounds } from "../store/timelineSlice";
@@ -132,6 +132,8 @@ export function TimelinePanel(): JSX.Element {
     [order, entities, stateOf],
   );
   const rowModel = useMemo(() => buildRows({ entities: data.entities, order, open: new Set(expanded), rank: rank ?? (() => 1) }), [data.entities, order, expanded, rank]);
+  const focusedIndex = focusKey === null ? undefined : rowModel.indexByKey.get(focusKey);
+  const focusedRow = focusedIndex === undefined ? undefined : rowModel.rows[focusedIndex];
   const rowsRef = useRef(rowModel);
   rowsRef.current = rowModel;
 
@@ -191,6 +193,7 @@ export function TimelinePanel(): JSX.Element {
       view: (next) => actions.setTimelineView(next),
       pin: (t) => actions.pinTimeline(t),
       scroll: (top) => {
+        canvas.parentElement?.style.setProperty("--timeline-scroll", `${top}px`);
         if (bodyRef.current) bodyRef.current.scrollTop = top;
         if (proxyRef.current) proxyRef.current.scrollTop = top;
         cutRange(top, false);
@@ -313,13 +316,14 @@ export function TimelinePanel(): JSX.Element {
   /* An entity picked anywhere: the way to it opens, its signals open, its row is focused and scrolled to. */
   useEffect(() => {
     if (focus === null || focus.seq === handledFocus.current || data.entities.length === 0) return;
-    handledFocus.current = focus.seq;
     const keys = revealKeys(data.entities, focus.name, { open: new Set(expanded), prefer: focus.key });
     const own = keys.at(-1);
     if (own === undefined) return;
+    handledFocus.current = focus.seq;
     actions.expandTimelineEntities(keys);
-    wantScroll.current = own;
-    setFocusKey(own);
+    const lane = focus.signal ? signalKey(own, focus.signal) : own;
+    wantScroll.current = lane;
+    setFocusKey(lane);
   }, [focus, data.entities, expanded]);
   useEffect(() => {
     const key = wantScroll.current;
@@ -584,6 +588,9 @@ export function TimelinePanel(): JSX.Element {
           </div>
           <div className={styles.plotWrap}>
             <canvas ref={canvasRef} className={styles.canvas} data-testid="tl-canvas" />
+            {focusedRow && <div className="tl-show-me-lanes" style={{ top: AXIS_HEIGHT }} aria-hidden="true">
+              <div className="tl-show-me-band" style={{ top: focusedRow.y, height: focusedRow.h }} />
+            </div>}
             <div ref={tipRef} className={styles.tip} hidden data-testid="tl-tip" role="presentation" />
             <div ref={proxyRef} className={styles.scrollProxy} onScroll={(event) => plotRef.current?.scrollTo(event.currentTarget.scrollTop)} data-testid="tl-scroll">
               <div style={{ height: rowModel.height, width: 1 }} />

@@ -1,68 +1,88 @@
 import type { StateCreator } from "zustand";
-import { PersonalAccountError, createAuth, getAuth, setAuth, type AuthAccount, type SignInRequest } from "../auth";
+import { createAuth, DirectoryConsentRequiredError, getAuth, setAuth, type AuthAccount, type AzureDirectory, type DirectoryDiscovery } from "../auth";
+import { WorkspaceDenied } from "../auth/workspaceAccess";
 import * as api from "./api";
 import type { Store } from "./store";
 
-/**
- * `signed-out`: the app asks the user to sign in. `personal`: the user signed in with a personal account, which has no
- * Azure of its own, so the app asks for the directory it belongs to.
- */
-export type AuthStatus = "starting" | "signed-out" | "personal" | "ready" | "failed";
+export type AuthStatus = "starting" | "signed-out" | "signing-out" | "choose-directory" | "ready" | "failed";
+
+export type DirectoryList =
+  | { readonly status: "loading" }
+  | ({ readonly status: "available" } & DirectoryDiscovery)
+  | { readonly status: "error"; readonly message: string };
 
 export interface AuthState {
   readonly authStatus: AuthStatus;
-  /** Known once the app has read its config; null before. */
   readonly authMode: "entra" | "local" | null;
-  /** The directory the app is registered in: the one-click choice for its members and guests. */
-  readonly homeDirectory: string | null;
-  /** Who is signed in. Only the name the top bar shows: a token never enters the store. */
   readonly account: AuthAccount | null;
   readonly authError: string | null;
-  /** The personal account that landed in no directory, to offer first when the user names one. */
-  readonly personalAccount: string | null;
+  readonly directoryList: DirectoryList;
 }
 
 export interface AuthActions {
-  /** Reads the config, then signs in when it asks for it. A sign-in that redirects never settles. Safe to call twice. */
   readonly startAuth: () => Promise<void>;
   readonly signOut: () => Promise<void>;
-  /** Signs in by redirect, to a directory when the request names one, and again for a session the app no longer accepts. */
-  readonly signIn: (request?: SignInRequest) => Promise<void>;
+  readonly signIn: () => Promise<void>;
+  readonly loadDirectories: (requestConsent?: boolean, sourceTenantId?: string) => Promise<void>;
+  readonly selectDirectory: (directory: AzureDirectory) => Promise<void>;
 }
 
-function messageOf(error: unknown): string {
+function messageOf(error: unknown, fallback = "Signing in did not work."): string {
   if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string" && error.message !== "") {
     return error.message;
   }
-  return "Signing in did not work.";
+  return fallback;
 }
 
 export const authSlice: StateCreator<Store, [], [], AuthState & AuthActions> = (set, get) => {
-  // A start that is running is the one a second call waits for: two sign-in redirects would collide.
   let running: Promise<void> | null = null;
 
+  const loadDirectories = async (requestConsent = false, sourceTenantId?: string): Promise<void> => {
+    const auth = getAuth();
+    if (get().authStatus !== "choose-directory" || !auth.listDirectories) return;
+    set({ directoryList: { status: "loading" } });
+    let directoryList: DirectoryList;
+    try {
+      if (requestConsent) {
+        if (sourceTenantId) await auth.requestDirectoryDiscovery?.(sourceTenantId);
+        else await auth.requestDirectoryDiscovery?.();
+      }
+      directoryList = { status: "available", ...await auth.listDirectories() };
+    } catch (error) {
+      // Selecting manually or retrying may cancel the lookup already in flight.
+      if (typeof error === "object" && error !== null && "name" in error && error.name === "AbortError") return;
+      directoryList = error instanceof DirectoryConsentRequiredError
+        ? { status: "available", directories: [], consentRequired: true, ...(error.discoverySources && { discoverySources: error.discoverySources }) }
+        : { status: "error", message: messageOf(error, "Azure could not return your directories.") };
+    }
+    if (get().authStatus === "choose-directory" && auth === getAuth()) set({ directoryList });
+  };
+
   const start = async (): Promise<void> => {
-    set({ authStatus: "starting", authError: null, personalAccount: null });
+    set({ authStatus: "starting", authMode: null, authError: null, account: null });
     try {
       const config = await api.fetchAuthConfig();
-      set({ authMode: config.authMode, homeDirectory: config.homeDirectory ?? null });
       const auth = createAuth(config);
       setAuth(auth);
+      set({ authMode: config.authMode });
       const account = await auth.ready();
-      set(config.authMode === "entra" && account === null ? { authStatus: "signed-out", account } : { authStatus: "ready", account });
+      if (config.authMode === "local") set({ authStatus: "ready", account });
+      else if (!account) set({ authStatus: "signed-out" });
+      else if (auth.needsDirectory) {
+        set({ authStatus: "choose-directory", account, authError: auth.directoryError ?? null });
+        await loadDirectories();
+      } else set({ authStatus: "ready", account });
     } catch (error) {
-      if (error instanceof PersonalAccountError) set({ authStatus: "personal", personalAccount: error.username });
-      else set({ authStatus: "failed", authError: messageOf(error) });
+      set({ authStatus: "failed", authError: messageOf(error) });
     }
   };
 
   return {
     authStatus: "starting",
     authMode: null,
-    homeDirectory: null,
     account: null,
     authError: null,
-    personalAccount: null,
+    directoryList: { status: "loading" },
 
     startAuth: () => {
       running ??= start().finally(() => {
@@ -72,16 +92,47 @@ export const authSlice: StateCreator<Store, [], [], AuthState & AuthActions> = (
     },
 
     signOut: async () => {
-      await getAuth().signOut();
+      if (get().authStatus === "signing-out") return;
+      // Removing the account immediately also unmounts the workspace while Microsoft finishes the redirect.
+      set({ authStatus: "signing-out", account: null, authError: null, directoryList: { status: "loading" } });
+      try {
+        await getAuth().signOut();
+        set({ authStatus: "signed-out" });
+      } catch (error) {
+        set({ authStatus: "signed-out", authError: messageOf(error, "Microsoft could not finish signing you out.") });
+      }
     },
 
-    // Before the app is ready a sign-in that cannot start is the sign-in page's failure; afterwards it is the caller's.
-    signIn: async (request) => {
+    signIn: async () => {
       try {
-        await getAuth().signIn(request);
+        await getAuth().signIn();
       } catch (error) {
         if (get().authStatus === "ready") throw error;
         set({ authStatus: "failed", authError: messageOf(error) });
+      }
+    },
+
+    loadDirectories,
+    selectDirectory: async (directory) => {
+      const auth = getAuth();
+      if (get().authStatus !== "choose-directory" || !auth.selectDirectory) return;
+      set({ authError: null });
+      try {
+        const account = await auth.selectDirectory(directory);
+        if (get().authStatus === "choose-directory" && auth === getAuth()) set({ authStatus: "ready", account });
+      } catch (error) {
+        if (get().authStatus !== "choose-directory" || auth !== getAuth()) return;
+        let directoryList = get().directoryList;
+        if (directoryList.status === "available" && error instanceof WorkspaceDenied) {
+          const otherDirectory = (item: AzureDirectory) => item.tenantId !== directory.tenantId;
+          directoryList = {
+            ...directoryList,
+            directories: directoryList.directories.filter(otherDirectory),
+            needsCheck: directoryList.needsCheck?.filter(otherDirectory) ?? [],
+          };
+        }
+        set({ authError: messageOf(error), directoryList });
+        if (directoryList.status === "loading") await loadDirectories();
       }
     },
   };

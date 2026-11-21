@@ -275,7 +275,8 @@ class Live:
     async def run(self):
         session = await self.store.create_session(CALLER.oid, "S")
         if self.conversation:
-            await self.store.save_session(CALLER.oid, {**session, "conversationId": self.conversation})
+            await self.store.save_session(CALLER.oid, {**session, "conversationId": self.conversation,
+                                                       "submissionContract": task_runner.SUBMISSION_CONTRACT})
         fields = {
             "type": "explain",
             "target": {"subscriptionId": SUB, "resourceGroup": GROUP, "name": MODEL, "entity": "orders-api"},

@@ -100,11 +100,11 @@ def names(items):
 
 
 class ContractTests(unittest.TestCase):
-    def test_schema_copy_is_byte_identical_to_the_agent_schema(self):
-        agent = (ROOT / "src/agent/src/contracts/task-result.schema.json").read_bytes()
-        web = (ROOT / "src/web/app/contracts/task-result.schema.json").read_bytes()
-
-        self.assertEqual(web, agent)
+    def test_contract_copies_are_byte_identical(self):
+        for filename in ("task-result.schema.json", "builder_rules.py", "show_me.py"):
+            with self.subTest(filename):
+                self.assertEqual((ROOT / "src/agent/src/contracts" / filename).read_bytes(),
+                                 (ROOT / "src/web/app/contracts" / filename).read_bytes())
 
 
 class FingerprintTests(unittest.TestCase):

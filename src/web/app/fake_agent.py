@@ -3,6 +3,7 @@ import copy
 import json
 from datetime import datetime, timedelta, timezone
 
+from contracts.show_me import action_problem
 from fixture_models import fixture_model, metric_definition, scope_of
 from foundry_agent import StreamEvent
 from model_diff import strip_system
@@ -152,9 +153,139 @@ def inspect_arguments(task):
         "end-at": window["to"],
     }
 
+def builder_result(builder):
+    if builder["phase"] == "analyze":
+        rows = [
+            {"resourceId": r["id"], "displayName": r["name"],
+             "purpose": f"Provides {r['type'].split('/')[-1]} for the selected workload.", "impact": "Standard"}
+            for r in builder["resources"]
+        ]
+        plan = {"objective": "Customers can submit and retrieve orders.",
+                "flows": [{"name": "Complete an order", "objective": "The order request succeeds and is saved.",
+                           "components": [{"name": "Order processing", "resourceIds": [r["resourceId"] for r in rows],
+                                           "signal": "Monitor availability and request failures."}],
+                           "failureScenario": "A required dependency failure makes order processing and the order flow unhealthy."}],
+                "gaps": ["Order completion has no confirmed end-to-end signal."],
+                "decisions": [{"choice": "Group the selected resources under order processing",
+                               "reason": "The workload inventory identifies the services that support order processing. An end-to-end order event would establish whether an individual request finished.",
+                               "basis": "assumption", "resourceIds": [r["resourceId"] for r in rows]}]}
+        metrics = [{**{key: observation[key] for key in ("resourceId", "metricName", "metricNamespace", "aggregation", "sample")},
+                    "operator": "GreaterThan", "threshold": 80} for observation in builder.get("observedMetrics", [])]
+        if metrics:
+            plan["decisions"].append({
+                "choice": "Use the measured platform signal",
+                "reason": "Azure Monitor returned readings for these resources. They show platform load. Order completion still needs application telemetry.",
+                "basis": "measurement", "resourceIds": [m["resourceId"] for m in metrics]})
+        summary = "Review what each selected resource contributes to the workload."
+        if revision := builder.get("revision"):
+            rows = builder["rows"]
+            plan = {**builder["previousPlan"], "objective": "Orders reach fulfillment successfully.",
+                    "decisions": [*builder["previousPlan"].get("decisions", [])[:11],
+                                  {"choice": "Prioritize order fulfillment", "reason": revision["prompt"][:800],
+                                   "basis": "userInput", "resourceIds": [r["resourceId"] for r in rows]}]}
+            metrics = builder["previousMetrics"]
+            summary = "The revised plan follows the order through fulfillment."
+        return {"kind": "builderAnalysis", "summary": summary, "plan": plan, "metrics": metrics, "rows": rows,
+                "omittedMetrics": builder.get("previousOmittedMetrics", [])}
+    ids = [r["resourceId"] for r in builder["rows"]]
+    groups = [{"name": "Workload operation", "purpose": "Monitor the confirmed components of the workload.", "resourceIds": ids}]
+    if builder.get("plan"):
+        return {"kind": "builderProposals", "proposals": [
+            {"id": "planned-workload", "title": "Workload operation", "summary": builder["plan"]["objective"],
+             "tradeoff": "Connects operating symptoms with customer impact.", "structure": "planned", "groups": groups},
+            {"id": "resource-health", "title": "Resource availability", "summary": "See each resource directly.",
+             "tradeoff": "Fewer levels to inspect, with less operational context.", "structure": "direct", "groups": groups},
+        ]}
+    return {
+        "kind": "builderProposals", "metrics": [],
+        "proposals": [
+            {"id": "resource-health", "title": "Resource availability", "summary": "See the state of each selected resource directly.",
+             "tradeoff": "This view is fast to scan. It leaves the purpose of each dependency to the operator.",
+             "structure": "direct", "groups": groups},
+            {"id": "workload-flow", "title": "Workload operation", "summary": "Track the workload and then inspect the resources behind it.",
+             "tradeoff": "The extra level explains the workload impact and takes one more step to reach a resource.",
+             "structure": "grouped", "groups": groups},
+        ],
+    }
+
+
+def pointing_calls(task, result, relationships=()):
+    handles = task.get("showMeHandles", [])
+    actions, calls = {}, []
+    if not handles:
+        return calls, actions
+
+    def point(field, key, handle, id_, color, label, *, legacy=None):
+        # A previously installed client can still request its original destinations.
+        if legacy and not any(h["name"] == handle for h in handles):
+            handle, id_ = legacy
+        action = {"handle": handle, "highlight": {"color": color, "label": label}}
+        if id_ is not None:
+            action["id"] = id_
+        if action_problem(action, handles):
+            return
+        number = str(len(actions) + 1)
+        actions[number] = action
+        marker = f"[[show:{number}]]"
+        field[key] += " " + marker
+        calls.extend(call(f"show_{number}", "show_me", action, marker))
+
+    if result["kind"] == "builderAnalysis":
+        inventory = task["builder"]["resources"]
+        refs = {r["id"].casefold(): r["ref"] for r in inventory}
+        if inventory:
+            point(result, "summary", "builder", "resource/" + inventory[0]["ref"], "blue", "Reviewed resource")
+        for decision in result["plan"].get("decisions", []):
+            if decision["basis"] == "measurement" and decision["resourceIds"]:
+                ref = refs[decision["resourceIds"][0].casefold()]
+                point(decision, "reason", "builder", "signal/" + ref, "amber", "Observed signal")
+                break
+    elif result["kind"] == "builderProposals":
+        for proposal in result["proposals"]:
+            point(proposal, "tradeoff", "builder", "design/" + proposal["id"], "violet", "Design preview")
+    elif result["kind"] == "explain":
+        cause = next(iter(result["causes"]), None)
+        point(cause or result, "note" if cause else "summary", "panel", "entity/" + result["entity"],
+              "violet", "Explained entity", legacy=("node-detail", result["entity"]))
+        for row in result["causes"]:
+            if row["signal"]:
+                point(row, "note", "timeline", f"signal/{row['entity']}/{row['signal']}", "amber", "Order errors over time",
+                      legacy=("health-timeline", None))
+        if task.get("asOf"):
+            point(result, "summary", "timeline", "entity/" + result["entity"], "blue", "Historical state",
+                  legacy=("health-timeline", None))
+    else:
+        point(result, "summary", "graph", "view/coverage", "blue", "Signal coverage", legacy=("model-view", "coverage"))
+        for finding in result["findings"]:
+            if finding.get("entity"):
+                point(finding, "text", "panel", "entity/" + finding["entity"], "amber", "Entity in this finding",
+                      legacy=("node-detail", finding["entity"]))
+        edge = next((r for r in relationships if r["parent"] == "orders-api" and r["child"] == "orders-db"), None)
+        if task["type"] == "review" and edge:
+            changes = {change["id"]: change for change in result["changes"]}
+            point(changes["c1"], "reason", "graph", "node/orders-api", "blue", "Orders API on the graph")
+            point(changes["c2"], "reason", "panel", "change/c3", "amber", "Proposed queue entity")
+            if any(h["name"] == "graph" for h in handles):
+                changes["c4"]["reason"] += " Its existing database dependency follows the same direction."
+            point(changes["c4"], "reason", "graph", "connection/" + edge["name"], "violet", "Existing database dependency")
+        elif result["changes"]:
+            point(result["changes"][0], "reason", "panel", "comparison", "violet", "Compare proposed design")
+    return calls, actions
+
 
 def script(envelope, state_at=None):
     task = envelope["task"]
+    if task.get("builder"):
+        result = builder_result(task["builder"])
+        buttons, actions = pointing_calls(task, result)
+        return [
+            ("response.created", {"response": {"id": "resp_fake"}}),
+            *call(1, "load_skill", {"skill_name": "healthmodel-plan"}, "# Health model plan\n## Workload flows"),
+            *call(2, "load_skill", {"skill_name": "healthmodel-build"}, "# Health model build\n## Signal verification"),
+            *buttons,
+            *call(3, "submit_result", {"result": result}, json.dumps({"status": "accepted", **({"showMe": actions} if actions else {})})),
+            ("response.completed", {"response": {"id": "resp_fake"}}),
+        ]
     model = task["target"]["name"]
     results = {
         "explain": lambda: explain_result(task, state_at),
@@ -162,13 +293,15 @@ def script(envelope, state_at=None):
         "design": lambda: design_result(task),
     }
     result = results[task["type"]]()
+    buttons, actions = pointing_calls(task, result, envelope.get("relationships", []))
     return [
         ("response.created", {"response": {"id": "resp_fake"}}),
         *message(1, f"I will start with the model {model}."),
         *call(1, "load_skill", {"name": "healthmodel-analyze"}, "Skill loaded."),
         *call(2, "monitor_healthmodels_inspect", inspect_arguments(task), json.dumps({"entities": 5})),
         *message(2, "I have what I need and will submit the result."),
-        *call(3, "submit_result", {"result": result}, json.dumps({"status": "accepted"})),
+        *buttons,
+        *call(3, "submit_result", {"result": result}, json.dumps({"status": "accepted", **({"showMe": actions} if actions else {})})),
         *message(3, "Done."),
         ("response.completed", {"response": {"id": "resp_fake"}}),
     ]

@@ -62,6 +62,8 @@ export const TimelineLabels = memo(function TimelineLabels(props: Props): JSX.El
       "data-key": row.key,
       "data-testid": `tl-label-${row.kind}`,
       "data-row": row.entity,
+      "data-signal": row.kind === "signal" ? row.signal : undefined,
+      "data-focused": row.key === props.focusKey || undefined,
     };
     const focused = row.key === props.focusKey;
     if (row.kind === "entity") {

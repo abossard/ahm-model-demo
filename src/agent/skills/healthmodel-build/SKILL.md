@@ -103,29 +103,33 @@ Start from [templates/main.bicep](templates/main.bicep) and the plan's IDs, and 
 - **One data source per signal group type per entity**: for a second workspace, add a child entity.
 - **Signal definitions**: editing one changes every entity that uses it, and per-entity threshold overrides aren't documented, so use a separate definition for different thresholds.
 - **Permissions**: Azure grants the model identity nothing. Add its role assignments explicitly; they are a separate line in the approval.
-- **Alerts**: notify through the action group the plan or the user names. If none is named, configure the alerts without action groups and list routing as open. Never pick an existing action group by guess; someone else may own it, or it may notify nobody.
+- **Alerts**: notify through the action group the plan or the user names. If none is named, leave `actionGroupIds` out (an empty list fails with `ArrayLengthShort`) and list routing as open. Never pick an existing action group by guess; someone else may own it, or it may notify nobody.
 - **Bicep**: there are no float literals, so write `json('99.9')`. Local Bicep may lack CloudHealth types (warning BCP081); then `bicep build` only checks syntax.
 - Avoid `Dynamic` thresholds until they're documented for your API version.
 
-Updating an existing model:
+Updating an existing model: when you build a plan onto it, the plan is the target, and the finished model has exactly the plan's entities and parent -> child pairs. When the request changes only part of the model, keep everything else.
 
-- Read the current configuration first and keep what you aren't asked to change.
+- Read every entity, relationship, signal definition and role assignment first, following `nextLink` to the last page, and keep that readback as the baseline. Compare it with the plan, pair by pair: each one is kept, changed, created or deleted.
+- Keep existing entity names; their health history belongs to them. Keep a relationship whose parent and child already match, whatever its name.
+- A relationship's parent and child are fixed: Azure rejects a change with `RelationshipIsImmutable`, and what-if doesn't catch it. For a new parent, delete the old relationship and create one under a new name.
+- Entities and relationships that aren't in the plan are deletions. List them in the approval; the user decides.
 - A PUT (and every Bicep or Terraform resource) writes the whole resource, so properties you leave out are reset.
-- Resources missing from a template are not deleted. Deletions are explicit operations, ordered so relationships go before entities and entities before the definitions they use.
+- Resources missing from a template stay. Deletions are explicit operations (`az rest --method delete`) in the approved script. The script validates the deployment first (`az deployment group validate`) and deletes only when that passes, so a rejected template leaves the model as it was. Then: old relationships before the deployment that creates their replacements, entities after their relationships, definitions after the entities that use them.
 - Discovered entities (`discoveredBy`) belong to discovery rules and can't be deleted manually.
 
 Validate before asking: `bicep build`, `terraform validate` (if already initialized) or a dry review of the script. If available, run a what-if or `terraform plan`: it reads Azure but changes nothing, and gives the user the exact diff.
 
 ### 5. Get approval
 
-This is the one point where the user always steps in. Use this shape, so nothing is left out, and always end with the question:
+This is the one point where the user always steps in, also for a repair or cleanup. Put the whole approval in your reply in this shape, every line filled in, so the user can decide without opening a file, and always end with the question:
 
 ```markdown
 **Deploy health model `<name>`**
 
 - Target: <subscription> / <resource group> / <region>
 - Method: <file>, `<exact command>`
-- Creates: <n> entities (<names>), <n> relationships, <n> signals. Changes: <names or none>. Deletes: <names or none>
+- Creates: <n> entities (<names>), <n> signals. Changes: <names or none>. Deletes entities: <names or none>
+- Relationships, one per line, each endpoint by its entity name (a GUID followed by its display name): delete `<name>` (`<parent>` -> `<child>`), create `<parent>` -> `<child>`; or "none"
 - Role assignments: <role> on <scope>, one per line
 - Alerts: <entity> notifies <action group> (<receivers>), or "no routing yet"
 - Assumptions:
@@ -136,22 +140,23 @@ This is the one point where the user always steps in. Use this shape, so nothing
 Deploy this to `<resource group>` now? (yes/no)
 ```
 
-The approval covers exactly this change. If the files, parameters, target or method change afterwards, ask again. In a non-interactive run, ask the question anyway and stop there, without deploying.
+Tables and caveats go above this block, so the question is the last line of your reply; it is how the user gives permission. This yes is the only approval: it covers the change and the fixes it needs to finish. In a non-interactive run, ask the question anyway and stop there, without deploying.
 
 ### 6. Deploy
 
 - Use the existing login and tools; pass the subscription and resource group explicitly on every call.
-- Run only what was approved. On the first error, stop, show it, and propose a fix rather than retrying or trying something else.
+- Finish the approved change. When a step fails, read the error, fix the files and run the step again until it passes; step 7 says when the build is done. A failed deployment keeps what it already wrote, so read the model back before the fix. Stop and ask only before deleting something the approval didn't list or writing to another target.
 - Don't log in, install tools or extensions, run `terraform init`, or make any change that wasn't in the approved summary.
 
 ### 7. Confirm it works
 
 Provisioning `Succeeded` means the configuration was saved, not that health is evaluated.
 
-- Read back the model, entities and relationships (CLI extension or REST API) and compare them with what you deployed.
+- Read back the model, entities and relationships (CLI extension or REST API) and compare them with the plan: every planned parent -> child pair exists once, nothing else is left, and every entity except the root has one parent. A leftover or missing pair means the build isn't done.
+- Compare everything the change didn't cover with the baseline from step 4: entities, signal definitions, role assignments and alerts are as they were.
 - Wait for the first evaluation (the refresh interval plus a few minutes; new role assignments can take longer), then read each signal's `status`: `healthState`, `value`, `reportedAt`, `error`.
 - An `error` mentioning authorization means the model identity lacks a role or it hasn't propagated yet.
-- Show a final table of entity, signal, state, value and error, and a small top-down mermaid diagram colored by state. Mark anything still pending as unknown rather than healthy, and say when a green parent rests on only a few known children.
+- Show a final table of entity, signal, state, value and error, and a small top-down mermaid diagram colored by state. Mark anything still pending as unknown rather than healthy, list each entity that is still Unknown by its display name, and say when a green parent rests on only a few known children.
 
 ### 8. Update the modelspec
 
@@ -159,6 +164,7 @@ If there is a modelspec, update only the affected rows:
 
 - **Signals**: fill Verification with the observed result or the reason it couldn't be verified, set Status to `done` or `problem: <reason>`.
 - **Entities**: Status `done` once deployed and evaluating.
+- **Relationships**: the topology check from step 7 (exact pairs, one parent each), separate from signal health.
 - **User input and decisions**: the deployment method and the approval, with time and who approved.
 - **Shared source material**: verification runs and deployment results as new `S<n>` entries (command, scope, time).
 
@@ -167,5 +173,5 @@ Keep the reply short: what was verified, what was deployed, what's left. Don't r
 ## Rules that keep the user safe
 
 - Reads (queries, metric lists, what-if, plan) are fine within the agreed scope.
-- Writes need the user's yes to that exact change: deployments, role assignments, deletions, health reports (they create or overwrite a signal), discovery rules.
+- Writes need the user's yes from step 5: deployments, role assignments, deletions, health reports (they create or overwrite a signal), discovery rules. One yes covers the change and the fixes it needs.
 - Don't invent health meaning, and don't silently rename, swap or drop signals: every change shows up in the summary.

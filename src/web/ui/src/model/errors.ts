@@ -236,7 +236,7 @@ const SIGN_IN_HINTS: readonly (readonly [RegExp, string])[] = [
   [/AADSTS50105/, "Your account is not assigned to this app. Ask the owner of the app to give you access, then sign in again."],
   [
     /AADSTS650052/,
-    "Your own organization has not approved this app, so you cannot sign in to it there. If you are a member or a guest of this app's directory, choose \"Sign in to this app's directory\". For another directory, name it below.",
+    "This directory has not approved a service the app needs. Ask its administrator to approve access, or use a directory that has approved the app.",
   ],
   [
     /AADSTS65001|AADSTS90094|AADSTS90095|AADSTS500011/,
@@ -248,17 +248,12 @@ const SIGN_IN_HINTS: readonly (readonly [RegExp, string])[] = [
   ],
   [
     /AADSTS50020|AADSTS50034/,
-    "Your account is not a member or a guest of the directory you signed in to. Use a work or school account of that directory. For a personal account, name the directory it belongs to below.",
+    "Your account is not a member or a guest of the directory you signed in to. Use an account that belongs to that directory, or choose a directory where you have access.",
   ],
   [/AADSTS90002/, "That directory was not found. Check its domain or ID and try again."],
   [/AADSTS50076|AADSTS50079/, "Your organization asks for a second step to sign in. Sign in again and complete it."],
   [/AADSTS700054|AADSTS900144/, "Signing in is set up incorrectly for this app. Tell the person who runs it."],
 ];
-
-/** Whether a failed sign-in is cured by naming the directory to sign in to. */
-export function needsDirectory(message: string | null): boolean {
-  return message !== null && /AADSTS50020|AADSTS50034|AADSTS90002/.test(message);
-}
 
 /** What to do about a failed sign-in, when its message names a cause the user can act on; null for any other message. */
 export function signInHint(message: string | null): string | null {

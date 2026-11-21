@@ -25,6 +25,9 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers, MutableHeaders
 
 import apply
+from builder import Builder
+from builder_mcp import BuilderMCP
+from contracts.show_me import catalog_problem
 import history_store
 import inventory
 import live_data
@@ -216,7 +219,8 @@ class SecurityHeadersMiddleware:
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(raw=message["headers"])
-                headers["content-security-policy"] = SECURITY_POLICY
+                if "content-security-policy" not in headers:
+                    headers["content-security-policy"] = SECURITY_POLICY
                 # Only a closed window of the timeline names its own caching: everything else is never kept.
                 if headers.get("cache-control") != CLOSED_CACHE_CONTROL:
                     headers["cache-control"] = "no-store"
@@ -278,7 +282,10 @@ app.add_middleware(SecurityHeadersMiddleware)
 def authenticated(request: Request) -> Caller:
     if AUTH_MODE == "local":
         return LOCAL_CALLER
-    return authenticator.user(request.headers.get("authorization"))
+    caller = authenticator.user(request.headers.get("authorization"))
+    if any(selected.casefold() != caller.tenant_id for selected in request.headers.getlist("x-workspace-tenant")):
+        raise TenantRefused("workspace_tenant_mismatch")
+    return caller
 
 
 Authed = Annotated[Caller, Depends(authenticated)]
@@ -310,6 +317,7 @@ TENANT_REFUSALS = {
         "Sign in with the directory your account belongs to."
     ),
     "tenant_not_allowed": "The directory you signed in to is not allowed to use this app.",
+    "workspace_tenant_mismatch": "Your sign-in belongs to a different tenant. Sign out and choose your tenant again.",
 }
 
 
@@ -366,10 +374,22 @@ async def public_config():
             "authMode": AUTH_MODE,
             "clientId": None if local else CLIENT_ID,
             "apiScope": None if local else API_SCOPE,
-            # The directory the app is registered in: its members and guests sign in to it with one click.
             "homeDirectory": None if local else TENANT_ID,
         }
     )
+
+
+@api.get("/workspace/access")
+def workspace_access(caller: Authed):
+    if AUTH_MODE == "local":
+        return _not_found("not_found", "Tenant selection requires Microsoft sign-in.")
+    try:
+        health.as_user(caller).check_workspace_access()
+    except HttpResponseError as error:
+        if error.status_code == 403:
+            return error_response(403, "workspace_access_denied", "Your account cannot read Azure resources in this tenant.", False)
+        return sdk_error_response(error, "workspace.access")
+    return {"tenantId": caller.tenant_id}
 
 
 @api.get("/health-models")
@@ -906,6 +926,11 @@ async def _task_fields(body, user, caller):
     if rejected:
         return None, rejected
     fields = {"type": task_type, "instruction": instruction, **moment, "createdAt": utc_now()}
+    if "showMeHandles" in body:
+        handles = body["showMeHandles"]
+        if problem := catalog_problem(handles):
+            return None, validation_error("invalid_show_me_handles", problem)
+        fields["showMeHandles"] = handles
     if task_type == "design":
         design, rejected = _design_fields(body)
     else:
@@ -1174,6 +1199,15 @@ API_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 @api.api_route("/{unknown:path}", methods=API_METHODS, include_in_schema=False)
 async def unknown_api_path():
     return _not_found("not_found", "There is no such API route.")
+
+
+builder_mcp = BuilderMCP(authenticated, lambda caller: Builder(caller, store, runner, health), UI_DIST_DIR / "builder.html")
+app.add_route("/api/builder/mcp", builder_mcp, methods=["GET", "POST", "DELETE"])
+
+
+@app.get("/builder/view/{digest}")
+def builder_sandbox(digest: str):
+    return builder_mcp.sandbox_view(digest)
 
 
 app.include_router(api)

@@ -26,6 +26,8 @@ export interface TimelineFocus {
   readonly name: string;
   /** The row the viewer clicked, when the entity has several. */
   readonly key: string | null;
+  /** Scroll to this signal lane within the revealed entity. */
+  readonly signal?: string;
   readonly seq: number;
 }
 
@@ -84,7 +86,7 @@ export interface TimelineActions {
   readonly toggleTimeline: () => void;
   readonly setTimelineFullscreen: (fullscreen: boolean) => void;
   /** Opens the timeline if it is closed and brings an entity into view in it; `key` is the row when it has several. */
-  readonly showInTimeline: (name: string, key?: string | null) => void;
+  readonly showInTimeline: (name: string, key?: string | null, signal?: string) => void;
   readonly initializeTimeline: (search: string) => void;
   readonly setTimelineHeight: (height: number) => void;
   readonly setTimelineView: (view: View) => void;
@@ -406,7 +408,10 @@ export const timelineSlice: StateCreator<Store, [], [], TimelineState & Timeline
   },
   toggleTimeline: () => (get().timelineOpen ? get().closeTimeline() : get().openTimeline()),
   setTimelineFullscreen: (timelineFullscreen) => set({ timelineFullscreen }),
-  showInTimeline: (name, key = null) => set((state) => ({ timelineOpen: true, timelineFocus: { name, key, seq: (state.timelineFocus?.seq ?? 0) + 1 } })),
+  showInTimeline: (name, key = null, signal) => set((state) => ({
+    timelineOpen: true,
+    timelineFocus: { name, key, ...(signal ? { signal } : {}), seq: (state.timelineFocus?.seq ?? 0) + 1 },
+  })),
 
   initializeTimeline: (search) => {
     const now = Date.now();

@@ -53,7 +53,7 @@ test.describe("one click on Explain this entity", () => {
     await expect(page.getByTestId("task-waiting")).toContainText("This usually takes about a minute.");
     await expect(page.getByTestId("session-title-heading")).toHaveText(TITLE);
     expect(stub.posts).toHaveLength(1);
-    expect(stub.posts[0]?.body).toEqual({ type: "explain", target: { ...TARGET, entity: "svc-c" }, instruction: "" });
+    expect(stub.posts[0]?.body).toEqual({ type: "explain", target: { ...TARGET, entity: "svc-c" }, instruction: "", showMeHandles: expect.any(Array) });
     expect(stub.sessions).toHaveLength(1);
 
     stub.release(1, "s-1");
@@ -234,7 +234,7 @@ test.describe("Review and Design", () => {
     await expect(page.getByTestId("diff-result")).toBeVisible();
     await expect(page.getByTestId("result-heading")).toHaveText("5 proposed changes");
     await expect(page.getByTestId("session-title-heading")).toHaveText(/^Check hm-demo \(\d{1,2} \w{3} \d{2}:\d{2}\)$/);
-    expect(stub.posts[0]?.body).toEqual({ type: "review", target: TARGET, instruction: "" });
+    expect(stub.posts[0]?.body).toEqual({ type: "review", target: TARGET, instruction: "", showMeHandles: expect.any(Array) });
   });
 
   test("the top bar menu is reachable from the keyboard and says what needs an entity", async ({ page }) => {
@@ -402,8 +402,10 @@ test.describe("on a phone", () => {
     const fits = await workspace(page).evaluate((element) => element.scrollWidth <= element.clientWidth);
     expect(fits).toBe(true);
     await page.getByTestId("explain-step-focus-1").click();
-    await expect(workspace(page)).toBeHidden();
+    await expect(workspace(page)).toHaveAttribute("data-showing-target", "graph");
+    await expect(page.getByTestId("explain-result")).toBeInViewport();
     await expect(node(page, "topology", "svc-b")).toHaveAttribute("data-highlighted", "true");
+    await expect(node(page, "topology", "svc-b")).toBeInViewport();
   });
 });
 

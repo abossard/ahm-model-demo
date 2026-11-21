@@ -62,6 +62,70 @@ def kinds(drafts):
 
 
 class MappingTests(unittest.TestCase):
+    def test_tool_result_details_show_bounded_measured_data_without_raw_output(self):
+        cases = [
+            ("load_skill", "# Plan\n## Workload flows\nprivate skill body", True, "Sections returned · Plan · Workload flows"),
+            ("monitor_metrics_definitions", {"status": 200, "results": {"results": [
+                {"name": "Requests", "dimensions": ["private dimension"]}, {"name": "Errors"}]}},
+             True, "2 metric definitions returned · Requests, Errors"),
+            ("monitor_metrics_query", {"status": 200, "results": {"results": [{"name": "CpuPercentage",
+                "timeSeries": [{"metadata": {"client": "private identity"}, "avgBuckets": [20.1, 0, None]}]}]}},
+             True, "CpuPercentage · average 0"),
+            ("monitor_metrics_query", {"status": 403, "message": "private message",
+                "error": {"code": "AuthorizationFailed"}}, False, "HTTP 403 · AuthorizationFailed"),
+            ("monitor_metrics_query", {"status": 403, "message": "private message"}, False, "HTTP 403"),
+            ("monitor_metrics_definitions", {"status": 200, "results": None}, True, "Azure Monitor returned no metrics."),
+            ("monitor_workspace_log_query", {"results": {"results": [{"secret": "private log"}]}}, True, None),
+        ]
+        for tool, output, ok, detail in cases:
+            with self.subTest(tool=tool, output=output):
+                body = output if isinstance(output, str) else json.dumps(output)
+                _, drafts = run(call("measure", tool, {}, body))
+                result = drafts[-1]["payload"]
+                self.assertEqual(result["ok"], ok)
+                self.assertEqual(result.get("detail"), detail)
+                self.assertNotIn("private", json.dumps(result))
+                self.assertEqual(result["callId"], "measure")
+
+    def test_record_reported_usage_on_terminal_events_without_inventing_missing_counts(self):
+        counts = {"input_tokens": 50, "output_tokens": 9, "total_tokens": 59,
+                  "input_tokens_details": {"cached_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 5}}
+        for name in ("response.completed", "response.incomplete", "response.failed"):
+            for fields, expected in (
+                ({"usage": counts}, {"inputTokens": 50, "outputTokens": 9, "totalTokens": 59,
+                                     "cachedInputTokens": 0, "reasoningTokens": 5}),
+                ({"usage": {"total_tokens": 0}}, {"totalTokens": 0}),
+                ({"usage": {"input_tokens": False, "output_tokens": -1}}, None),
+                ({}, None),
+            ):
+                with self.subTest(name=name, fields=fields):
+                    _, drafts = run([(name, {"response": {"id": "provider-run", **fields}})])
+                    self.assertEqual(drafts[0]["payload"].get("usage"), expected)
+                    if name == "response.completed" or fields.get("usage"):
+                        self.assertEqual(drafts[0]["payload"]["responseId"], "provider-run")
+                    else:
+                        self.assertNotIn("responseId", drafts[0]["payload"])
+
+    def test_combined_hosted_mcp_items_expose_their_calls_and_results_once(self):
+        item = {"type": "mcp_call", "id": "mcp-1", "name": "monitor_metrics_query",
+                "arguments": json.dumps({"resource": "orders-api"})}
+        for terminal, ok, detail in [
+            ({"status": "completed", "output": '{"results":{"results":[]}}'}, True, "Azure Monitor returned no metric series."),
+            ({"status": "failed", "error": {"code": "Forbidden", "message": "private details"}}, False, "Forbidden"),
+        ]:
+            with self.subTest(terminal=terminal):
+                final = ("response.output_item.done", {"item": {**item, **terminal}})
+                _, drafts = run([("response.output_item.added", {"item": item}), final, final])
+                self.assertEqual(kinds(drafts), ["tool_call", "tool_result"])
+                self.assertEqual(drafts[0]["payload"]["resource"], "orders-api")
+                self.assertEqual(drafts[0]["payload"]["callId"], drafts[1]["payload"]["callId"])
+                self.assertEqual(drafts[1]["payload"]["detail"], detail)
+                self.assertEqual(drafts[1]["payload"]["ok"], ok)
+                self.assertNotIn("private details", str(drafts))
+        remote_submission = {**item, "name": "submit_result", "arguments": json.dumps({"result": diff("x")}), "output": ACCEPTED}
+        state, _ = run([("response.output_item.done", {"item": remote_submission})])
+        self.assertIsNone(activity.accepted_result(state))
+
     def test_each_event_type_becomes_the_expected_timeline_event(self):
         cases = [
             ("created", [("response.created", {"response": {"id": "r1"}})], [("status", "Agent started")]),

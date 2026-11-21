@@ -3,8 +3,8 @@ import type { Auth } from "./auth";
 import { createEntraAuth } from "./entraAuth";
 import { localAuth } from "./localAuth";
 
-export type { Auth, AuthAccount, SignInRequest, TokenRequest } from "./auth";
-export { PersonalAccountError } from "./auth";
+export type { Auth, AuthAccount, AzureDirectory, DirectoryDiscovery, TokenRequest } from "./auth";
+export { DirectoryConsentRequiredError } from "./auth";
 export { localAuth };
 
 let current: Auth = localAuth;
@@ -24,5 +24,5 @@ export function createAuth(config: AuthConfig): Auth {
   if (!config.clientId || !config.apiScope) {
     throw new Error("The app's sign-in settings are incomplete: client or API scope is missing.");
   }
-  return createEntraAuth({ clientId: config.clientId, apiScope: config.apiScope });
+  return createEntraAuth({ clientId: config.clientId, apiScope: config.apiScope, homeDirectory: config.homeDirectory ?? null });
 }

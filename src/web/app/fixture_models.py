@@ -182,9 +182,70 @@ class FixtureHealthModels:
             }
         self._refs = {tuple(part.casefold() for part in ref): ref for ref in (default, design)}
         self._denied = set()
+        self._builder_parents = {}
+        self._monitoring_roles = {}
+        self._builder_group = scope_of(*default[:2])
 
     def as_user(self, caller):
         return self
+
+    def check_workspace_access(self):
+        """The offline fixture always supplies a readable workspace."""
+
+    def builder_groups(self):
+        _, _, sub, _, group = self._builder_group.split("/")
+        return [{"id": self._builder_group, "name": group, "subscriptionId": sub, "location": "northeurope"}]
+
+    def builder_resources(self, group_id):
+        if group_id.casefold() != self._builder_group.casefold():
+            return []
+        return [
+            {"id": f"{self._builder_group}/providers/{kind}/{name}", "type": kind, "name": name, "location": "northeurope",
+             "availabilityState": "Available" if name == "orders-api" else None}
+            for name, kind in (("orders-api", "Microsoft.App/containerApps"),
+                               ("orders-store", "Microsoft.Storage/storageAccounts"),
+                               ("orders-db", "Microsoft.Sql/servers"))
+        ]
+
+    def builder_location(self, subscription_id, preferred_location):
+        return "northeurope"
+
+    def check_builder_signal(self, resource):
+        if resource["name"] == "orders-api":
+            return {"resourceId": resource["id"], "status": "verified", "detail": "CpuPercentage: 3 five-minute readings",
+                    "observation": {"resourceId": resource["id"], "metricName": "CpuPercentage", "metricNamespace": resource["type"],
+                                    "aggregation": "Average", "sample": 12, "unit": "Percent", "observedAt": STAMP,
+                                    "minimum": 11, "maximum": 13, "count": 3}}
+        return {"resourceId": resource["id"], "status": "no_data", "detail": "No metric samples in the fixture."}
+
+    def builder_parent(self, sub, group, name):
+        key = tuple(value.casefold() for value in (sub, group, name))
+        if key in self._builder_parents:
+            return copy.deepcopy(self._builder_parents[key])
+        return {"tags": {}, "properties": {"provisioningState": "Succeeded"}} if key in self._models else None
+
+    def create_builder_parent(self, sub, group, name, location, tags):
+        key = tuple(value.casefold() for value in (sub, group, name))
+        if key in self._models:
+            raise ValueError("The model name is already in use.")
+        self._builder_parents[key] = {
+            "tags": dict(tags), "identity": {"type": "SystemAssigned", "principalId": "11111111-1111-1111-1111-111111111111"},
+            "location": location, "properties": {"provisioningState": "Succeeded"},
+        }
+        self._refs[key] = (sub, group, name)
+        self._models[key] = {collection: {} for collection in PATHS}
+        self.write_resource(sub, group, name, "entity", name, {"displayName": name})
+        return self.builder_parent(sub, group, name)
+
+    def ensure_builder_auth(self, sub, group, name):
+        self._model(sub, group, name)
+
+    def grant_monitoring_reader(self, sub, principal, scope):
+        return self._monitoring_roles.setdefault((principal, scope), f"{scope}/providers/Microsoft.Authorization/roleAssignments/{principal}")
+
+    def remember_builder_model(self, target):
+        # The fixture catalog reads _refs directly.
+        pass
 
     def _model(self, sub, rg, name):
         found = self._models.get((sub.casefold(), rg.casefold(), name.casefold()))

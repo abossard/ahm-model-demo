@@ -1,3 +1,4 @@
+import { workspaceLink } from "../auth/workspaceLink";
 import type { JSX } from "react";
 import {
   Button,
@@ -51,6 +52,9 @@ export function SessionView(): JSX.Element {
       />
 
       <LaunchNotice />
+      {detail.kind === "success" && detail.value.tasks.some((task) => task.builder) && sessionId ? (
+        <a href={workspaceLink(`/builder?session=${encodeURIComponent(sessionId)}`)}>Open health model builder</a>
+      ) : null}
 
       {detail.kind === "loading" || detail.kind === "idle" ? (
         <div className={styles.fixed} aria-busy="true" aria-label="Loading the topic" data-testid="session-loading">

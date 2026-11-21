@@ -1,0 +1,50 @@
+.entity-node__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 8px 10px 6px;
+  /* Contains the disclosure's 50px counter-scaled box at React Flow's 0.5 zoom floor. */
+  min-height: 54px;
+}
+
+.entity-node__icon {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+.entity-node__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 17px;
+  font-weight: var(--fontWeightSemibold);
+  color: var(--colorNeutralForeground1);
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.entity-node__pill {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  padding: 0 8px 0 4px;
+  border-radius: 9px;
+  border-width: 1px;
+  border-style: solid;
+  background: var(--colorNeutralBackground1);
+}
+
+.entity-node__pill-word {
+  font-size: 10.5px;
+  color: var(--colorNeutralForeground2);
+}
+
+.entity-node__dot {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+}

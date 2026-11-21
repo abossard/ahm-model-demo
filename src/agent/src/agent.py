@@ -29,6 +29,7 @@ from agent_framework import (
 )
 
 from azure_mcp import ACTIVITY_LOG_TOOL, AZURE_MCP_TOOLS
+from builder import METRIC_TOOLS, selected_resource
 from history import HistoryRefused, activity_arguments, bounded_arguments, log_arguments, metric_arguments, widened
 from instructions import COMMON
 from scope import scope_refusal, used_groups
@@ -43,12 +44,14 @@ from tools import (
     METRICS_TOOL,
     QUERY_TOOLS,
     SHELL_TOOL,
+    SHOW_ME_TOOL,
     SUBMIT_TOOL,
     TYPE_TOOLS,
     RunRecord,
     TaskTools,
     find_envelope,
     forced_result,
+    submission_tool,
     target_name,
 )
 
@@ -69,6 +72,7 @@ MODEL_CALLS = {"explain": 12, "review": 20, "design": 30}
 MODEL_SECONDS = {"explain": 240, "review": 360, "design": 420}
 LAST_CALL_SHARE = 0.75
 KEPT_RESULTS = 1
+MAX_BUILDER_SUBMISSIONS = 3
 LOAD_SKILL_TOOL = "load_skill"
 NONCE_VALUE = re.compile(r'("nonce"\s*:\s*")[^"]*(")')
 REASONING_MODEL = re.compile(r"^(gpt-?5|o\d)", re.IGNORECASE)
@@ -188,7 +192,7 @@ def as_mapping(arguments: Any) -> dict[str, Any]:
     return arguments.model_dump() if hasattr(arguments, "model_dump") else {}
 
 
-RECORDED_TOOLS = (*QUERY_TOOLS, INSPECT_TOOL, LIST_TOOL, SHELL_TOOL)
+RECORDED_TOOLS = (*QUERY_TOOLS, INSPECT_TOOL, LIST_TOOL, SHELL_TOOL, LOAD_SKILL_TOOL)
 
 
 class AzureScope(FunctionMiddleware):
@@ -199,12 +203,15 @@ class AzureScope(FunctionMiddleware):
         record = CURRENT_RUN.get()
         if record is not None and record.scope is not None and context.function.name in AZURE_MCP_TOOLS:
             subscription = record.scope[0]
-            refusal = scope_refusal(
-                arguments_of(context.arguments),
-                subscription=subscription,
-                groups=record.groups | used_groups(record.entities, subscription),
-                model=record.root,
-            )
+            arguments = arguments_of(context.arguments)
+            if record.builder:
+                allowed = context.function.name in METRIC_TOOLS and selected_resource(record.builder, arguments)
+                refusal = None if allowed else "Choose a confirmed resource and pass its exact subscription, resource-group, resource-type and name."
+            else:
+                refusal = scope_refusal(
+                    arguments, subscription=subscription,
+                    groups=record.groups | used_groups(record.entities, subscription), model=record.root,
+                )
             if refusal:
                 logger.info("azure call refused task=%s tool=%s: %s", record.folder.name if record.folder else "", context.function.name, refusal)
                 context.result = f"Error: refused. {refusal}"
@@ -241,8 +248,16 @@ class InspectWindow(FunctionMiddleware):
                 return
             if window is not None or record.as_of is not None:
                 context.arguments = arguments
+            await call_next()
             if window is not None:
-                record.history_window = widened(record.history_window, window)
+                # azmcp returns an inspect envelope even when the requested range has no events.
+                try:
+                    entities = json.loads(result_text(context.result))["results"]["entities"]
+                except (ValueError, TypeError, KeyError):
+                    return
+                if isinstance(entities, list):
+                    record.history_window = widened(record.history_window, window)
+            return
         await call_next()
 
 
@@ -364,12 +379,15 @@ def submit_call(result: Mapping[str, Any]) -> Content:
 def submit_response(result: Mapping[str, Any], *, stream: bool) -> ChatResponse | ResponseStream:
     """The model's answer to a call that the agent takes over: a `submit_result` call that carries `result`. It goes through the
     same tool as the model's own, and a streamed run shows it to the client like any other call, where the web app reads it."""
-    call = submit_call(result)
+    return local_response(submit_call(result), stream=stream)
+
+
+def local_response(content: Content, *, stream: bool) -> ChatResponse | ResponseStream:
     if not stream:
-        return ChatResponse(messages=[Message(role="assistant", contents=[call])])
+        return ChatResponse(messages=[Message(role="assistant", contents=[content])])
 
     async def updates():
-        yield ChatResponseUpdate(role="assistant", contents=[call])
+        yield ChatResponseUpdate(role="assistant", contents=[content])
 
     return ResponseStream(updates(), finalizer=lambda collected: ChatResponse.from_updates(collected))
 
@@ -408,6 +426,12 @@ class RunPolicy(ChatMiddleware):
         record.started = now if record.started is None else record.started
         elapsed = now - record.started
         if not record.reduced_sent and (why := self.reason_to_submit(record, elapsed)):
+            if record.builder:
+                # End the turn normally so the web app can show the last field errors.
+                # A partial resource inventory is never an accepted plan.
+                context.result = local_response(Content.from_text("Planning stopped before a complete result was accepted."),
+                                                stream=context.stream)
+                return
             if record.reduced is None:
                 record.reduced = forced_result(record, record.folder or Path(), why)
             record.reduced_sent = True
@@ -427,6 +451,8 @@ class RunPolicy(ChatMiddleware):
         """Why the agent submits for the model instead of calling it, or an empty text."""
         if record.reduced is not None:
             return "the proposal kept being rejected"
+        if record.builder and record.rejections >= MAX_BUILDER_SUBMISSIONS:
+            return "the builder used its submission attempts"
         if record.model_calls > self._calls[record.task_type]:
             return f"the Task used all {self._calls[record.task_type]} model calls"
         if elapsed > (budget := self._seconds.get(record.task_type, float("inf"))):
@@ -444,8 +470,16 @@ class RunPolicy(ChatMiddleware):
         if options is None:
             return
         visible = visible_tools(record.task_type)
+        if record.builder:
+            visible = METRIC_TOOLS | {LOAD_SKILL_TOOL, SUBMIT_TOOL}
+        if record.show_me_handles:
+            visible = visible | {SHOW_ME_TOOL}
         if options.get("tools"):
-            options["tools"] = [tool for tool in options["tools"] if getattr(tool, "name", None) in visible]
+            tools = [tool for tool in options["tools"] if getattr(tool, "name", None) in visible]
+            if record.task_type == "explain" and record.history_window is not None and record.folder is not None:
+                # Each call sees the exact period of the reads completed before it.
+                tools = [submission_tool(record.folder, record) if tool.name == SUBMIT_TOOL else tool for tool in tools]
+            options["tools"] = tools
         if self.last_call(record, elapsed):
             options["tool_choice"] = {"mode": "required", "required_function_name": SUBMIT_TOOL}
         elif options.get("tool_choice") in (None, "auto"):

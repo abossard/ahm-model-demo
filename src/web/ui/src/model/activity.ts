@@ -176,10 +176,38 @@ function resultEventTitle(summary: string): string {
   return match[1] === "explain" ? "The answer is ready" : `The proposed changes are ready (${match[2]})`;
 }
 
+/** One row for a call and its response, even when other tools finish between them. */
+export function pairToolEvents(events: readonly ActivityEvent[], finished: boolean): ActivityEvent[] {
+  const rows: ActivityEvent[] = [];
+  const pending = new Map<string, number>();
+  for (const event of events) {
+    const id = text(event.payload.callId);
+    if (id && (event.kind === "tool_call" || event.kind === "tool_result")) {
+      const index = pending.get(id);
+      const previous = index === undefined ? undefined : rows[index];
+      if (index !== undefined && previous && previous.kind !== event.kind) {
+        const call = event.kind === "tool_call" ? event : previous;
+        const result = event.kind === "tool_result" ? event : previous;
+        rows[index] = {
+          ...result, seq: previous.seq, ts: previous.ts,
+          payload: { ...call.payload, ...result.payload },
+        };
+        pending.delete(id);
+        continue;
+      }
+      pending.set(id, rows.length);
+    }
+    rows.push(event);
+  }
+  return finished ? rows.map(row => row.kind === "tool_call"
+    ? { ...row, payload: { ...row.payload, missingResult: true } } : row) : rows;
+}
+
 /** What a step says about itself that only an engineer needs: the tool, the title the app gave it and the arguments. */
 function toolDetail(event: ActivityEvent, title: string): string | null {
   const name = text(event.payload["name"]);
   const args = text(event.payload["arguments"]);
+  const result = text(event.payload["detail"]);
   const size = typeof event.payload["size"] === "number" ? (event.payload["size"] as number) : null;
   const lines = [
     name === null ? null : `Tool: ${name}`,
@@ -187,8 +215,15 @@ function toolDetail(event: ActivityEvent, title: string): string | null {
     size === null ? null : `Size of the answer: ${size} bytes`,
     problems(event.payload),
     args === null ? null : `Arguments:\n${clip(prettyJson(args))}`,
+    result === null ? null : `Result:\n${clip(prettyJson(result))}`,
+    event.payload.missingResult ? "No result was recorded for this call." : null,
   ].filter((line): line is string => line !== null);
   return lines.length === 0 ? null : lines.join("\n");
+}
+
+function toolResourceTitle(title: string, payload: ActivityEvent["payload"]): string {
+  const resource = text(payload.resource)?.split("/").filter(Boolean).at(-1);
+  return resource ? `${title} · ${resource}` : title;
 }
 
 export function presentActivity(event: ActivityEvent): ActivityPresentation {
@@ -209,12 +244,13 @@ export function presentActivity(event: ActivityEvent): ActivityPresentation {
       };
     }
     case "tool_call": {
-      const title = callTitle(event.summary);
+      const step = payload.missingResult ? `${event.summary} · No result recorded` : callTitle(event.summary);
+      const title = toolResourceTitle(step, payload);
       return { icon: "tool", tone: "neutral", title, detail: toolDetail(event, title), announcement: null };
     }
     case "tool_result": {
       const ok = payload["ok"] !== false;
-      const title = resultTitle(event.summary);
+      const title = toolResourceTitle(resultTitle(event.summary), payload);
       return {
         icon: ok ? "toolOk" : "toolFailed",
         tone: ok ? "success" : "danger",

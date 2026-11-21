@@ -1,8 +1,10 @@
+import { workspaceLink } from "../auth/workspaceLink";
 import { memo, useMemo, useState } from "react";
 import type { JSX } from "react";
 import {
   Combobox,
   Field,
+  Link,
   Option,
   OptionGroup,
   SkeletonItem,
@@ -15,7 +17,7 @@ import { actions, useStore } from "../store/store";
 import { useInlineField } from "./inlineField";
 
 const useStyles = makeStyles({
-  root: { minWidth: 0 },
+  root: { minWidth: 0, display: "flex", alignItems: "center", flexWrap: "wrap", gap: tokens.spacingHorizontalS },
   input: { minWidth: "200px", width: "min(280px, 65vw)" },
   option: { display: "flex", alignItems: "baseline", gap: tokens.spacingHorizontalS, width: "100%" },
   hint: {
@@ -176,6 +178,7 @@ export function ModelPicker(): JSX.Element | null {
           ) : null}
         </Combobox>
       </Field>
+      <Link href={workspaceLink("/builder")} aria-label="Create new health model">Create model</Link>
       <input type="hidden" data-testid="model-picker" value={selectedKey} readOnly />
       <span className={styles.visuallyHidden} role="status" data-testid="model-picker-status">
         {announcement}

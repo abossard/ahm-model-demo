@@ -1,10 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { parseActivityEvent, plainStep, presentActivity } from "./activity";
+import { pairToolEvents, parseActivityEvent, plainStep, presentActivity } from "./activity";
 import type { ActivityEvent } from "./types";
 
 function event(kind: ActivityEvent["kind"], summary: string, payload: ActivityEvent["payload"] = {}): ActivityEvent {
   return { seq: 1, ts: "2026-11-10T10:00:00Z", kind, summary, payload };
 }
+
+describe("paired tool activity", () => {
+  it.each(["completed", "out of order"] as const)("keeps the arguments with the matching result (%s)", order => {
+    const call = (id: string) => event("tool_call", "Query metrics", { callId: id, arguments: id });
+    const result = (id: string) => event("tool_result", "Query metrics: ok, 12 B", { callId: id, ok: true, detail: `Sample for ${id}` });
+    const sequence = order === "completed"
+      ? [call("app"), call("db"), result("db"), result("app")]
+      : [call("app"), result("db"), call("db"), result("app")];
+    const rows = pairToolEvents(sequence, true);
+    expect(rows.map(row => row.payload.callId)).toEqual(["app", "db"]);
+    for (const row of rows) {
+      const { detail } = presentActivity(row);
+      expect(detail).toContain(`Arguments:\n${row.payload.callId}`);
+      expect(detail).toContain(`Result:\nSample for ${row.payload.callId}`);
+    }
+  });
+
+  it.each([true, false])("preserves unpaired events when the run is finished=%s", finished => {
+    const rows = pairToolEvents([event("tool_call", "Get health model", { callId: "app" }),
+      event("tool_result", "List health models: ok, 1 B", { callId: "other", detail: "One model" })], finished);
+    expect(rows).toHaveLength(2);
+    expect(presentActivity(rows[0]!).title).toBe(finished ? "Get health model · No result recorded" : "Reading the health model");
+    expect(presentActivity(rows[1]!).detail).toContain("One model");
+  });
+});
 
 describe("presentActivity", () => {
   it.each([

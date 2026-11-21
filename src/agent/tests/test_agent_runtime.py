@@ -178,6 +178,7 @@ class ScriptedClient(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClien
         self.in_parts = in_parts
         self.model_calls = 0
         self.tool_names = []
+        self.submission_schemas = []
         self.instructions = ""
         self.seen = []
         self.choices = []
@@ -186,7 +187,10 @@ class ScriptedClient(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClien
     def _inner_get_response(self, *, messages, stream, options, **kwargs):
         self.model_calls += 1
         self.seen.append(list(messages))
-        self.tool_names = [tool.name for tool in options.get("tools", [])]
+        offered = options.get("tools", [])
+        self.tool_names = [tool.name for tool in offered]
+        submit = next((tool for tool in offered if tool.name == "submit_result"), None)
+        self.submission_schemas.append(submit.parameters()["properties"]["result"] if submit else {})
         self.instructions = options.get("instructions") or ""
         self.choices.append(options.get("tool_choice"))
         self.options.append({key: value for key, value in options.items() if key != "tools"})
@@ -227,6 +231,101 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.model_calls, 1)
         self.assertEqual(json.loads((self.workspace / "tasks" / "t-7" / "result.json").read_text(encoding="utf-8")), DIFF)
         self.assertEqual([json.loads(r) for r in results_of(response.messages)], [{"status": "accepted"}])
+
+    async def test_show_me_is_scoped_to_the_latest_task_and_emits_only_referenced_actions(self):
+        action = {"handle": "node-detail", "id": "checkout", "highlight": {"color": "violet", "label": "Checkout"}}
+        current = json.loads(envelope("t-7").split("\n", 1)[1])
+        current["task"]["showMeHandles"] = [
+            {"name": "node-detail", "description": "Open an entity.", "idDescription": "A model entity id."},
+            {"name": "timeline", "description": "Open history.", "idDescription": ""},
+        ]
+        marked = {**DIFF, "summary": "Open checkout [[show:1]] to inspect its signals."}
+        client, response = await self.run_agent([json.dumps(current)], [
+            [call("show_me", **action)], [call("show_me", **action)], [call("show_me", handle="timeline")],
+            [call("submit_result", result={**marked, "summary": "Open checkout [[show:3]]."})],
+            [call("submit_result", result=marked)],
+        ])
+        outputs = results_of(response.messages)
+        self.assertEqual(outputs[:3], ["[[show:1]]", "[[show:1]]", "[[show:2]]"])
+        self.assertEqual(submissions(response.messages)[0]["status"], "rejected")
+        self.assertEqual(submissions(response.messages)[1], {"status": "accepted", "showMe": {"1": action}})
+        self.assertIn("show_me", client.tool_names)
+        self.assertNotIn("showMe", client.submission_schemas[0]["properties"])
+        self.assertEqual(json.loads((self.workspace / "tasks/t-7/result.json").read_text()), {**marked, "showMe": {"1": action}})
+        for catalog in (None, [], [{"name": "missing-description"}]):
+            with self.subTest(catalog=catalog):
+                later = json.loads(envelope("t-8").split("\n", 1)[1])
+                if catalog is not None:
+                    later["task"]["showMeHandles"] = catalog
+                client, _ = await self.run_agent([json.dumps(current), json.dumps(later)], [[call("submit_result", result=DIFF)]])
+                self.assertNotIn("show_me", client.tool_names)
+
+    async def test_builder_reviews_inventory_then_proposes_distinct_models_without_reading_a_target(self):
+        resource = {"id": RESOURCE_ID, "name": "ca-web", "type": "Microsoft.App/containerApps"}
+        row = {"resourceId": RESOURCE_ID, "displayName": "Orders", "impact": "Standard", "purpose": "Serve orders."}
+        group = {"name": "Order processing", "purpose": "Serve orders.", "resourceIds": [RESOURCE_ID]}
+        direct = {"id": "direct", "title": "Resource health", "summary": "Show Orders.", "tradeoff": "Less context.",
+                  "structure": "direct", "groups": [group]}
+        grouped = {**direct, "id": "grouped", "title": "User flow", "structure": "grouped"}
+        plan = {"objective": "Serve orders", "flows": [{"name": "Place an order", "objective": "Complete checkout",
+                 "components": [{"name": "Order processing", "resourceIds": [RESOURCE_ID], "signal": "Request failures"}],
+                 "failureScenario": "If processing fails, checkout fails."}], "gaps": ["No checkout telemetry"]}
+        for phase, destination, result in (
+            ("analyze", "resource/R1", {"kind": "builderAnalysis", "summary": "One API. [[show:1]]", "rows": [row], "metrics": [], "plan": plan}),
+            ("propose", "design/direct", {"kind": "builderProposals", "proposals": [{**direct, "tradeoff": "Less context. [[show:1]]"}, grouped]}),
+        ):
+            with self.subTest(phase):
+                body = json.loads(envelope("t-7").split("\n", 1)[1])
+                body["task"]["builder"] = {"phase": phase, "resources": [{**resource, "ref": "R1"}], "rows": [row]}
+                body["task"]["showMeHandles"] = [{"name": "builder", "description": "Inspect the builder.", "idDescription": "resource/Rn or design/<proposalId>"}]
+                action = {"handle": "builder", "id": destination}
+                client, response = await self.run_agent([json.dumps(body)], [
+                    [call("load_skill", skill_name="healthmodel-plan"), call("load_skill", skill_name="healthmodel-build")],
+                    [call("show_me", **action)],
+                    [call("submit_result", result=result)],
+                ])
+                self.assertIn("builder", client.instructions)
+                self.assertIn("show_me", client.tool_names)
+                self.assertNotIn("run_shell", client.tool_names)
+                self.assertNotIn("showMe", client.submission_schemas[0]["properties"])
+                self.assertEqual(submissions(response.messages), [{"status": "accepted", "showMe": {"1": action}}])
+                self.assertEqual(json.loads((self.workspace / "tasks/t-7/result.json").read_text()), {**result, "showMe": {"1": action}})
+
+    async def test_builder_stops_after_two_corrections_without_accepting_a_partial_plan(self):
+        body = json.loads(envelope("t-7").split("\n", 1)[1])
+        body["task"]["builder"] = {"phase": "analyze", "resources": [{"id": RESOURCE_ID, "name": "ca-web"}]}
+        invalid = {"kind": "builderAnalysis", "rows": []}
+        client, response = await self.run_agent(
+            [json.dumps(body)], [[call("submit_result", result=invalid)]] * 3)
+        self.assertEqual(client.model_calls, 3)
+        self.assertEqual([answer["status"] for answer in submissions(response.messages)], ["rejected"] * 3)
+        self.assertIn("Planning stopped", response.text)
+        self.assertFalse((self.workspace / "tasks" / "t-7" / "result.json").exists())
+
+    async def test_revision_envelope_reaches_the_model_and_enforces_the_current_planning_contract(self):
+        resource = {"id": RESOURCE_ID, "name": "ca-web", "type": "Microsoft.App/containerApps"}
+        row = {"resourceId": RESOURCE_ID, "displayName": "ca-web", "impact": "Limited", "purpose": "Serve orders."}
+        plan = {"objective": "Complete orders.", "gaps": [], "flows": [{"name": "Checkout", "objective": "Save orders.",
+                "components": [{"name": "Processing", "resourceIds": [RESOURCE_ID], "signal": "Request failures"}],
+                "failureScenario": "If processing fails, checkout fails."}]}
+        pending = {"kind": "builderAnalysis", "summary": "Checkout.", "plan": plan, "metrics": [], "rows": [row]}
+        decision = {"choice": "Keep checkout available", "basis": "userInput", "reason": "The operator prioritized checkout.",
+                    "resourceIds": [RESOURCE_ID]}
+        final = {**pending, "plan": {**plan, "decisions": [decision]}}
+        builder = {"phase": "analyze", "planVersion": 2, "resources": [resource], "rows": [row],
+                   "revision": {"analysisSeq": 12, "prompt": "Prioritize checkout."}, "previousPlan": plan,
+                   "previousMetrics": [], "observedMetrics": [], "signalChecks": []}
+        body = json.loads(envelope("t-13", "design").split("\n", 1)[1])
+        body["task"]["builder"] = builder
+        client, response = await self.run_agent([json.dumps(body)], [
+            [call("load_skill", skill_name="healthmodel-plan"), call("load_skill", skill_name="healthmodel-build")],
+            [call("submit_result", result=pending)], [call("submit_result", result=final)]])
+        first = next(m for m in client.seen[0] if m.role == "user")
+        self.assertEqual(json.loads(first.text)["task"]["builder"], builder)
+        self.assertIn("builder.revision.prompt", client.instructions)
+        attempts = submissions(response.messages)
+        self.assertEqual([a["status"] for a in attempts], ["rejected", "accepted"])
+        self.assertTrue(any("decision" in p for p in attempts[0]["problems"]))
 
     async def test_the_model_sees_the_tools_the_skill_and_the_instructions_of_its_task_type(self):
         cases = [
@@ -736,7 +835,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         steps = [[read], [call("submit_result", result=explained())], [call("submit_result", result=explained(window=window))]]
 
-        _, response = await self.run_agent(
+        client, response = await self.run_agent(
             [envelope("t-7", "explain", "checkout")], steps, tools=[azure_tool("monitor_healthmodels_inspect", seen, INSPECTED)], clock=lambda: NOW
         )
 
@@ -744,6 +843,11 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             seen,
             [{"subscription": "s", "resource-group": "rg", "health-model": "hm", "entity": "checkout", "include": ["History"], **{"start-at": window["from"], "end-at": window["to"]}}],
         )
+        self.assertNotIn("window", client.submission_schemas[0]["properties"])
+        for schema in client.submission_schemas[1:]:
+            self.assertIn("window", schema["required"])
+            expected = schema["properties"]["window"]["properties"]
+            self.assertEqual({key: value["const"] for key, value in expected.items()}, window)
         answers = submissions(response.messages)
         self.assertEqual([answer["status"] for answer in answers], ["rejected", "accepted"])
         self.assertEqual(
@@ -752,19 +856,38 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_window_without_history_is_rejected_and_without_one_the_result_is_accepted(self):
         window = {"from": "2026-11-10T12:00:00Z", "to": "2026-11-11T12:00:00Z"}
-        cases = [("a window", explained(window=window), ["rejected", "accepted"]), ("no window", explained(), ["accepted"])]
+        cases = [
+            ("a window", explained(window=window), ["rejected", "accepted"]),
+            ("an empty object", explained(window={}), ["rejected", "accepted"]),
+            ("null", explained(window=None), ["rejected", "accepted"]),
+            ("no window", explained(), ["accepted"]),
+        ]
         for label, result, statuses in cases:
             with self.subTest(label):
                 seen = []
                 steps = [[call("monitor_healthmodels_inspect", subscription="s", entity="checkout", include=["Signals"])], [call("submit_result", result=result)], [call("submit_result", result=explained())]]
 
-                _, response = await self.run_agent(
+                client, response = await self.run_agent(
                     [envelope("t-7", "explain", "checkout")], steps, tools=[azure_tool("monitor_healthmodels_inspect", seen, INSPECTED)], clock=lambda: NOW
                 )
 
+                self.assertTrue(all("window" not in schema["properties"] for schema in client.submission_schemas))
                 self.assertEqual(seen[0]["include"], ["Signals"])
                 self.assertNotIn("start-at", seen[0])
                 self.assertEqual([answer["status"] for answer in submissions(response.messages)], statuses)
+
+    async def test_a_failed_history_read_does_not_offer_a_result_window(self):
+        inspect_tool = "monitor_healthmodels_inspect"
+        seen = []
+        read = call(inspect_tool, subscription="s", entity="checkout", include=["History"])
+        for response_text in ("Error: forbidden", '{"status":403,"results":null}'):
+            with self.subTest(response_text=response_text):
+                client, _ = await self.run_agent(
+                    [envelope("t-7", "explain", "checkout")],
+                    [[read], [call("submit_result", result=explained(state="Unknown", causes=[]))]],
+                    tools=[azure_tool(inspect_tool, seen, response_text)], calls={"explain": 2},
+                )
+                self.assertTrue(all("window" not in schema["properties"] for schema in client.submission_schemas))
 
     async def test_history_is_refused_where_the_rule_does_not_allow_it_and_longer_when_the_instruction_asks(self):
         cases = [

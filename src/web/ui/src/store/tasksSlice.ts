@@ -30,6 +30,7 @@ import type {
 import * as api from "./api";
 import { IDLE, LOADING, settle } from "./asyncState";
 import type { Store } from "./store";
+import { workspaceShowMe } from "./workspaceShowMe";
 import { selectModelAt } from "./timelineSlice";
 
 export type StreamStatus = "idle" | "live" | "ended" | "error";
@@ -181,7 +182,7 @@ const NO_TASK = {
   chainNames: [],
 } as const;
 
-export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> = (set, get) => {
+export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> = (set, get, store) => {
   // The one stream of the open Task. It lives here so that every selection change closes it.
   let stream: Stream | null = null;
 
@@ -353,8 +354,9 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
   };
 
   // Every part of one start that the user can see goes through here, so a refusal always leaves the same things behind.
-  const run = async (input: TaskInput): Promise<void> => {
+  const run = async (request: TaskInput): Promise<void> => {
     if (get().launch.kind === "starting") return;
+    const input = { ...request, showMeHandles: workspaceShowMe(store, request).describe() };
     const entityLabel = entityLabelOf(input.target.entity);
     const entityState = stateOf(input);
     const label = taskTitle(input, entityLabel, entityState);

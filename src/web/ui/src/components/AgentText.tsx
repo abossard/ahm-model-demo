@@ -1,6 +1,7 @@
 import type { JSX } from "react";
 import { makeStyles, tokens } from "@fluentui/react-components";
 import { inlineParts, splitAnswer } from "../model/agentText";
+import { ResultText } from "./ShowMeResult";
 
 const useStyles = makeStyles({
   // Identifiers are for whoever needs them; they sit in the text without pulling the eye.
@@ -32,6 +33,11 @@ export function AgentText({ text }: { readonly text: string }): JSX.Element {
   );
 }
 
+/** Agent prose in a result field that can carry Show me markers. */
+export function ResultAgentText({ text }: { readonly text: string }): JSX.Element {
+  return <ResultText text={text} renderText={(part) => <AgentText text={part} />} />;
+}
+
 /** A summary or finding: the first sentence stands out as the answer, the rest reads as the evidence for it. */
 export function AnswerText({ text }: { readonly text: string }): JSX.Element {
   const styles = useStyles();
@@ -39,13 +45,13 @@ export function AnswerText({ text }: { readonly text: string }): JSX.Element {
   return (
     <>
       <span className={styles.answer}>
-        <AgentText text={answer} />
+        <ResultAgentText text={answer} />
       </span>
       {evidence !== "" ? (
         <>
           {" "}
           <span className={styles.evidence}>
-            <AgentText text={evidence} />
+            <ResultAgentText text={evidence} />
           </span>
         </>
       ) : null}

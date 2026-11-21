@@ -82,7 +82,7 @@ flowchart TB
     classDef unknown fill:#f1f5f9,stroke:#64748b,color:#0f172a,stroke-dasharray:5 3
 ```
 
-Always give full resource IDs, the time window and when you read the data.
+Give resource IDs where the output format calls for them. Describe a current-state inspection as a snapshot. Give a time window only for history you actually read.
 
 ## Modelspec
 

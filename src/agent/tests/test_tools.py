@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from agent_framework.foundry import FoundryChatClient
+
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 logging.getLogger("asyncio").setLevel(logging.ERROR)
@@ -470,6 +472,102 @@ class TaskToolTests(unittest.IsolatedAsyncioTestCase):
         for name, tool in self.tools.items():
             with self.subTest(name):
                 self.assertEqual(tool.approval_mode, "never_require")
+
+    def test_submit_advertises_only_the_current_tasks_result_and_nested_fields(self):
+        cases = [("explain", None, "explain"), ("review", None, "diff"), ("design", None, "diff"),
+                 ("design", "analyze", "builderAnalysis"), ("design", "propose", "builderProposals")]
+        for task_type, phase, kind in cases:
+            with self.subTest(task=task_type, phase=phase):
+                resources = [{"id": f"/subscriptions/s/resourceGroups/rg/providers/Microsoft.App/containerApps/service-{i}"}
+                             for i in range(28)]
+                builder = {"phase": phase, "resources": resources, "observedMetrics": [{"resourceId": resources[3]["id"]}]}
+                record = RunRecord(task_type=task_type, asked="container-app", builder=builder if phase else None)
+                tool, = task_tools(self.folder, record, ("submit_result",))
+                exposed = tool.parameters()["properties"]["result"]
+                if kind == "explain":
+                    self.assertEqual(exposed["properties"]["entity"], {"type": "string", "const": "container-app"})
+                self.assertIs(exposed["additionalProperties"], False)
+                fields = exposed["properties"]
+                self.assertEqual(fields["kind"], {"type": "string", "const": kind})
+                self.assertEqual("changes" in fields, kind == "diff")
+                self.assertEqual("causes" in fields, kind == "explain")
+                self.assertEqual("proposals" in fields, kind == "builderProposals")
+                if kind == "builderAnalysis":
+                    self.assertEqual(fields["rows"]["items"]["properties"]["impact"]["type"], "string")
+                    self.assertEqual((fields["rows"]["minItems"], fields["rows"]["maxItems"]), (28, 28))
+                    self.assertIn("Resources with observed metrics: 1.", fields["metrics"]["description"])
+                    self.assertIn("metrics", exposed["required"])
+                    plan = fields["plan"]
+                    self.assertIn("gaps", plan["required"])
+                    flow = plan["properties"]["flows"]["items"]
+                    self.assertIn("failureScenario", flow["required"])
+                    self.assertFalse({"gaps", "metrics", "omittedMetrics"} & flow["properties"].keys())
+
+    async def test_show_me_refuses_undeclared_destinations_and_invalid_parameters(self):
+        record = RunRecord(show_me_handles=[
+            {"name": "entity", "description": "Open an entity", "idDescription": "A model entity id"},
+            {"name": "timeline", "description": "Open history", "idDescription": ""},
+        ])
+        register = tools.pointing_tool(record)
+        self.assertEqual(register.parameters()["properties"]["handle"]["enum"], ["entity", "timeline"])
+        # The framework enforces the advertised enum before invoking the handler.
+        with self.assertRaisesRegex(TypeError, "handle"):
+            await register.invoke(arguments={"handle": "other"}, skip_parsing=True)
+        self.assertEqual(record.buttons, {})
+        for args in ({"handle": "entity"}, {"handle": "timeline", "id": "x"},
+                     {"handle": "entity", "id": "a\nb"}, {"handle": "entity", "id": "x" * 257},
+                     {"handle": "timeline", "highlight": {"color": "red"}},
+                     {"handle": "timeline", "highlight": {"label": "x" * 121}},
+                     {"handle": "timeline", "highlight": {"script": "text"}}):
+            with self.subTest(args=args):
+                self.assertTrue((await register.invoke(arguments=args, skip_parsing=True)).startswith("Error:"))
+                self.assertEqual(record.buttons, {})
+        for n in range(1, 17):
+            marker = await register.invoke(arguments={"handle": "entity", "id": str(n)}, skip_parsing=True)
+            self.assertEqual(marker, f"[[show:{n}]]")
+        overflow = await register.invoke(arguments={"handle": "entity", "id": "extra"}, skip_parsing=True)
+        self.assertTrue(overflow.startswith("Error:"))
+
+    async def test_explain_preserves_the_schema_boundary_when_the_model_blends_task_fields(self):
+        record = RunRecord(task_type="explain", asked="checkout", blocked="Access denied")
+        tool, = task_tools(self.folder, record, ("submit_result",))
+        explain = {**RESULT, "entity": "checkout", "state": "Unknown", "causes": [], "summary": "Azure denied access."}
+        mixed = {**explain, "changes": [{"op": "remove"}], "findings": [], "verification": []}
+        rejected = json.loads(await tool.invoke(arguments={"result": mixed}, skip_parsing=True))
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertFalse((self.folder / "result.json").exists())
+        self.assertIn("Additional properties", rejected["problems"][0])
+        accepted = json.loads(await tool.invoke(arguments={"result": explain}, skip_parsing=True))
+        self.assertEqual(accepted["status"], "accepted")
+        self.assertEqual(json.loads((self.folder / "result.json").read_text()), explain)
+
+    def test_foundry_transmits_the_inventory_refs_for_every_result_resource_binding(self):
+        client = FoundryChatClient(project_endpoint="https://test.services.ai.azure.com/api/projects/test",
+                                   model="test", credential=mock.Mock())
+        for phase in ("analyze", "propose"):
+            for has_refs in (True, False):
+                with self.subTest(phase=phase, has_refs=has_refs):
+                    resources = [{"id": f"/subscriptions/s/resourceGroups/rg/providers/Microsoft.App/containerApps/{i}",
+                                  **({"ref": f"R{i}"} if has_refs else {})} for i in (1, 2)]
+                    builder = {"phase": phase, "resources": resources}
+                    tool, = task_tools(self.folder, RunRecord(task_type="design", builder=builder), ("submit_result",))
+                    payload, = client._prepare_tools_for_openai([tool])
+                    self.assertEqual(payload["parameters"], tool.parameters())
+                    props = payload["parameters"]["properties"]["result"]["properties"]
+                    bindings = [props["metrics"]["items"]["properties"]["resourceId"]]
+                    if phase == "analyze":
+                        plan = props["plan"]["properties"]
+                        component = plan["flows"]["items"]["properties"]["components"]["items"]
+                        bindings += [props["rows"]["items"]["properties"]["resourceId"],
+                                     props["omittedMetrics"]["items"]["properties"]["resourceId"],
+                                     component["properties"]["resourceIds"]["items"],
+                                     plan["decisions"]["items"]["properties"]["resourceIds"]["items"]]
+                    else:
+                        group = props["proposals"]["items"]["properties"]["groups"]["items"]
+                        bindings.append(group["properties"]["resourceIds"]["items"])
+                    for binding in bindings:
+                        self.assertEqual(binding["type"], "string")
+                        self.assertEqual(binding.get("enum"), ["R1", "R2"] if has_refs else None)
 
     async def test_run_shell_clamps_the_timeout_and_renders_the_run(self):
         output = await self.tools["run_shell"].invoke(

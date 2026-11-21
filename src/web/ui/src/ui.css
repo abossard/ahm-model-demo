@@ -44,6 +44,54 @@ body {
   }
 }
 
+.show-me-expand {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  /* Keep the answer legible above the destination the reader just opened. */
+  :has(> #session-workspace[data-showing-target]) {
+    flex-direction: column;
+  }
+
+  #session-workspace[data-showing-target] {
+    position: relative;
+    inset: auto;
+    flex: 0 0 50%;
+    width: 100%;
+    border-bottom: 1px solid var(--colorNeutralStroke1);
+  }
+
+  #session-workspace[data-showing-target] + main {
+    min-height: 0;
+  }
+
+  #session-workspace[data-showing-target="timeline"] + main > [data-graph-area] {
+    display: none;
+  }
+
+  #session-workspace[data-showing-target="timeline"] + main > #timeline-panel {
+    flex: 1 0 auto;
+    max-height: none;
+    height: 100%;
+  }
+
+  #session-workspace[data-showing-target="graph"] + main > #timeline-panel {
+    display: none;
+  }
+
+  .show-me-expand {
+    display: inline-block;
+    border: 0;
+    border-radius: var(--borderRadiusMedium);
+    padding: 4px 8px;
+    color: var(--colorBrandForeground1);
+    background: var(--colorBrandBackground2);
+    font: inherit;
+    cursor: pointer;
+  }
+}
+
 /*
  * React Flow canvas. Everything below paints inside the Fluent provider, so the graph reads the
  * provider's `--color*` tokens and the `--<state>-*` health palette it also writes.
@@ -251,57 +299,6 @@ body {
   font-size: 10.5px;
   color: var(--colorNeutralForeground2);
   white-space: nowrap;
-}
-
-.entity-node__header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 8px 10px 6px;
-  /* Contains the disclosure's 50px counter-scaled box at React Flow's 0.5 zoom floor. */
-  min-height: 54px;
-}
-
-.entity-node__icon {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-}
-
-.entity-node__name {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12.5px;
-  line-height: 17px;
-  font-weight: var(--fontWeightSemibold);
-  color: var(--colorNeutralForeground1);
-  white-space: normal;
-  overflow-wrap: break-word;
-  word-break: break-word;
-}
-
-.entity-node__pill {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 18px;
-  padding: 0 8px 0 4px;
-  border-radius: 9px;
-  border-width: 1px;
-  border-style: solid;
-  background: var(--colorNeutralBackground1);
-}
-
-.entity-node__pill-word {
-  font-size: 10.5px;
-  color: var(--colorNeutralForeground2);
-}
-
-.entity-node__dot {
-  flex: 0 0 auto;
-  width: 12px;
-  height: 12px;
 }
 
 .entity-node__metric {
@@ -946,4 +943,12 @@ button:focus-visible > .hp-row-chevron {
   .hp-invite[data-fresh] {
     animation: none;
   }
+}
+
+/* Paint the relationship itself, including its bends, at any canvas zoom. */
+.react-flow__edge-path[data-show-me-highlight] {
+  outline: none !important;
+  stroke: var(--show-me-color) !important;
+  stroke-width: 5px !important;
+  vector-effect: non-scaling-stroke;
 }

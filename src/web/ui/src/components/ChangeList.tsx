@@ -1,4 +1,5 @@
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useImperativeHandle, useMemo, useState } from "react";
+import { flushSync } from "react-dom";
 import type { JSX } from "react";
 import {
   Badge,
@@ -31,7 +32,8 @@ import type {
 } from "../model/types";
 import { WORDS } from "../model/wording";
 import { actions, useStore } from "../store/store";
-import { AgentText } from "./AgentText";
+import { ResultAgentText } from "./AgentText";
+import { useChangeListTarget, useResultTooltip, VerificationLink } from "./ShowMeResult";
 import { useWindowedRows } from "./useWindowedRows";
 
 const GROUP_HEIGHT = 36;
@@ -143,6 +145,7 @@ const useStyles = makeStyles({
     height: "36px",
     color: tokens.colorNeutralForeground2,
   },
+  linkedReason: { display: "block", overflowY: "auto" },
   footer: { display: "flex", alignItems: "center", columnGap: tokens.spacingHorizontalXS, height: "24px", minWidth: 0 },
   needs: {
     minWidth: 0,
@@ -194,7 +197,7 @@ function VerificationChips({ change }: { readonly change: DiffChange }): JSX.Ele
                   {rows.map((row) => (
                     <div key={`${row.entity}/${row.signal}`} className={styles.verificationRow}>
                       <Text weight="semibold">
-                        {row.entity} / {row.signal}
+                        <VerificationLink row={row} />
                       </Text>
                       <span>Signal test: {STATUS_LABEL[row.status]}</span>
                       {row.query ? <span className={styles.mono}>Query: {row.query}</span> : null}
@@ -236,6 +239,7 @@ const ChangeRow = memo(function ChangeRow({
 }): JSX.Element {
   const styles = useStyles();
   const shown = change.details.slice(0, DETAILS_SHOWN);
+  const reason = useResultTooltip(change.reason);
   return (
     <div
       role="listitem"
@@ -270,8 +274,8 @@ const ChangeRow = memo(function ChangeRow({
               </Badge>
             ) : null}
           </div>
-          <div className={styles.reason} title={change.reason}>
-            <AgentText text={change.reason} />
+          <div className={mergeClasses(styles.reason, reason !== change.reason && styles.linkedReason)} title={reason}>
+            <ResultAgentText text={change.reason} />
           </div>
           {hasFooter(change) ? (
             <div className={styles.footer}>
@@ -295,7 +299,7 @@ const ChangeRow = memo(function ChangeRow({
         />
       </div>
       {open ? (
-        <div className={styles.details} data-testid={`change-details-${change.id}`}>
+        <div className={styles.details} data-testid={`change-details-${change.id}`} data-show-me-change={change.id}>
           <div className={styles.detailsHead}>Details</div>
           {shown.length === 0 ? (
             <div className={styles.detail}>
@@ -331,6 +335,7 @@ function labelOf(entities: ReadonlyMap<string, Entity>, name: string | null): st
 
 export function ChangeList({ view }: { readonly view: DiffView }): JSX.Element {
   const styles = useStyles();
+  const target = useChangeListTarget();
   const selected = useStore((state) => state.selectedChanges);
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
 
@@ -359,6 +364,20 @@ export function ChangeList({ view }: { readonly view: DiffView }): JSX.Element {
   const heights = useMemo(() => rows.map(rowHeight), [rows]);
   const window = useWindowedRows(heights);
   const chosen = useMemo(() => new Set(selected), [selected]);
+
+  // A finding may refer to a row outside the rendered window. Reveal it by its logical
+  // position before looking up the mounted details. Checkbox selection stays with the reader.
+  useImperativeHandle(target, () => id => {
+    const index = rows.findIndex(row => row.kind === "change" && row.change.id === id);
+    const list = window.containerRef.current;
+    if (index < 0 || !list) return null;
+    flushSync(() => {
+      setOpen(previous => previous.has(id) ? previous : new Set([...previous, id]));
+      list.scrollTop = window.top(index);
+      window.onScroll();
+    });
+    return [...list.querySelectorAll<HTMLElement>("[data-show-me-change]")].find(item => item.dataset.showMeChange === id) ?? null;
+  });
 
   // A row cannot own its open state without losing it when it scrolls out of the window.
   const toggleOpen = useCallback(

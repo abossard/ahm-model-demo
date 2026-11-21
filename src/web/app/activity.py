@@ -1,6 +1,7 @@
 import json
 import re
 
+from activity_details import response_metadata, tool_detail
 from config import (
     ERROR_MESSAGE_CHARS,
     PROBLEM_CHARS,
@@ -144,6 +145,10 @@ def result_label(result):
         return f"diff, {len(result.get('changes') or [])} changes"
     if result.get("kind") == "explain":
         return f"explain, {len(result.get('causes') or [])} causes"
+    if result.get("kind") == "builderAnalysis":
+        return f"workload plan, {len(result.get('rows') or [])} resources"
+    if result.get("kind") == "builderProposals":
+        return f"{len(result.get('proposals') or [])} model proposals"
     return "result"
 
 
@@ -159,6 +164,8 @@ def tool_title(name, arguments):
         return f"Run shell: {clip(arg('command') or '', 80)}".rstrip(": ")
     if name == "submit_result":
         return f"Submit result ({result_label(result_from(arguments))})"
+    if name == "show_me":
+        return "Prepare Show me button"
     if name == "monitor_healthmodels_list":
         return "List health models"
     if name == "monitor_healthmodels_get":
@@ -202,17 +209,18 @@ def output_text(output):
     return "" if output is None else json.dumps(output)
 
 
-def looks_failed(text):
+def looks_failed(text, value):
     if text.lstrip()[:5].lower() == "error":
         return True
-    value = parse_json(text)
     if not isinstance(value, dict):
         return False
+    status = value.get("status")
     return bool(
         value.get("error")
         or value.get("isError")
         or value.get("is_error")
-        or str(value.get("status", "")).lower() in ("error", "failed")
+        or (type(status) is int and status >= 400)
+        or str(status).lower() in ("error", "failed")
     )
 
 
@@ -277,19 +285,18 @@ def finish_call(state, item):
         return state, []
     call = state["calls"][call_id]
     parsed = parse_arguments(call["arguments"])
+    payload = {"callId": call_id, "name": call["name"], "arguments": clip(call["arguments"], ARGUMENT_LIMIT)}
+    if call["name"] in ("monitor_metrics_query", "monitor_metrics_definitions") and (resource := lookup(parsed)("resource")):
+        payload["resource"] = safe_message(resource, ARGUMENT_LIMIT)
     event = draft(
         "tool_call",
         tool_title(call["name"], parsed),
-        {
-            "callId": call_id,
-            "name": call["name"],
-            "arguments": clip(call["arguments"], ARGUMENT_LIMIT),
-        },
+        payload,
     )
     return mark(state, ("call", call_id)), [event]
 
 
-def finish_output(state, item):
+def finish_output(state, item, *, submission_allowed=True):
     call_id = item.get("call_id") or item.get("id")
     if ("result", call_id) in state["emitted"]:
         return state, []
@@ -300,9 +307,13 @@ def finish_output(state, item):
     title = tool_title(name, parse_arguments(call.get("arguments")))
     payload = {"callId": call_id, "name": name, "size": size}
     state = mark(state, ("result", call_id))
-    if name == "submit_result":
+    if name == "submit_result" and submission_allowed:
         return finish_submission(state, call, title, text, payload)
-    ok = not looks_failed(text)
+    data = {"error": item["error"]} if item.get("error") else parse_json(text)
+    ok = item.get("status") != "failed" and not item.get("error") and not looks_failed(text, data)
+    detail = tool_detail(name, text, data, ok)
+    if detail:
+        payload["detail"] = safe_message(detail, 1200)
     summary = f"{title}: {'ok' if ok else 'failed'}, {size_text(size)}"
     return state, [draft("tool_result", summary, {**payload, "ok": ok})]
 
@@ -317,10 +328,15 @@ def finish_submission(state, call, title, text, payload):
         payload = {**payload, "ok": False, "problems": shown}
         rejection = {"problems": shown, "count": len(problems)}
         return {**state, "rejection": rejection}, [draft("tool_result", summary, payload)]
-    events = [draft("tool_result", f"{title}: accepted", {**payload, "ok": True})]
+    events = [draft("tool_result", f"{title}: accepted", {**payload, "ok": True, "detail": "Accepted by the result validator."})]
     result = result_from(parse_arguments(call.get("arguments")))
     if result is None:
         return state, events
+    # Button data comes from the local tool's acceptance output, alongside the authored result text.
+    if "showMe" in result or "showMe" in status:
+        result = {k: v for k, v in result.items() if k != "showMe"}
+        if "showMe" in status:
+            result["showMe"] = scrub(status["showMe"])
     label = result_label(result)
     events.append(
         draft("result", f"Result accepted ({label})", {"resultKind": result.get("kind")})
@@ -332,7 +348,7 @@ def on_item_added(state, data):
     item = data.get("item")
     if not isinstance(item, dict):
         return state, []
-    if item.get("type") == "function_call":
+    if item.get("type") in ("function_call", "mcp_call"):
         return record_call(state, item)[1], []
     if item.get("type") == "function_call_output" and item.get("output") is not None:
         return finish_output(state, item)
@@ -348,6 +364,14 @@ def on_item_done(state, data):
         return finish_message(state, item)
     if kind == "function_call":
         return finish_call(state, item)
+    if kind == "mcp_call":
+        # A hosted MCP tool has one item containing both arguments and output.
+        # Only the local submit_result function can accept a Task result.
+        state, call = finish_call(state, item)
+        if item.get("output") is None and not item.get("error") and item.get("status") != "failed":
+            return state, call
+        state, result = finish_output(state, item, submission_allowed=False)
+        return state, [*call, *result]
     if kind == "function_call_output":
         return finish_output(state, item)
     return state, []
@@ -355,13 +379,14 @@ def on_item_done(state, data):
 
 def on_completed(state, data):
     response = data.get("response") or {}
-    return state, [draft("status", "Agent finished", {"responseId": response.get("id")})]
+    return state, [draft("status", "Agent finished", response_metadata(response))]
 
 
 def on_incomplete(state, data):
     response = data.get("response") or {}
     reason = safe_message((response.get("incomplete_details") or {}).get("reason") or "unknown reason")
-    return state, [draft("status", f"Agent stopped early ({reason})", {"reason": reason})]
+    metadata = response_metadata(response) if response.get("usage") else {}
+    return state, [draft("status", f"Agent stopped early ({reason})", {"reason": reason, **metadata})]
 
 
 def failed(state, error):
@@ -377,7 +402,10 @@ def failed(state, error):
 
 
 def on_failed(state, data):
-    return failed(state, (data.get("response") or {}).get("error"))
+    response = data.get("response") or {}
+    state, events = failed(state, response.get("error"))
+    metadata = response_metadata(response) if response.get("usage") else {}
+    return state, [{**event, "payload": {**event["payload"], **metadata}} for event in events]
 
 
 def on_error(state, data):

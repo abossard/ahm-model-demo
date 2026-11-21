@@ -4,6 +4,8 @@ This project deploys a web app, one Foundry hosted agent and two Azure health mo
 Users run Tasks on health models in shared Sessions. The agent proposes a Health model diff and the web app applies it.
 Terms follow [GLOSSARY.md](GLOSSARY.md).
 
+Design agent interactions as actions on the webpage. Show findings, explanations and proposed changes beside the objects they describe. Restore that context when a Session reopens. Use the [MCP Apps standard](https://apps.extensions.modelcontextprotocol.io/api/documents/Quickstart.html) for interactive agent views.
+
 ## Setup and local work
 
 - First-time deployment: follow [README.md](README.md#get-started-from-scratch). The entrypoint is
@@ -17,6 +19,7 @@ Terms follow [GLOSSARY.md](GLOSSARY.md).
 ## Follow the request path
 
 - Web UI: `src/web/ui` renders the graph, Sessions, the Activity timeline and the Health model diff. It calls the web app's `/api`.
+- The builder View in `src/web/ui/src/builder` calls typed tools through the MCP Apps host. `src/web/app/builder_mcp.py` owns the transport, `builder.py` owns Session actions, `builder_design.py` compiles the preview and documents, and `builder_apply.py` creates the approved model under the caller's Azure identity.
 - Web app: `src/web/app` serves the UI and the API: model catalog, health reports, Sessions and Tasks in Blob Storage, and Apply.
   It is the only caller of the hosted agent and the only writer of health models.
 - Hosted agent: `src/agent` runs each Task with the healthmodel skills and ends it with `submit_result`.

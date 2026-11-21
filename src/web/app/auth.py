@@ -70,7 +70,7 @@ class Unauthenticated(Exception):
 
 
 class TenantRefused(Exception):
-    """A valid token of a directory the app does not serve: `personal_account` or `tenant_not_allowed`."""
+    """A valid token whose tenant cannot be used for this request."""
 
     def __init__(self, reason):
         super().__init__(reason)

@@ -165,7 +165,8 @@ test.describe("starting Tasks", () => {
     expect(stub.posts).toEqual([
       {
         sessionId: SESSION_ID,
-        body: { type: "review", target: { name: "hm-demo", resourceGroup: "rg-demo", subscriptionId: SUBSCRIPTION_A }, instruction: "Look at the queue first." },
+        body: { type: "review", target: { name: "hm-demo", resourceGroup: "rg-demo", subscriptionId: SUBSCRIPTION_A },
+          instruction: "Look at the queue first.", showMeHandles: expect.any(Array) },
       },
     ]);
     await expect(page.getByTestId("task-title")).toHaveText("Check hm-demo");
@@ -241,6 +242,9 @@ test.describe("starting Tasks", () => {
       type: "explain",
       target: { name: "hm-demo", resourceGroup: "rg-demo", subscriptionId: SUBSCRIPTION_A, entity: "svc-c" },
       instruction: "",
+      showMeHandles: expect.arrayContaining([
+        expect.objectContaining({ name: "panel", idDescription: expect.stringMatching(/entity/) }),
+      ]),
     });
   });
 
@@ -284,6 +288,9 @@ test.describe("starting Tasks", () => {
       target: { name: "hm-demo-design", resourceGroup: "rg-demo", subscriptionId: SUBSCRIPTION_A },
       workload: { resourceGroup: "rg-demo", repositoryUrl: "https://github.com/contoso/orders" },
       instruction: "",
+      showMeHandles: expect.arrayContaining([
+        expect.objectContaining({ name: "graph", idDescription: expect.stringMatching(/coverage/) }),
+      ]),
     });
     await expect(page.getByTestId("task-title")).toHaveText("Design for contoso/orders");
     await expect(page.getByTestId("diff-result")).toBeVisible();
@@ -368,14 +375,16 @@ test.describe("Explain results", () => {
     expect(await viewport()).toBe(before);
   });
 
-  test("on a phone, showing a step puts the sheet away and shows the entity", async ({ page }) => {
+  test("on a phone, showing a step keeps the explanation beside the graph", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 800 });
     await boot(page, explained(), `/?${MODEL_QUERY}&session=${SESSION_ID}&task=1`);
     await expect(page.getByTestId("explain-result")).toBeVisible();
     await page.getByTestId("explain-step-focus-1").click();
-    await expect(workspace(page)).toBeHidden();
+    await expect(workspace(page)).toHaveAttribute("data-showing-target", "graph");
+    await expect(page.getByTestId("explain-result")).toBeInViewport();
     await expect(node(page, "topology", "svc-b")).toHaveAttribute("data-highlighted", "true");
     await expect(node(page, "topology", "svc-b")).toBeInViewport();
+    await expect(page.locator('.react-flow__node[data-id="svc-b"]')).toHaveAttribute("data-show-me-highlight", "blue");
   });
 
   test("says so when the result traces no cause", async ({ page }) => {
@@ -388,17 +397,49 @@ test.describe("Explain results", () => {
     await expect(page.getByTestId("explain-no-causes")).toBeVisible();
   });
 
-  test("offers the target model when it is not on screen", async ({ page }) => {
+  test("a pointer in a saved explanation opens its model when it is off screen", async ({ page }) => {
     await boot(page, explained(), `/?model=hm-payments&resourceGroup=rg-demo&subscription=${SUBSCRIPTION_A}&session=${SESSION_ID}&task=1`);
     await expect(page.getByTestId("explain-off-screen")).toBeVisible();
-    await expect(page.getByTestId("explain-step-focus-0")).toBeDisabled();
-    await page.getByTestId("explain-open-target").click();
+    await expect(page.getByTestId("explain-open-target")).toBeEnabled();
+    await page.getByTestId("explain-step-focus-0").click();
     await expect(page.getByTestId("explain-off-screen")).toHaveCount(0);
     await expect(page).toHaveURL(/model=hm-demo/);
+    await expect(page.locator('.react-flow__node[data-id="svc-c"]')).toHaveAttribute("data-show-me-highlight", "blue");
+    await expect(page.getByTestId("explain-result")).toBeInViewport();
   });
 });
 
 test.describe("Health model diffs", () => {
+  test("an older finding reveals an off-screen change and its fields on a phone", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 800 });
+    const view = longDiff(400);
+    const diff = {
+      ...view,
+      findings: [{ severity: "high" as const, entity: null, text: "Check the last service.", changeIds: ["c400"] }],
+      changes: view.changes.map(change => change.id === "c400" ? {
+        ...change, details: [{ path: "displayName", before: null, after: "Extra 400" }],
+      } : change),
+    };
+    const stub = await openDiffTask(page, {
+      sessions: [sessionSummary({ taskCount: 1 })],
+      tasks: [{ task: taskOf(1, { result: reviewResult() }), script: { events: reviewEvents(), outcome: { status: "done", result: reviewResult(), diff } } }],
+    });
+    await expect(page.getByTestId("change-c400")).toHaveCount(0);
+    const finding = page.getByTestId("finding-0");
+    await finding.getByRole("button", { name: /Show me/ }).click();
+    const details = page.getByTestId("change-details-c400");
+    await expect(details).toHaveAttribute("data-show-me-highlight", "blue");
+    await expect(details).toContainText('after: "Extra 400"');
+    await expect(details).toBeInViewport();
+    await expect(finding).toBeInViewport();
+    await expect(page.getByTestId("selection-count")).toHaveText("0 of 400 selected");
+    await expect(page.getByTestId("apply-button")).toBeDisabled();
+    expect(stub.applies).toEqual([]);
+    await page.getByTestId("change-expand-c400").click();
+    await expect(details).toHaveCount(0);
+    await expect(page.locator("[data-show-me-annotation]")).toHaveCount(0);
+  });
+
   test("selecting a change adds what it needs and says so", async ({ page }) => {
     await openDiffTask(page);
     await expect(page.getByTestId("diff-summary")).toContainText("Add the queue consumer");

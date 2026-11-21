@@ -1,3 +1,4 @@
+import type { ShowMeAction, ShowMeDescriptor } from "../showMe";
 export type HealthState =
   | "Healthy"
   | "Degraded"
@@ -239,6 +240,7 @@ export interface ExplainCause {
 }
 
 export interface ExplainResult {
+  readonly showMe?: Readonly<Record<string, ShowMeAction>>;
   readonly kind: "explain";
   readonly entity: string;
   readonly state: HealthState;
@@ -286,6 +288,7 @@ export interface SubmittedChange {
 }
 
 export interface DiffTaskResult {
+  readonly showMe?: Readonly<Record<string, ShowMeAction>>;
   readonly kind: "diff";
   readonly summary: string;
   readonly changes: readonly SubmittedChange[];
@@ -297,6 +300,8 @@ export interface DiffTaskResult {
 export type TaskResult = ExplainResult | DiffTaskResult;
 
 export interface Task {
+  readonly showMeHandles?: readonly ShowMeDescriptor[];
+  readonly builder?: { readonly phase: "analyze" | "propose" };
   readonly id: string;
   readonly sessionId: string;
   readonly seq: number;
@@ -366,6 +371,7 @@ export interface DiffView {
 }
 
 export interface TaskInput {
+  readonly showMeHandles?: readonly ShowMeDescriptor[];
   readonly type: TaskType;
   readonly target: TaskTarget;
   readonly workload?: TaskWorkload;

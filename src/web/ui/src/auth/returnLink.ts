@@ -1,21 +1,25 @@
 const KEY = "health-pulse-return-query";
 
-/** Keeps the address's query, `?model=&session=&task=`, through a redirect to the sign-in page, in session storage. */
-export function rememberReturn(storage: Storage, search: string): void {
+/** The original app stored a query alone. The builder also needs its exact, app-owned pathname. */
+function allowedReturn(address: string): boolean {
+  return /^(?:\?[^#\r\n]*|\/builder(?:\?[^#\r\n]*)?)$/.test(address);
+}
+
+export function rememberReturn(storage: Storage, address: string): void {
   try {
-    if (search === "") storage.removeItem(KEY);
-    else storage.setItem(KEY, search);
+    if (allowedReturn(address)) storage.setItem(KEY, address);
+    else storage.removeItem(KEY);
   } catch {
     // The user lands on the default view when storage is unavailable.
   }
 }
 
-/** The query kept before a redirect, once: it is forgotten as it is read. */
+/** Read the pending sign-in destination once, including query-only links from earlier releases. */
 export function takeReturn(storage: Storage): string | null {
   try {
-    const search = storage.getItem(KEY);
+    const address = storage.getItem(KEY);
     storage.removeItem(KEY);
-    return search !== null && /^\?[^#]*$/.test(search) ? search : null;
+    return address !== null && allowedReturn(address) ? address : null;
   } catch {
     return null;
   }

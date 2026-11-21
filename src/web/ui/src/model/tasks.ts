@@ -1,3 +1,4 @@
+import { withoutShowMeMarkers } from "../showMe/markers";
 import { splitAnswer } from "./agentText";
 import { TASK_KIND, momentWords, proposedCount, whyQuestion } from "./wording";
 import type {
@@ -223,8 +224,11 @@ export function finishedAnnouncement(task: Task, entityLabel?: string | null): s
   const kind = taskLabel(task.type);
   if (task.status === "failed") return `The assistant could not finish. ${task.error?.message ?? "It stopped without an answer."}`;
   const result = task.result;
-  if (result?.kind === "explain") return `Answer ready. ${answerOf(result, entityLabel ?? null, askedMoment(task))}`;
-  if (result?.kind === "diff") return `${kind} ready. ${proposedCount(result.changes.length)}. ${splitAnswer(result.summary).answer}`;
+  if (result) {
+    const summary = result.showMe ? withoutShowMeMarkers(result.summary) : result.summary;
+    if (result.kind === "explain") return `Answer ready. ${answerOf({ ...result, summary }, entityLabel ?? null, askedMoment(task))}`;
+    return `${kind} ready. ${proposedCount(result.changes.length)}. ${splitAnswer(summary).answer}`;
+  }
   return `${kind} ready.`;
 }
 

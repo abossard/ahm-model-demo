@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "TaskResult",
-  "description": "What the agent passes to submit_result. An explain result traces a health state to its causes; a diff result proposes changes to a health model.",
+  "description": "What the agent passes to submit_result. An explain result traces a health state to its causes; a diff result proposes changes to a health model. Builder analysis describes selected resources, and builder proposals arrange confirmed resources into alternative models.",
   "type": "object",
   "required": ["kind"],
   "properties": {
-    "kind": { "enum": ["explain", "diff"] }
+    "kind": { "enum": ["explain", "diff", "builderAnalysis", "builderProposals"] }
   },
   "allOf": [
     {
@@ -15,9 +15,146 @@
     {
       "if": { "required": ["kind"], "properties": { "kind": { "const": "diff" } } },
       "then": { "$ref": "#/$defs/diff" }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "builderAnalysis" } } },
+      "then": { "$ref": "#/$defs/builderAnalysis" }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "builderProposals" } } },
+      "then": { "$ref": "#/$defs/builderProposals" }
     }
   ],
   "$defs": {
+    "showMeHandles": {
+      "type": "array", "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["name", "description", "idDescription"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$" },
+          "description": { "type": "string", "maxLength": 256, "pattern": "\\S" },
+          "idDescription": { "type": "string", "maxLength": 256 }
+        }
+      }
+    },
+    "showMeAction": {
+      "type": "object", "additionalProperties": false, "required": ["handle"],
+      "properties": {
+        "handle": { "type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$" },
+        "id": { "type": "string", "maxLength": 256, "pattern": "\\S" },
+        "highlight": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "color": { "type": "string", "enum": ["blue", "amber", "violet"] },
+            "label": { "type": "string", "maxLength": 120, "pattern": "\\S" }
+          }
+        }
+      }
+    },
+    "showMe": {
+      "type": "object", "maxProperties": 16, "propertyNames": { "pattern": "^([1-9]|1[0-6])$" },
+      "additionalProperties": { "$ref": "#/$defs/showMeAction" }
+    },
+    "builderText": { "type": "string", "minLength": 1, "maxLength": 800, "pattern": "\\S" },
+    "builderLabel": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "\\S" },
+    "builderResourceId": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "builderRow": {
+      "type": "object", "additionalProperties": false,
+      "required": ["resourceId", "displayName", "purpose", "impact"],
+      "properties": {
+        "resourceId": { "$ref": "#/$defs/builderResourceId" },
+        "displayName": { "$ref": "#/$defs/builderLabel" },
+        "purpose": { "$ref": "#/$defs/builderText" },
+        "impact": { "enum": ["Standard", "Limited", "Suppressed"] }
+      }
+    },
+    "builderPlan": {
+      "type": "object", "additionalProperties": false, "required": ["objective", "flows", "gaps"],
+      "properties": {
+        "objective": { "$ref": "#/$defs/builderText" },
+        "decisions": { "type": "array", "minItems": 1, "maxItems": 12, "items": {
+          "type": "object", "additionalProperties": false, "required": ["choice", "reason", "basis", "resourceIds"],
+          "properties": {
+            "choice": { "$ref": "#/$defs/builderLabel" }, "reason": { "$ref": "#/$defs/builderText" },
+            "basis": { "enum": ["inventory", "measurement", "assumption", "userInput"] },
+            "resourceIds": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true,
+                             "items": { "$ref": "#/$defs/builderResourceId" } }
+          }
+        } },
+        "flows": { "type": "array", "minItems": 1, "maxItems": 12, "items": {
+          "type": "object", "additionalProperties": false, "required": ["name", "objective", "components", "failureScenario"],
+          "properties": {
+            "name": { "$ref": "#/$defs/builderLabel" }, "objective": { "$ref": "#/$defs/builderText" },
+            "failureScenario": { "$ref": "#/$defs/builderText" },
+            "components": { "type": "array", "minItems": 1, "maxItems": 32, "items": {
+              "type": "object", "additionalProperties": false, "required": ["name", "resourceIds", "signal"],
+              "properties": {
+                "name": { "$ref": "#/$defs/builderLabel" }, "signal": { "$ref": "#/$defs/builderText" },
+                "resourceIds": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true,
+                                 "items": { "$ref": "#/$defs/builderResourceId" } }
+              }
+            } }
+          }
+        } },
+        "gaps": { "type": "array", "maxItems": 12, "items": { "$ref": "#/$defs/builderText" } }
+      }
+    },
+    "builderAnalysis": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "summary", "rows", "plan", "metrics"],
+      "properties": {
+        "kind": { "const": "builderAnalysis" },
+        "showMe": { "$ref": "#/$defs/showMe" },
+        "plan": { "$ref": "#/$defs/builderPlan" },
+        "metrics": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/builderMetric" } },
+        "omittedMetrics": { "type": "array", "maxItems": 32, "items": {
+          "type": "object", "additionalProperties": false, "required": ["resourceId", "reason"],
+          "properties": { "resourceId": { "$ref": "#/$defs/builderResourceId" }, "reason": { "$ref": "#/$defs/builderText" } }
+        } },
+        "summary": { "$ref": "#/$defs/builderText" },
+        "rows": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/builderRow" } }
+      }
+    },
+    "builderGroup": {
+      "type": "object", "additionalProperties": false, "required": ["name", "purpose", "resourceIds"],
+      "properties": {
+        "name": { "$ref": "#/$defs/builderLabel" },
+        "purpose": { "$ref": "#/$defs/builderText" },
+        "resourceIds": { "type": "array", "uniqueItems": true, "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/builderResourceId" } }
+      }
+    },
+    "builderProposal": {
+      "type": "object", "additionalProperties": false, "required": ["id", "title", "summary", "tradeoff", "structure", "groups"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+        "title": { "$ref": "#/$defs/builderLabel" },
+        "summary": { "$ref": "#/$defs/builderText" },
+        "tradeoff": { "$ref": "#/$defs/builderText" },
+        "structure": { "enum": ["planned", "direct", "grouped"] },
+        "groups": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/builderGroup" } }
+      }
+    },
+    "builderMetric": {
+      "type": "object", "additionalProperties": false,
+      "required": ["resourceId", "metricName", "metricNamespace", "aggregation", "operator", "threshold", "sample"],
+      "properties": {
+        "resourceId": { "$ref": "#/$defs/builderResourceId" },
+        "metricName": { "$ref": "#/$defs/builderLabel" },
+        "metricNamespace": { "$ref": "#/$defs/builderLabel" },
+        "aggregation": { "enum": ["Average", "Maximum", "Minimum", "Total", "Count"] },
+        "operator": { "enum": ["GreaterThan", "LessThan"] },
+        "threshold": { "type": "number" },
+        "sample": { "type": "number" }
+      }
+    },
+    "builderProposals": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "proposals"],
+      "properties": {
+        "kind": { "const": "builderProposals" },
+        "showMe": { "$ref": "#/$defs/showMe" },
+        "proposals": { "type": "array", "minItems": 2, "maxItems": 3, "items": { "$ref": "#/$defs/builderProposal" } },
+        "metrics": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/builderMetric" } }
+      }
+    },
     "text": { "type": "string", "minLength": 1 },
     "nullableText": { "type": ["string", "null"], "minLength": 1 },
     "reading": { "type": ["string", "number", "null"] },
@@ -39,6 +176,7 @@
       "required": ["kind", "entity", "state", "summary", "causes"],
       "properties": {
         "kind": { "const": "explain" },
+        "showMe": { "$ref": "#/$defs/showMe" },
         "entity": { "$ref": "#/$defs/text" },
         "state": { "$ref": "#/$defs/healthState" },
         "confidence": { "$ref": "#/$defs/confidence" },
@@ -67,6 +205,7 @@
       "required": ["kind", "summary", "changes", "verification", "findings"],
       "properties": {
         "kind": { "const": "diff" },
+        "showMe": { "$ref": "#/$defs/showMe" },
         "confidence": { "$ref": "#/$defs/confidence" },
         "summary": { "$ref": "#/$defs/text" },
         "changes": { "type": "array", "items": { "$ref": "#/$defs/change" } },

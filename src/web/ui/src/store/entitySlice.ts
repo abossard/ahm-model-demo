@@ -1,7 +1,7 @@
 import type { StateCreator } from "zustand";
 import type { AsyncState, EntityDetail } from "../model/types";
 import * as api from "./api";
-import { IDLE, LOADING, settle } from "./asyncState";
+import { IDLE, settle } from "./asyncState";
 import type { Store } from "./store";
 
 export interface EntityState {
@@ -23,12 +23,14 @@ export const entitySlice: StateCreator<Store, [], [], EntityState & EntityAction
 
   // The detail panel is open exactly while an entity is selected.
   selectEntity: async (name) => {
-    set({ selectedName: name, detail: LOADING, report: IDLE });
+    // Same-named entities can be opened back to back, including in different models.
+    const loading = { kind: "loading" } as const;
+    set({ selectedName: name, detail: loading, report: IDLE });
     const detail = await settle(
       api.fetchEntityDetail(name, get().selected),
       "The entity could not be loaded.",
     );
-    if (get().selectedName === name) set({ detail });
+    if (get().detail === loading) set({ detail });
   },
 
   clearEntity: () => set({ selectedName: null, detail: IDLE, report: IDLE }),

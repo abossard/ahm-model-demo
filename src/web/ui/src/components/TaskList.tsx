@@ -1,3 +1,4 @@
+import { workspaceLink } from "../auth/workspaceLink";
 import { memo, useMemo } from "react";
 import type { JSX } from "react";
 import {
@@ -101,7 +102,9 @@ const TaskRow = memo(function TaskRow({
   const elapsed = taskDuration(task, now);
   const entityLabel = useEntityLabel(task.target.entity);
   // The list has no result to read the state from, so an Explain is named by its entity alone.
-  const title = taskTitle(task, entityLabel, null);
+  const title = task.builder
+    ? task.builder.phase === "analyze" ? "Review workload resources" : "Compare model designs"
+    : taskTitle(task, entityLabel, null);
   return (
     <div
       role="listitem"
@@ -115,7 +118,10 @@ const TaskRow = memo(function TaskRow({
         type="button"
         className={mergeClasses(styles.button, current && styles.current)}
         aria-current={current ? "true" : undefined}
-        onClick={() => void actions.openTask(task.seq)}
+        onClick={() => {
+          if (task.builder) window.location.assign(workspaceLink(`/builder?session=${encodeURIComponent(task.sessionId)}`));
+          else void actions.openTask(task.seq);
+        }}
         data-testid={`task-open-${task.seq}`}
       >
         <span className={styles.text}>

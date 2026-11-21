@@ -68,13 +68,16 @@ async function readError(response: Response): Promise<ApiError> {
  * token, `interaction_required` after an interactive step with the claims the server sent (which, in a redirect
  * flow, leaves the page, so the retry is the page that comes back).
  */
-async function authorized(url: string, init: RequestInit = {}): Promise<Response> {
+export async function authorized(url: string, init: RequestInit = {}): Promise<Response> {
   const auth = getAuth();
   let request: TokenRequest = {};
   for (let attempt = 0; ; attempt += 1) {
     const token = await auth.getToken(request);
     const headers = new Headers(init.headers);
-    if (token !== null) headers.set("Authorization", `Bearer ${token}`);
+    if (token !== null) {
+      headers.set("Authorization", `Bearer ${token}`);
+      if (auth.account) headers.set("X-Workspace-Tenant", auth.account.tenantId);
+    }
     const response = await fetch(url, { ...init, headers });
     if (response.status !== 401 || token === null || attempt > 0) return response;
     const error = await readError(response.clone());

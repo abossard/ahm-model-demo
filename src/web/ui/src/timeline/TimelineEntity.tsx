@@ -66,7 +66,7 @@ export function TimelineEntity({ options, changes, offsetOf, rowHidden }: Props)
   );
 
   return (
-    <section className={styles.entity} aria-label={`Selected entity: ${title}`} data-testid="entity-details">
+    <section className={styles.entity} aria-label={`Selected entity: ${title}`} data-testid="entity-details" data-show-me-entity={selectedName}>
       {known ? <HealthBadge state={shown.healthState} /> : null}
       <span className={styles.entityName} data-testid="entity-name">
         {title}

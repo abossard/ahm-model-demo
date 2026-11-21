@@ -13,7 +13,7 @@ import {
 import { Search20Regular } from "@fluentui/react-icons";
 import type { Entity, Relationship } from "../model/types";
 import { GROUP_LABELS, searchGraph, type SearchGroup, type SearchHit } from "../model/search";
-import { ancestorsToExpand, healthBucket } from "../model/collapse";
+import { revealGraphEntities } from "../store/graphFocus";
 import { actions, useStore } from "../store/store";
 
 interface SearchOverlayProps {
@@ -83,8 +83,6 @@ const Marked = memo(function Marked({ hit }: { readonly hit: SearchHit }): JSX.E
 export function SearchOverlay({ entities, relationships }: SearchOverlayProps): JSX.Element {
   const styles = useStyles();
   const open = useStore((state) => state.searchOpen);
-  const collapsed = useStore((state) => state.collapsed);
-  const selectedHealth = useStore((state) => state.selectedHealth);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -134,24 +132,7 @@ export function SearchOverlay({ entities, relationships }: SearchOverlayProps): 
 
   const choose = (hit: SearchHit | undefined): void => {
     if (!hit) return;
-    const byName = new Map(entities.map((item) => [item.name, item] as const));
-    const required = new Set(selectedHealth);
-    for (const name of hit.focusEntities) {
-      const state = byName.get(name)?.healthState;
-      if (!state) continue;
-      const bucket = healthBucket(state);
-      if (bucket !== "Deleted") required.add(bucket);
-    }
-    if (required.size !== selectedHealth.length) {
-      actions.setSelectedHealth([...required]);
-    }
-    const blocked = new Set<string>();
-    for (const name of hit.focusEntities) {
-      for (const ancestor of ancestorsToExpand(name, entities, relationships, new Set(collapsed))) {
-        blocked.add(ancestor);
-      }
-    }
-    if (blocked.size > 0) actions.expandMany([...blocked]);
+    revealGraphEntities(useStore.getState(), hit.focusEntities, entities, relationships);
     const focus = (): void => actions.focusEntities({ highlight: hit.focusEntity, names: hit.focusEntities });
     // A timeline that opens takes room from the graph, which then fits its new size: bring the result into view after that.
     if (useStore.getState().timelineOpen) focus();

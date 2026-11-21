@@ -1,3 +1,5 @@
+import type { AzureDirectory } from "./auth";
+
 export const AUTHORITY_HOST = "https://login.microsoftonline.com";
 /** The tenant of personal Microsoft accounts: a token it issues never reaches Azure Resource Manager. */
 export const CONSUMERS_TENANT_ID = "9188040d-6c67-4c5b-b112-36a304b66dad";
@@ -25,6 +27,11 @@ export function parseDirectoryInput(text: string): DirectoryInput | null {
   if (GUID.test(value)) return { kind: "guid", id: value.toLowerCase() };
   if (DOMAIN.test(value)) return { kind: "domain", name: value.toLowerCase() };
   return null;
+}
+
+export function tenantFromLink(search: string): string | null {
+  const tenant = parseDirectoryInput(new URLSearchParams(search).get("tenant") ?? "");
+  return tenant?.kind === "guid" && tenant.id !== CONSUMERS_TENANT_ID ? tenant.id : null;
 }
 
 /** The directory a 401 from Azure Resource Manager names, or null when its challenge names none. */
@@ -68,4 +75,56 @@ export async function resolveDirectory(text: string, fetcher: Fetch = (input, in
 /** The sign-in authority of a directory, or of any work or school directory when none is named. */
 export function authorityOf(directory?: string): string {
   return `${AUTHORITY_HOST}/${directory ?? "organizations"}`;
+}
+
+/** Pin a verified domain to the tenant ID in its public OpenID metadata before requesting a token. */
+export async function canonicalDirectoryId(value: string, fetcher: Fetch = fetch): Promise<string> {
+  const input = parseDirectoryInput(value);
+  if (!input) throw new DirectoryError("Enter an Azure directory ID or a verified domain.");
+  let id: string;
+  if (input.kind === "guid") {
+    id = input.id;
+  } else {
+    const response = await fetcher(`${authorityOf(input.name)}/v2.0/.well-known/openid-configuration`, { credentials: "omit", redirect: "error" });
+    if (!response.ok) throw new DirectoryError("Microsoft could not find an Azure directory for that domain.");
+    const { issuer } = await response.json();
+    const parts = typeof issuer === "string" && issuer.startsWith(AUTHORITY_HOST + "/") ? issuer.slice(AUTHORITY_HOST.length + 1).split("/") : [];
+    if (parts.length !== 2 || parts[1] !== "v2.0" || !GUID.test(parts[0]!)) throw new DirectoryError("Microsoft did not return a directory ID for that domain.");
+    id = parts[0]!.toLowerCase();
+  }
+  if (id === CONSUMERS_TENANT_ID) throw new DirectoryError("Choose an Azure directory where you are a member or guest.");
+  return id;
+}
+
+const TENANTS_URL = "https://management.azure.com/tenants";
+
+/** Follow only ARM tenant-list links: the access token stays on the endpoint it was requested for. */
+export async function readAzureDirectories(token: string, fetcher: Fetch = fetch, signal?: AbortSignal): Promise<AzureDirectory[]> {
+  const directories = new Map<string, AzureDirectory>();
+  const visited = new Set<string>();
+  let next: string | null = TENANTS_URL + "?api-version=2022-12-01";
+  while (next !== null) {
+    const url: URL = new URL(next, TENANTS_URL);
+    if (url.origin + url.pathname !== TENANTS_URL || url.username || url.password || url.hash || visited.has(url.href)) {
+      throw new DirectoryError("Azure returned an invalid next page of directories.");
+    }
+    visited.add(url.href);
+    const response = await fetcher(url.href, {
+      headers: { Authorization: `Bearer ${token}` }, credentials: "omit", cache: "no-store", redirect: "error", ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) throw new DirectoryError(`Azure could not list your directories (HTTP ${response.status}).`);
+    const page = await response.json();
+    if (!Array.isArray(page.value)) throw new DirectoryError("Azure returned an unreadable list of directories.");
+    for (const row of page.value) {
+      if (typeof row?.tenantId !== "string" || !GUID.test(row.tenantId)) continue;
+      const tenantId = row.tenantId.toLowerCase();
+      if (tenantId === CONSUMERS_TENANT_ID) continue;
+      const domain = typeof row.defaultDomain === "string" && row.defaultDomain.trim();
+      const displayName = (typeof row.displayName === "string" && row.displayName.trim()) || domain || tenantId;
+      directories.set(tenantId, { tenantId, displayName, ...(domain ? { defaultDomain: domain } : {}) });
+    }
+    next = page.nextLink ?? null;
+    if (next !== null && typeof next !== "string") throw new DirectoryError("Azure returned an invalid next page of directories.");
+  }
+  return [...directories.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
 }

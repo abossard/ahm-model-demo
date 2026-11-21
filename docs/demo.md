@@ -4,12 +4,28 @@ Open the web app link that `azd up` prints. The steps build on each other.
 
 ## Sign in
 
-- **Sign in with Microsoft** signs in any work or school account of any Microsoft Entra directory. You see the health models you can read in every subscription of your directory, and everything the app and the assistant read or write in Azure runs as you.
-- **Sign in to this app's directory** is for members and guests of the directory the app is deployed in. A guest who uses **Sign in with Microsoft** lands in their own organisation, which has usually not approved the app.
-- A personal Microsoft account has no Azure of its own: it reaches Azure through a directory where it is a member or a guest, such as the default directory of your Azure subscription. Click **Guest, personal account or a specific directory** and enter a subscription ID, the directory's domain or its ID. A personal account that signs in with the first button is told this and asked for the directory.
-- The first time a directory uses the app, an administrator of that directory has to approve it once for the organization (the sign-in page says so). Azure RBAC then decides what you see: Reader on the resource group or subscription of a health model lists it, and reports and Apply need more. [Details](../infra/README.md#another-directory).
-- Your topics are yours. Nobody else, in your directory or another, can open them.
+1. Select **Sign in with Microsoft** and use the account you use for Azure.
+2. In **Choose your Azure directory**, select a verified directory and **Open workspace**. Expand **More Azure directories** to choose a membership that still needs an access check. Select it by name and choose **Check and open workspace**. Microsoft may ask for verification or consent. If Azure cannot list a directory, you can enter its domain, directory ID, or subscription ID. The workspace opens once Azure confirms access.
+3. The account menu shows the selected directory. Models and resources come from subscriptions you can access there. Your Sessions belong to your account in that directory. Refreshing or opening a saved plan preserves the directory choice. To choose another directory, sign out and sign in again.
+
+If your home organization blocks sign-in and another directory has invited you as a guest, open a saved link from the inviting directory. You can also use **Sign-in options** on the Microsoft sign-in page and enter the inviting organization's domain. [Microsoft guest sign-in](https://learn.microsoft.com/en-us/entra/external-id/redemption-experience#redemption-process-and-sign-in-through-a-common-endpoint).
+
+If you can sign in but your home organization restricts directory lookup, expand **Find more directories**. Under **Directory for lookup**, choose a directory where you can use Azure and continue to Microsoft. After any required verification, select the workspace you want from the returned list.
+
+Your directory's consent policy and your Azure roles decide what opens. Reader on a subscription or resource group lets you browse its models. Sending health reports, creating models and applying changes require additional permissions. [Azure access and consent](../infra/README.md#another-directory).
+
 - **Design a model** is for the directory the app belongs to only. A user of another directory has no design model to write to.
+
+## Create a health model
+
+1. Choose **Create model** beside the model picker. Select resources individually or choose an entire resource group. Under **New model destination**, choose a suggested prefix based on your selection or enter your own. Select a destination group in the same subscription. The preview shows the full Azure resource name, including its unique suffix.
+2. Run the analysis. In **Workload**, select a node in the dependency graph to inspect its role in the plan. **Why these choices were made** explains what came from Azure inventory, signal checks, user input or an assumption. Correct a resource's role or failure impact, or exclude it. To change the plan, enter an adjustment under **What should change?** and choose **Revise plan**. Review the updated graph and the changes in the same Session.
+3. Choose **Confirm and suggest models**. Compare the proposed designs, open one, and inspect the graph, signals and coverage gaps. Download **plan.md** and **modelspec.md** from that preview. Both describe the selected design.
+4. Review the destination and choose **Confirm creation in Azure**. The web app creates the model as you, writes its entities, relationships, signals and Designer positions, then reads them back. Open the model when creation finishes. If interrupted, reopen the builder Session from History and resume the same creation.
+
+In **Workload**, expand **Analysis activity** to inspect a run. The first checks look up the platform metrics Azure Monitor publishes for each selected resource and read five-minute samples from the last 24 hours. A zero is a valid reading. If a check finds no usable sample, the activity explains whether Azure returned an empty series, required dimensions, or denied access. Expand a Foundry tool call to inspect its recorded result. The activity stays available when you reopen the Session.
+
+Creating a model requires permission to write Azure Monitor health models in the destination group. After creation, **Signal access** lists each resource that supplies an enabled signal. Choose **Grant Monitoring Reader** to assign the role to the model's identity with your Azure account. Azure checks your permission to assign roles at each resource. The result for each resource stays in the Session, and you can retry a failed grant. Signals can show **Unknown** until Azure collects the next reading.
 
 ## Browse a model
 
@@ -65,6 +81,10 @@ Open the web app link that `azd up` prints. The steps build on each other.
    When the assistant says so, the answer also shows **How sure** it is (High, Medium or Low, with what that means) and **Looked at**, the span of time it read, for example "the last 3 hours".
    The chain should end at the signal you reported. The graph marks the chain while the answer is open, and a step's name shows that entity on the graph. **What the assistant did** keeps every step.
 
+Click **Show me** beside a finding to inspect the object it describes. A graph button can frame a node or trace a particular connection. A timeline button can expand an entity and highlight one signal across its label and plot. A panel button can open entity details, a proposed change, or the model comparison. The answer stays visible, including on a phone. Reopening a question from History restores its buttons and a historical Explain can take you back to the moment it describes.
+
+In the builder, **Show me** opens a resource, its signal evidence, or a design preview beside the passage you clicked. You can inspect another proposal while keeping the current design selection. [Show me handles and local playground](../src/web/ui/src/showMe/README.md)
+
 ## Check a model
 
 1. Put `hm-<env>` on screen. Click **Ask** in the top bar, then **Check this model**. The check starts at once, in the open topic or in a new one.
@@ -113,6 +133,9 @@ The address names the model, topic and question on screen. Send it and any visit
   See [layout round-trip](../infra/README.md#designer-layout-round-trip).
 
 ## Limits of the public app
+
+- A builder analysis accepts up to 32 resources after expanding the selected groups.
+- A builder Task may correct a rejected plan twice. After the third rejection it stops and shows the last validation errors in Activity.
 
 The caps are constants in `src/web/app/config.py`. A refused request carries the error code. Per user means per tenant and user: the same person in two directories is two users.
 

@@ -39,6 +39,7 @@ export interface UiState {
   /** The entities an open Explain result traces, marked on the graph. */
   readonly chainNames: readonly string[];
   readonly workspaceOpen: boolean;
+  readonly workspaceTarget: "graph" | "timeline" | null;
   readonly workspaceWidth: number;
   readonly workspaceTab: WorkspaceTab;
   readonly announcement: string;
@@ -71,6 +72,7 @@ export interface UiActions {
   readonly closeSearch: () => void;
   readonly focusEntities: (focus: { readonly highlight: string; readonly names: readonly string[] }) => void;
   readonly setChain: (names: readonly string[]) => void;
+  readonly setWorkspaceTarget: (target: UiState["workspaceTarget"]) => void;
   readonly setWorkspaceOpen: (open: boolean) => void;
   readonly toggleWorkspace: () => void;
   readonly setWorkspaceWidth: (width: number) => void;
@@ -111,6 +113,7 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
   focusSeq: 0,
   chainNames: [],
   workspaceOpen: false,
+  workspaceTarget: null,
   workspaceWidth: WORKSPACE_DEFAULT_WIDTH,
   workspaceTab: "tasks",
   announcement: "",
@@ -185,6 +188,7 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
       focusSeq: state.focusSeq + 1,
     })),
   setChain: (chainNames) => set({ chainNames: [...chainNames] }),
+  setWorkspaceTarget: (workspaceTarget) => set({ workspaceTarget }),
   setWorkspaceOpen: (workspaceOpen) => set({ workspaceOpen }),
   toggleWorkspace: () => set((state) => ({ workspaceOpen: !state.workspaceOpen })),
   setWorkspaceWidth: (width) =>

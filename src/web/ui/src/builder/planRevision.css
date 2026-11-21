@@ -1,0 +1,50 @@
+.builder .workload-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.builder :is(.plan-revision-form, .revision-receipt) {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+.builder :is(.plan-revision-form, .revision-receipt) h3 {
+  margin: 0;
+}
+.builder .plan-revision-form textarea {
+  width: 100%;
+  resize: vertical;
+  font-weight: 400;
+}
+.builder .plan-revision-form {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--surface));
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+.builder .revision-receipt { border-inline-start: 3px solid var(--accent); }
+.builder .revision-receipt td:last-child { background: var(--tint); }
+.builder .revision-submit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.builder .revision-request,
+.builder .revision-receipt td {
+  white-space: pre-line;
+}
+.builder .revision-receipt table {
+  table-layout: fixed;
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+}
+.builder .revision-receipt :is(th, td) {
+  padding: 7px;
+  text-align: start;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}

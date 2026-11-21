@@ -20,7 +20,9 @@ import { unattachedVerification } from "../model/changes";
 import { openFailure } from "../model/errors";
 import type { DiffView, Finding, FindingSeverity, Task, VerificationRow } from "../model/types";
 import { actions, useStore } from "../store/store";
-import { AgentText, AnswerText } from "./AgentText";
+import { AnswerText, ResultAgentText } from "./AgentText";
+import { ResultLink, VerificationLink } from "./ShowMeResult";
+import type { ShowMeAction } from "../showMe";
 import { ApplyResult, SelectionBar } from "./ApplyPanel";
 import { ChangeList } from "./ChangeList";
 import { HowSure } from "./HowSure";
@@ -60,6 +62,18 @@ const STATUS_LABEL: Readonly<Record<VerificationRow["status"], string>> = {
 };
 const STATUS_COLOR = { verified: "success", failing: "danger", not_run: "informative" } as const;
 
+/** A structured reference lets a reader inspect findings saved before inline buttons existed. */
+function findingTarget(finding: Finding, view: DiffView): ShowMeAction | undefined {
+  const changes = view.changes.filter(change => finding.changeIds.includes(change.id));
+  if (changes.length === 1) {
+    return { handle: "panel", id: "change/" + changes[0]!.id, highlight: { label: "Proposed change" } };
+  }
+  if (finding.entity && view.base.entities.some(entity => entity.name === finding.entity)) {
+    return { handle: "graph", id: "node/" + finding.entity };
+  }
+  if (changes.length > 1) return { handle: "panel", id: "comparison", highlight: { label: "Model comparison" } };
+}
+
 function Findings({ view }: { readonly view: DiffView }): JSX.Element | null {
   const styles = useStyles();
   if (view.findings.length === 0) return null;
@@ -76,7 +90,8 @@ function Findings({ view }: { readonly view: DiffView }): JSX.Element | null {
               </Badge>
               <span className={styles.findingText}>
                 {finding.entity ? <strong>{finding.entity}: </strong> : null}
-                <AgentText text={finding.text} />
+                <ResultAgentText text={finding.text} />
+                <ResultLink text={finding.text} action={findingTarget(finding, view)} />
               </span>
               {finding.changeIds.length > 0 ? (
                 <Button
@@ -124,7 +139,7 @@ function VerificationRows({ view }: { readonly view: DiffView }): JSX.Element | 
               <li key={`${row.entity}/${row.signal}`} className={styles.row} data-status={row.status}>
                 <span className={styles.rowHead}>
                   <Text weight="semibold">
-                    {row.entity} / {row.signal}
+                    <VerificationLink row={row} />
                   </Text>
                   <Badge appearance="tint" size="small" color={STATUS_COLOR[row.status]}>
                     {STATUS_LABEL[row.status]}

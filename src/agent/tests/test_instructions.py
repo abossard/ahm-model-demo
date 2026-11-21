@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from agent import visible_tools
-from contracts import RESOURCE_SCHEMA_PATH, SCHEMA_PATH
+from contracts import RESOURCE_SCHEMA_PATH, submission_schema
 from grounding import EXAMPLE_WORDS, INFERRED, INFERRED_SENTENCE
 from instructions import COMMON, TYPE_INSTRUCTIONS, full_instructions, instructions_for
 from skillset import DESCRIPTIONS, TASK_SKILLS
@@ -33,9 +33,11 @@ def schema_words(node):
             yield from schema_words(value)
 
 
-def result_words(*definitions):
-    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-    return sorted({word for name in definitions for word in schema_words(schema["$defs"][name])} | {"kind"})
+def result_words(kind):
+    # Check the fields the model authors, including the optional historical window.
+    window = {"from": "2026-11-20T00:00:00Z", "to": "2026-11-21T00:00:00Z"}
+    result = submission_schema(kind, window=window)["properties"]["result"]
+    return sorted(set(schema_words(result)))
 
 
 def named(text, word):
@@ -143,16 +145,26 @@ class InstructionsTests(unittest.TestCase):
     def test_every_read_is_the_signed_in_users_and_a_refusal_is_reported_not_worked_around(self):
         for expected in [
             "Azure reads run with the signed-in user's permissions",
-            "Access denied on a resource (403, `AuthorizationFailed`): say so in a finding",
+            "Access denied on a resource (403, `AuthorizationFailed`)",
             "Do not retry or look for another route",
             "go on with what you can read",
-            "A signal you could not query is `not_run` with the reason",
             "Azure cannot be read for this Task",
             "reading the model or entity fails twice",
-            "(`causes`, `changes` and `verification` empty; explain: `state` `Unknown`)",
         ]:
             with self.subTest(expected):
                 self.assertIn(expected, COMMON)
+        for phase in ("analyze", "propose"):
+            with self.subTest(phase=phase):
+                self.assertIn("missing coverage", instructions_for("design", builder={"phase": phase}))
+        for moment in (False, True):
+            with self.subTest(moment=moment):
+                prompt = full_instructions("explain", moment)
+                self.assertIn("use state Unknown, empty causes", prompt)
+                self.assertNotIn("findings", prompt)
+                self.assertNotIn("verification", prompt)
+        for task_type in DIFF_TYPES:
+            with self.subTest(task_type=task_type):
+                self.assertIn("empty changes and verification", full_instructions(task_type))
 
     def test_an_explain_reads_history_only_for_a_bounded_window_and_says_which(self):
         for expected in [
@@ -181,7 +193,8 @@ class InstructionsTests(unittest.TestCase):
             "a log query counts `now()` and `ago()` from `asOf` and must bound `TimeGenerated` above",
             "what `monitor_activitylog_list` lists after `asOf` does not count",
             "`window` is `{\"from\", \"to\"}` of the period read",
-            "`state` its state at `asOf`",
+            "Set the top-level `entity` to the ARM name in `target.entity`",
+            "Set `state` to its state at `asOf`",
             "Write in the past tense, without a clock time",
         ]:
             with self.subTest(expected):
@@ -198,7 +211,7 @@ class InstructionsTests(unittest.TestCase):
         for name in sorted(set(TOOL_NAME.findall(at_moment))):
             with self.subTest(name):
                 self.assertIn(name, visible_tools("explain"))
-        for word in result_words("explain", "cause", "healthState", "confidence", "window"):
+        for word in result_words("explain"):
             with self.subTest(word):
                 self.assertTrue(named(full_instructions("explain", moment=True), word), f"{word} is not in the instructions for a past moment")
 
@@ -208,7 +221,6 @@ class InstructionsTests(unittest.TestCase):
             "one plain sentence of at most 30 words",
             "No signal ids, GUIDs, resource ids, API property names or rollup terms",
             "what it means for the user, then the fix, in plain words",
-            "`confidence`: `high`, `medium` or `low`",
         ]:
             with self.subTest(expected):
                 self.assertIn(expected, COMMON)
@@ -277,9 +289,9 @@ class InstructionsTests(unittest.TestCase):
 
     def test_the_result_shapes_name_every_property_and_enum_value_of_the_schema(self):
         cases = {
-            "explain": result_words("explain", "cause", "healthState", "confidence", "window"),
-            "review": result_words("diff", "change", "verification", "finding", "confidence"),
-            "design": result_words("diff", "change", "verification", "finding", "confidence"),
+            "explain": result_words("explain"),
+            "review": result_words("diff"),
+            "design": result_words("diff"),
         }
         for task_type, words in cases.items():
             for word in words:

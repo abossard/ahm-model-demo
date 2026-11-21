@@ -1,7 +1,7 @@
 import type { JSX } from "react";
 import { Button, Text, makeStyles, tokens } from "@fluentui/react-components";
 import { ChevronLeft20Regular, PanelLeftContract20Regular } from "@fluentui/react-icons";
-import { actions } from "../store/store";
+import { actions, useStore } from "../store/store";
 
 const useStyles = makeStyles({
   root: {
@@ -39,6 +39,7 @@ export function WorkspaceHeader({
   readonly back?: HeaderBack;
 }): JSX.Element {
   const styles = useStyles();
+  const target = useStore((state) => state.workspaceTarget);
   return (
     <div className={styles.root}>
       {back ? (
@@ -56,6 +57,9 @@ export function WorkspaceHeader({
       <Text as="h2" size={back ? 300 : 400} className={styles.title} title={title} data-testid={titleTestId}>
         {title}
       </Text>
+      {target ? (
+        <button className="show-me-expand" type="button" onClick={() => actions.setWorkspaceTarget(null)}>Expand answer</button>
+      ) : null}
       <Button
         appearance="subtle"
         size="small"

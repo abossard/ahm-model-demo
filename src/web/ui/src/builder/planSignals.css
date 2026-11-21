@@ -1,0 +1,43 @@
+.workload-plan .plan-signals {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 0;
+}
+.workload-plan .plan-signals > li {
+  margin: 0;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.plan-signals > li > strong { display: block; }
+.signal-reading { font-variant-numeric: tabular-nums; }
+.signal-reading b { font-size: 1.15rem; }
+.signal-reading time { color: var(--muted); }
+.signal-scale {
+  position: relative;
+  height: 5px;
+  background: var(--line);
+  margin: 12px 5px;
+  border-radius: 2px;
+}
+.signal-range { display: block; height: 100%; }
+.signal-observation, .signal-threshold {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+.signal-observation { width: 9px; height: 9px; border-radius: 50%; }
+.signal-threshold { height: 13px; border-left: 2px dashed var(--ink); }
+.plan-signals .signal-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin-block: 3px;
+}

@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import type { JSX } from "react";
-import { Button, Text, makeStyles, tokens } from "@fluentui/react-components";
+import { Text, makeStyles, tokens } from "@fluentui/react-components";
 import { splitAnswer } from "../model/agentText";
 import { chainEntities } from "../model/explain";
 import { sameModel } from "../model/selection";
@@ -9,20 +9,11 @@ import type { ExplainResult as ExplainResultData, Task } from "../model/types";
 import { actions, useStore } from "../store/store";
 import { askedMoment } from "../model/tasks";
 import { lookedAt, stateHeading } from "../model/wording";
-import { AgentText } from "./AgentText";
+import { ResultAgentText } from "./AgentText";
+import { ResultLink } from "./ShowMeResult";
 import { HealthBadge } from "./HealthBadge";
 import { HowSure } from "./HowSure";
 import { OffScreenTarget } from "./OffScreenTarget";
-
-// On a phone the workspace is a sheet over the graph, so showing an entity means putting the sheet away.
-const PHONE_QUERY = "(max-width: 720px)";
-
-function showOnGraph(entity: string): void {
-  actions.focusEntities({ highlight: entity, names: [entity] });
-  if (typeof window.matchMedia === "function" && window.matchMedia(PHONE_QUERY).matches) {
-    actions.setWorkspaceOpen(false);
-  }
-}
 
 const useStyles = makeStyles({
   // A grid never squeezes its rows; the pane that holds the result scrolls.
@@ -45,7 +36,7 @@ const useStyles = makeStyles({
   },
   line: { flex: 1, width: "2px", backgroundColor: tokens.colorNeutralStroke2, marginTop: "2px" },
   content: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", rowGap: "2px" },
-  entity: { justifyContent: "flex-start", minWidth: 0, paddingInline: 0, fontWeight: tokens.fontWeightSemibold },
+  entity: { minWidth: 0, fontWeight: tokens.fontWeightSemibold },
   facts: { display: "flex", flexWrap: "wrap", columnGap: tokens.spacingHorizontalM, fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground2 },
   // A rollup or threshold can be a whole sentence, so a fact wraps rather than leaving the pane.
   fact: { overflowWrap: "anywhere" },
@@ -112,7 +103,7 @@ export function ExplainResult({
       {/* The answer is the heading above; what follows it in the summary is the evidence for it. */}
       {evidence !== "" ? (
         <Text as="p" className={styles.evidence} data-testid="explain-summary">
-          <AgentText text={evidence} />
+          <ResultAgentText text={evidence} />
         </Text>
       ) : null}
       <OffScreenTarget task={task} testId="explain" />
@@ -136,25 +127,23 @@ export function ExplainResult({
               {index < result.causes.length - 1 ? <span className={styles.line} /> : null}
             </div>
             <div className={styles.content}>
-              <Button
-                appearance="transparent"
-                className={styles.entity}
-                disabled={!onScreen}
-                onClick={() => showOnGraph(cause.entity)}
-                aria-label={`Show ${display.get(cause.entity) ?? cause.entity} on the graph`}
-                data-testid={`explain-step-focus-${index}`}
-              >
-                {display.get(cause.entity) ?? cause.entity}
-              </Button>
+              <span className={styles.entity}>
+                <ResultLink action={{ handle: "graph", id: "node/" + cause.entity }} text={cause.note} testId={`explain-step-focus-${index}`}>
+                  {onScreen ? display.get(cause.entity) ?? cause.entity : cause.entity}
+                </ResultLink>
+              </span>
               <div className={styles.facts}>
                 <HealthBadge state={cause.state} />
-                <Fact label="Signal" value={cause.signal} />
+                {cause.signal && <span className={styles.fact}>Signal: <ResultLink text={cause.note}
+                  action={{ handle: "timeline", id: `signal/${cause.entity}/${cause.signal}` }}>
+                  {cause.signal}
+                </ResultLink></span>}
                 <Fact label="Threshold" value={cause.threshold} />
                 <Fact label="Value" value={cause.value} />
                 <Fact label="Combined by" value={cause.rollup} />
               </div>
               <Text className={styles.note}>
-                <AgentText text={cause.note} />
+                <ResultAgentText text={cause.note} />
               </Text>
             </div>
           </li>

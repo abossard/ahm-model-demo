@@ -4,6 +4,30 @@ export interface AuthAccount {
   /** The user name, usually the email address. */
   readonly username: string;
   readonly tenantId: string;
+  readonly tenantName?: string;
+}
+
+export interface AzureDirectory {
+  readonly tenantId: string;
+  readonly displayName: string;
+  readonly defaultDomain?: string;
+}
+
+export interface DirectoryDiscovery {
+  readonly directories: AzureDirectory[];
+  /** Memberships returned by Azure that still need an explicit access check. */
+  readonly needsCheck?: AzureDirectory[];
+  readonly discoveredCount?: number;
+  readonly consentRequired?: boolean;
+  /** Authorities that can be used to ask Microsoft for the membership list. */
+  readonly discoverySources?: AzureDirectory[];
+  readonly incomplete?: boolean;
+}
+
+export class DirectoryConsentRequiredError extends Error {
+  constructor(readonly discoverySources?: AzureDirectory[]) {
+    super("Microsoft needs your permission to list the Azure directories you can access.");
+  }
 }
 
 export interface TokenRequest {
@@ -13,34 +37,21 @@ export interface TokenRequest {
   readonly refresh?: boolean;
 }
 
-/** Where a sign-in goes. Without a directory it is any work or school directory. */
-export interface SignInRequest {
-  /** The directory to sign in to: its ID or a domain it has verified. A personal account signs in this way. */
-  readonly directory?: string;
-  /** The account to offer first. */
-  readonly loginHint?: string;
-}
-
-/** The user signed in with a personal Microsoft account and landed in the tenant of personal accounts, which has no Azure. */
-export class PersonalAccountError extends Error {
-  constructor(readonly username: string) {
-    super("A personal Microsoft account reaches Azure through a directory.");
-  }
-}
-
 /** The one seam between the app and whoever signs the user in. */
 export interface Auth {
-  /**
-   * Completes a sign-in that is returning or restores one that is cached. It resolves with the signed-in account, or with
-   * null when nobody is signed in: in local mode nobody ever signs in, and otherwise the app offers the user to. It
-   * rejects with a `PersonalAccountError` when the only account is a personal one that landed in no directory.
-   */
+  /** Restores the signed-in identity. In Entra mode, the user then chooses a workspace directory. */
   readonly ready: () => Promise<AuthAccount | null>;
   readonly account: AuthAccount | null;
+  readonly needsDirectory?: boolean;
+  readonly directoryError?: string | null;
+  /** Entra-only actions available between sign-in and workspace entry. */
+  readonly listDirectories?: () => Promise<DirectoryDiscovery>;
+  readonly requestDirectoryDiscovery?: (tenantId?: string) => Promise<void>;
+  readonly selectDirectory?: (directory: AzureDirectory) => Promise<AuthAccount>;
   /** An access token for the API, or null when nobody signs in. A step that needs the user navigates away and never resolves. */
   readonly getToken: (request?: TokenRequest) => Promise<string | null>;
   /** Starts a sign-in: the page navigates away and this never resolves. */
-  readonly signIn: (request?: SignInRequest) => Promise<void>;
+  readonly signIn: () => Promise<void>;
   readonly signOut: () => Promise<void>;
 }
 

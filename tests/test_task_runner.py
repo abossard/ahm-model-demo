@@ -21,6 +21,7 @@ from opentelemetry.trace import SpanKind, StatusCode
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "web" / "app"))
 
 import activity  # noqa: E402
+import builder_design  # noqa: E402
 import config  # noqa: E402
 import dto  # noqa: E402
 import fake_agent  # noqa: E402
@@ -125,6 +126,101 @@ def sent_nonce(env):
 
 
 class SuccessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_revision_uses_saved_checks_and_canonical_user_roles(self):
+        resource = {"id": f"/subscriptions/{SUB}/resourceGroups/{GROUP}/providers/Microsoft.Web/sites/web",
+                    "name": "web", "type": "Microsoft.Web/sites"}
+        row = {"resourceId": resource["id"], "displayName": resource["name"],
+               "purpose": "Processes orders for warehouse staff.", "impact": "Limited"}
+        base = {"phase": "analyze", "resources": [resource]}
+        original = fake_agent.builder_result(base)
+        revision = {**base, "planVersion": 2, "rows": [row], "revision": {"analysisSeq": 1, "prompt": "Prioritize fulfillment."},
+                    "previousPlan": original["plan"], "previousMetrics": [], "observedMetrics": [],
+                    "signalChecks": [{"resourceId": resource["id"], "status": "no_data", "detail": "No readings"}]}
+        result = fake_agent.builder_result(revision)
+        result["rows"] = [{**row, "purpose": "Inferred different role.", "impact": "Standard"}]
+        env = Env(script(result))
+        sid = await env.session()
+        session = await env.store.get_session(OWNER, sid)
+        await env.store.save_session(OWNER, {**session, "conversationId": "conversation-from-older-agent"})
+        with mock.patch.object(env.health, "check_builder_signal", side_effect=AssertionError("unexpected recheck")):
+            task, events = await env.run(sid, {**env.fields("design"), "builder": revision})
+        self.assertEqual(task["status"], "done", task.get("error"))
+        self.assertEqual(task["result"]["rows"], [row])
+        self.assertEqual(task["builder"], revision)
+        conversation, message = env.agent.calls[0]
+        self.assertEqual(conversation, "conv-1")
+        self.assertEqual((await env.store.get_session(OWNER, sid))["conversationId"], conversation)
+        self.assertEqual(json.loads(message.split("\n", 1)[1])["task"]["builder"],
+                         {**revision, "resources": [{**resource, "ref": "R1"}]})
+        self.assertIn("saved signal checks", events[0]["summary"])
+        self.assertTrue(any(d["basis"] == "userInput" for d in task["result"]["plan"]["decisions"]))
+
+    async def test_builder_steps_run_against_an_absent_target_and_restore_the_compiled_design(self):
+        resource = {"id": f"/subscriptions/{SUB}/resourceGroups/other/providers/Microsoft.Web/sites/web",
+                    "name": "web", "type": "Microsoft.Web/sites", "availabilityState": "Available"}
+        analyze = {"phase": "analyze", "resources": [resource]}
+        seen = fake_agent.builder_result(analyze)
+        seen["rows"][0]["resourceId"] = resource["id"].upper()
+        edited = {**seen["rows"][0], "displayName": "Store front", "impact": "Limited", "resourceId": resource["id"]}
+        propose = {**analyze, "phase": "propose", "rows": [edited], "analysisSeq": 1}
+        alternatives = fake_agent.builder_result(propose)
+        for proposal in alternatives["proposals"]:
+            for group in proposal["groups"]:
+                group["resourceIds"] = ["R1"]
+        env = Env(script(seen), script(alternatives))
+        sid = await env.session()
+        target = {**TARGET, "name": "hm-new"}
+        for builder, expected in ((analyze, "builderAnalysis"), (propose, "builderProposals")):
+            with self.subTest(expected):
+                task, _ = await env.run(sid, {**env.fields("design"), "target": target, "builder": builder})
+                self.assertEqual(task["status"], "done", task.get("error"))
+                self.assertEqual(task["result"]["kind"], expected)
+                self.assertNotIn("base", task)
+                if builder == analyze:
+                    self.assertEqual(task["result"]["rows"][0]["resourceId"], resource["id"])
+        for entry, expected_count in zip(alternatives["proposals"], (2, 3)):
+            with self.subTest(entry["id"]):
+                view = builder_design.preview(task, entry["id"])
+                self.assertEqual(len(view["entities"]), expected_count)
+                self.assertEqual(len(view["relationships"]), expected_count - 1)
+                properties = [c["after"] for c in view["diff"]["changes"] if c["kind"] == "entity"]
+                self.assertEqual(len({tuple(p["canvasPosition"].values()) for p in properties}), expected_count)
+                self.assertEqual(properties[-1]["signalGroups"]["azureResource"]["resourceHealth"]["enabled"], "Enabled")
+                self.assertEqual(view["diff"]["verification"][0]["value"], "Available")
+                self.assertIn("Store front", view["plan"])
+                self.assertIn("Limited", view["modelspec"])
+
+    async def test_builder_results_check_the_accepted_mapping_against_the_turn_and_keep_the_original_references(self):
+        resource = {"id": f"/subscriptions/{SUB}/resourceGroups/{GROUP}/providers/Microsoft.Web/sites/api",
+                    "name": "api", "type": "Microsoft.Web/sites"}
+        builder = {"phase": "analyze", "resources": [resource]}
+        result = fake_agent.builder_result(builder)
+        result["summary"] += " [[show:1]]"
+        handles = [{"name": "builder", "description": "Inspect a resource.", "idDescription": "resource/Rn"}]
+        action = {"handle": "builder", "id": "resource/R1"}
+        for label, answer, mapping, expected in (
+            ("accepted", result, {"1": action}, "done"),
+            ("no registration", result, {}, "failed"),
+            ("foreign handle", result, {"1": {**action, "handle": "graph"}}, "failed"),
+            ("marker in an editable field", {**result, "plan": {**result["plan"], "objective": "Serve orders. [[show:1]]"}},
+                                           {"1": action}, "failed"),
+        ):
+            with self.subTest(label):
+                status = json.dumps({"status": "accepted", "showMe": mapping})
+                env = Env(script(answer, status))
+                sid = await env.session()
+                task, _ = await env.run(sid, {**env.fields("design"), "builder": builder, "showMeHandles": handles})
+                self.assertEqual(task["status"], expected, task.get("error"))
+                if expected == "done":
+                    self.assertEqual(task["showMeHandles"], handles)
+                    self.assertEqual(task["result"]["showMe"], mapping)
+                    self.assertEqual(task["result"]["summary"], result["summary"])
+                    envelope = json.loads(env.agent.calls[0][1].split("\n", 1)[1])["task"]
+                    self.assertEqual(envelope["showMeHandles"], handles)
+                    self.assertEqual(envelope["builder"]["resources"], [{**resource, "ref": "R1"}])
+                else:
+                    self.assertEqual(task["error"]["code"], "invalid_result")
+
     async def test_a_review_task_snapshots_the_base_streams_and_finishes_done(self):
         env = Env(script(REVIEW))
         sid = await env.session()
@@ -225,9 +321,11 @@ class SuccessTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual("2026-11-11T23:40:00Z" in headline, moment is not None)
                 self.assertIn("submit_result", headline)
 
-    async def test_later_tasks_reuse_the_sessions_conversation(self):
+    async def test_later_tasks_reuse_the_sessions_conversation_after_upgrading_its_submission_contract(self):
         env = Env(script(REVIEW), script(EXPLAIN))
         sid = await env.session()
+        previous = await env.store.get_session(OWNER, sid)
+        await env.store.save_session(OWNER, {**previous, "conversationId": "from-free-form-agent"})
 
         await env.run(sid, env.fields())
         second, _ = await env.run(sid, env.fields("explain"))
@@ -364,7 +462,8 @@ class FailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_conversation_stored_in_the_session_that_has_expired_is_replaced(self):
         env = Env([foundry_agent.ConversationNotFound("gone")], script(REVIEW))
         sid = await env.session()
-        await env.store.save_session(OWNER, {**await env.store.get_session(OWNER, sid), "conversationId": "expired"})
+        await env.store.save_session(OWNER, {**await env.store.get_session(OWNER, sid), "conversationId": "expired",
+                                             "submissionContract": task_runner.SUBMISSION_CONTRACT})
 
         task, _ = await env.run(sid, env.fields())
 

@@ -298,7 +298,8 @@ test.describe("the assistant at a past moment", () => {
     await expect(page.getByTestId("task-title")).toHaveText("Check hm-demo");
 
     expect(stub.posts).toHaveLength(1);
-    expect(stub.posts[0]?.body).toEqual({ type: "review", target: { name: "hm-demo", resourceGroup: "rg-demo", subscriptionId: SUBSCRIPTION_A }, instruction: "" });
+    expect(stub.posts[0]?.body).toEqual({ type: "review", target: { name: "hm-demo", resourceGroup: "rg-demo", subscriptionId: SUBSCRIPTION_A },
+      instruction: "", showMeHandles: expect.any(Array) });
     // The page still shows the moment: the check did not move it.
     await expect(bar(page)).toBeVisible();
   });

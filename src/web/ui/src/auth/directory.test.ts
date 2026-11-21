@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DirectoryError, LOOKUP_FAILED, NAME_A_DIRECTORY, authorityOf, directoryFromChallenge, parseDirectoryInput, resolveDirectory } from "./directory";
+import { AUTHORITY_HOST, CONSUMERS_TENANT_ID, DirectoryError, LOOKUP_FAILED, NAME_A_DIRECTORY, authorityOf, canonicalDirectoryId, directoryFromChallenge, parseDirectoryInput, readAzureDirectories, resolveDirectory } from "./directory";
 
 const SUBSCRIPTION = "11111111-1111-4111-8111-111111111111";
 const DIRECTORY = "7f1c0b1e-0000-4000-8000-00000000aaaa";
@@ -52,6 +52,44 @@ describe("authorityOf", () => {
     { directory: "contoso.com", expected: "https://login.microsoftonline.com/contoso.com" },
   ])("is $expected for $directory", ({ directory, expected }) => {
     expect(authorityOf(directory)).toBe(expected);
+  });
+});
+
+describe("canonicalDirectoryId", () => {
+  it("resolves a verified domain through Microsoft's OpenID issuer", async () => {
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ issuer: `${AUTHORITY_HOST}/${DIRECTORY}/v2.0` }));
+    await expect(canonicalDirectoryId("Contoso.com", fetcher)).resolves.toBe(DIRECTORY);
+    expect(fetcher).toHaveBeenCalledWith(`${AUTHORITY_HOST}/contoso.com/v2.0/.well-known/openid-configuration`, { credentials: "omit", redirect: "error" });
+  });
+
+  it.each([
+    "https://example.test/" + DIRECTORY + "/v2.0", AUTHORITY_HOST + "/common/v2.0",
+    AUTHORITY_HOST + "/" + DIRECTORY + "/v2.0?extra", AUTHORITY_HOST + "/" + CONSUMERS_TENANT_ID + "/v2.0",
+  ])("refuses an issuer that does not identify an Azure directory: %s", async (issuer) => {
+    await expect(canonicalDirectoryId("contoso.com", vi.fn().mockResolvedValue(Response.json({ issuer })))).rejects.toBeInstanceOf(DirectoryError);
+  });
+});
+
+describe("readAzureDirectories", () => {
+  const first = "https://management.azure.com/tenants?api-version=2022-12-01";
+  it("collects all pages, keeping each Azure directory once and the actual display names", async () => {
+    const nextLink = "https://management.azure.com/tenants?next=2";
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(Response.json({ value: [{ tenantId: DIRECTORY }, { tenantId: CONSUMERS_TENANT_ID }], nextLink }))
+      .mockResolvedValueOnce(Response.json({ value: [
+        { tenantId: DIRECTORY.toUpperCase(), displayName: "Contoso" }, { tenantId: SUBSCRIPTION, defaultDomain: "woodgrove.com" },
+      ] }));
+    await expect(readAzureDirectories("arm", fetcher)).resolves.toEqual([
+      { tenantId: DIRECTORY, displayName: "Contoso" }, { tenantId: SUBSCRIPTION, defaultDomain: "woodgrove.com", displayName: "woodgrove.com" },
+    ]);
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([first, nextLink]);
+    for (const [, init] of fetcher.mock.calls) expect(init).toMatchObject({ headers: { Authorization: "Bearer arm" }, redirect: "error", credentials: "omit" });
+  });
+
+  it.each([first, "http://management.azure.com/tenants", "https://example.test/tenants", "https://management.azure.com/subscriptions"])("rejects an invalid continuation before sending the bearer to %s", async (nextLink) => {
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ value: [], nextLink }));
+    await expect(readAzureDirectories("arm", fetcher)).rejects.toThrow("invalid next page");
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });
 

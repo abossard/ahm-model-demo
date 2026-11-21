@@ -1,3 +1,4 @@
+import { workspaceLink } from "../auth/workspaceLink";
 import { useEffect, useState } from "react";
 import type { JSX } from "react";
 import {
@@ -91,6 +92,7 @@ function NoModels(): JSX.Element {
           <MessageBarTitle>No health models in your directory</MessageBarTitle>
           The app lists the health models your Azure account can read in the directory you signed in to. Ask for a reader role on a
           subscription or resource group that holds one, or sign out and sign in to another directory.
+          {" "}<a href={workspaceLink("/builder")}>Create new health model</a>
         </MessageBarBody>
       </MessageBar>
     </div>
@@ -145,7 +147,7 @@ export function App(): JSX.Element {
   useEffect(() => {
     if (selected) {
       const timeline = timelineParams(timelineOpen, timelineView, timelineFollow || (moment !== null && timelineFollowPaused), timelineFullscreen, moment);
-      window.history.replaceState(null, "", searchFromLocation(selected, { session: sessionId, task: taskSeq }, view, timeline));
+      window.history.replaceState(null, "", workspaceLink("/" + searchFromLocation(selected, { session: sessionId, task: taskSeq }, view, timeline)));
     }
   }, [selected, sessionId, taskSeq, view, timelineOpen, timelineView, timelineFollow, timelineFollowPaused, timelineFullscreen, moment]);
 

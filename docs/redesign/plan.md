@@ -49,12 +49,14 @@ All JSON is camelCase. A model reference is `{subscriptionId, resourceGroup, nam
 Task = {
   id, sessionId, seq,
   type: "review" | "explain" | "design",
-  target: ModelRef & { entity?: string },          // explain needs entity; design targets hm-<env>-design
+  target: ModelRef & { entity?: string, location?: string }, // Explain names the entity. A builder names a new model and its region.
   workload?: { resourceGroup, repositoryUrl? },     // design only; resourceGroup is this deployment's
+  builder?: { phase: "analyze"|"propose", resources: InventoryResource[], analysisSeq?: number, rows?: BuilderRow[] },
   instruction: string,                              // optional free text, may be ""
   asOf?: string,                                    // explain only: the past moment it is about, ISO, UTC, to the second
+  showMeHandles?: [{name, description, idDescription}], // the browser's destinations when the Task started
   status: "running" | "done" | "failed",
-  base?: { modelId, fingerprint, capturedAt },      // review and design: set by the web app at start
+  base?: { modelId, fingerprint, capturedAt },      // captured for Review and legacy Design against an existing model
   result?: TaskResult, error?: { code, message },
   createdAt, finishedAt?
 }
@@ -72,11 +74,13 @@ Task = {
 ```text
 TaskResult =
   | { kind: "explain", entity, state, summary,
+      showMe?: Record<string, ShowMeAction>,
       confidence?: "high"|"medium"|"low",
       window?: { from, to },                          // ISO. Present exactly when the run read history
       causes: [{ entity, signal: string|null, state, threshold: string|null, value: string|number|null,
                  rollup: string|null, note }] }      // ordered from the asked entity down to the root cause
   | { kind: "diff", summary,
+      showMe?: Record<string, ShowMeAction>,
       confidence?: "high"|"medium"|"low",
       changes: [{ id, op: "add"|"change"|"remove",
                   kind: "entity"|"signalDefinition"|"relationship",
@@ -86,6 +90,10 @@ TaskResult =
       verification: [{ entity, signal, status: "verified"|"failing"|"not_run",
                        query: string|null, value: string|number|null, error: string|null }],
       findings: [{ severity: "high"|"medium"|"low", entity: string|null, text, changeIds: [string] }] }
+  | { kind: "builderAnalysis", summary, showMe?: Record<string, ShowMeAction>, rows: BuilderRow[], plan: { objective, flows, gaps, decisions?: [{ choice, reason, basis: "inventory"|"measurement"|"assumption"|"userInput", resourceIds }] }, metrics: BuilderMetric[], omittedMetrics?: [{ resourceId, reason }] }
+  | { kind: "builderProposals", showMe?: Record<string, ShowMeAction>, proposals: [{ id, title, summary, tradeoff, structure: "planned"|"direct"|"grouped",
+        groups: [{ name, purpose, resourceIds: string[] }] }],
+      metrics?: [{ resourceId, metricName, metricNamespace, aggregation, operator, threshold, sample }] }
 ```
 
 - Changes are at ARM resource granularity. An entity's signals travel inside the entity's `properties`.
@@ -97,10 +105,50 @@ TaskResult =
   Task starts and derives `before`, the **Proposed model** and per-field details itself.
 - The JSON Schema lives in `src/agent/src/contracts/task-result.schema.json`. `src/web/app/contracts/` holds a
   byte-identical copy (a test compares them). Both sides validate.
-- `submit_result` validates and returns the errors to the model, so it can correct and resubmit. The web app takes
-  the last accepted submission from the response stream.
+- The hosted agent exposes the `submit_result` schema for the active Task. Explain uses `explain`, review and ordinary design use `diff`, and the builder uses `builderAnalysis` or `builderProposals` according to its phase. The agent validates each submission and returns field-level errors for correction. The web app takes the last accepted submission from the response stream.
+
+#### Show me buttons
+
+At the start of an Explain, Review or Design Task the browser describes its available destinations in `showMeHandles`. The builder MCP Apps View supplies the same optional field to `builder_analyze`, `builder_revise` and `builder_propose`. The web app validates the list before saving the Task and forwards that snapshot in the agent envelope. Each handle has a unique lowercase kebab-case `name` of up to 64 characters, a `description` and an `idDescription`, each up to 256 characters. An empty `idDescription` describes a parameterless handle. Otherwise it tells the agent how to obtain the id. A Task can advertise up to 16 handles. An omitted or empty list disables the tool for that Task.
+
+| Handle | IDs in this View | Where the agent finds them |
+|---|---|---|
+| `graph` | `node/<entity>`, `connection/<relationship>`, `view/<layout>` | Entity names in the model, relationship names in the envelope or model, and layouts in the handle description |
+| `timeline` | `overview`, `entity/<entity>`, `signal/<entity>/<signal>` | Entity and signal names from the inspected model |
+| `panel` | `entity/<entity>`, `change/<changeId>`, `comparison` | Model entities and the current answer’s `changes[].id`. Review and Design expose the diff destinations |
+| `builder` | `resource/Rn`, `signal/Rn`, `design/<proposalId>` | The Task’s ordered `builder.resources[].ref` and the current proposal’s `proposals[].id`. Signal destinations use the resource’s recorded evidence |
+
+The hosted `show_me(handle, id?, highlight?)` tool prepares a button and returns a marker such as `[[show:1]]`. The agent places the marker beside the claim the reader can inspect. Workspace answers support `summary`, `causes[].note`, `findings[].text` and `changes[].reason`. Builder answers support the analysis `summary`, `plan.decisions[].reason` and each proposal’s `summary` and `tradeoff`. Identical calls within a Task return the same marker. Each Task can prepare up to 16 distinct actions. The accepted `submit_result` tool output supplies the map of referenced markers to actions. A note reading `Open the database [[show:1]] to inspect its signals.` could have this saved map.
+
+```json
+{"showMe":{"1":{"handle":"panel","id":"entity/orders-db","highlight":{"color":"violet","label":"Database latency"}}}}
+```
+
+`ShowMeAction` contains a handle name, an optional id of up to 256 characters and an optional highlight object with a color (`blue`, `amber` or `violet`) and/or a plain-text label of up to 120 characters. The server checks the mapping against the Task's catalog and marker placements. A click runs the browser's registered handler while the answer stays on screen. The browser checks current availability and resolves the id in the context of that answer. The map reopens with the Task. Earlier workspace answers keep their saved handle names. Plain results remain readable.
+
+The builder retains its ordered inventory and signal evidence with each Task so its references resolve after a Session reopens. Each new revision or proposal receives a plain copy of the confirmed plan. Compiling a proposal removes its inline markers before deriving model properties, proposed changes, plan.md and modelspec.md. An answer can therefore point into a preview without changing what that preview deploys.
+
+#### Health model builder
+
+The host at `/builder` authenticates requests to the streamable HTTP MCP endpoint at `/api/builder/mcp`. Its entry tool, `builder_open`, points to `ui://health-models/builder-v1.html`. The host reads that MCP Apps resource and opens the same document in a sandboxed frame. Resource selection, analysis, proposal review, document downloads and creation take place in this View. Azure access tokens stay with the host and web app.
+
+The two builder phases are Design Tasks in the same owner-scoped Session. The web app resolves up to 32 inventory resources and probes Azure Monitor under the caller’s identity. Each row uses the exact ID and name from Resource Graph. Reviewers control inclusion, workload role and failure impact. Proposal generation receives the confirmed rows and the source analysis sequence. The hosted agent may also read metric definitions and values from the selected resources.
+
+Each builder Task must load the vendored `healthmodel-plan` and `healthmodel-build` skills. Each planned flow has an observable objective, functional components with resource bindings and a failure scenario. Workload uses the model workspace's graph renderer to show these dependencies alongside the measured bindings, predicted state and coverage gaps. New analyses record design decisions with a short explanation, a source category and the IDs of the supporting resources. Sessions that predate decision notes can still be opened and revised.
+
+The agent receives a short reference per resource in the current Task, such as `R1`. Its submission uses these references in `resourceId` and `resourceIds` fields. Both validation boundaries resolve them against the same ordered inventory. The saved plan, Azure reads and model bindings use the full ARM IDs.
+
+The app-only `builder_revise(sessionId, analysisSeq, rows, prompt)` starts a planning Task in the same Session. The app opens a fresh Foundry conversation for that revision and records its ID on the Session. It sends the prior plan, checked signals, retained resources, corrected roles and requested adjustment as the first turn. Review history stays in the Session across agent deployments. The View shows the resulting changes before a proposal or creation can be approved. The Markdown downloads include the decisions and source resources. The plan represents the selected graph as an entity/dependency table for readers opening it outside the app.
+
+Each of two or three proposals includes every confirmed resource exactly once. The first design of a new planned Task reproduces the confirmed flow/component/resource tree. Direct proposals connect resources to the root. Grouped proposals add named intermediate entities. The alternatives must differ in the shape of the resulting graph. The web app derives Azure names, dependency relationships, entity positions and the two Markdown files in `builder_design.preview`. These are deterministic projections of a persisted Task. Loading a Session, changing the active preview, and reading plan.md or modelspec.md use the stored result.
+
+An availability reading from Resource Graph enables the Azure Resource Health signal. A metric requires a numeric five-minute observation from the web app’s signed-in Azure Monitor probe or the agent’s scoped Azure MCP query. The first phase chooses the binding, operator and threshold. The review displays the prediction for the observed value. Excluding a resource removes its bindings from every alternative. Thresholds are shown as assumptions. The preview identifies each signal’s verification result and any coverage gaps. The web app creates the approved, stored model under the signed-in identity and uses the preview’s entity positions in Azure Designer.
 
 ### Activity event
+
+The builder reads Activity for its analysis, latest failed revision and proposals from their owner-scoped Task event logs. Tool calls and their results share a `callId`. Results retain their success flag, byte count and available evidence, such as returned skill sections, metric names, a numeric reading or validator problems. The web app saves bounded excerpts of these fields. Raw time series, shell output and log rows stay out of the result event. Foundry’s terminal event carries its reported input, output and total tokens and any cache or reasoning breakdown. The builder totals reported counters once per response ID, including across retries. Earlier events can still show a tool outcome and byte count when richer details were unavailable.
+
+The builder’s app-only `builder_grant_monitoring` action uses the caller’s delegated ARM credential. Model creation records the resource scopes of the approved signal bindings. A grant verifies the model identity against the receipt, assigns Monitoring Reader on each recorded scope and saves the outcome. A retry processes only unfinished scopes. Earlier receipts can recover their scopes when the compiled Azure writes match the stored digest.
 
 ```text
 ActivityEvent = { seq, ts, kind: "status"|"text"|"tool_call"|"tool_result"|"result"|"error", summary, payload }
@@ -119,6 +167,7 @@ A pure function in the web app. Apply refuses when the live fingerprint differs 
 
 | Method | Path | Result |
 |--------|------|--------|
+| GET | `/api/workspace/access` | `{tenantId}` after a delegated Azure Resource Graph read succeeds in the token's directory |
 | GET | `/api/health-models` | `{models: [ModelRef + id, location, provisioningState], default: ModelRef selector or null}` |
 | GET | `/api/health-model?model&resourceGroup&subscription` | graph DTO (entities, relationships, report options) |
 | GET | `/api/entities/{name}` + selector | entity, transitions, report signal history |
@@ -128,7 +177,7 @@ A pure function in the web app. Apply refuses when the live fingerprint differs 
 | GET | `/api/sessions` | `{sessions: [{id, title, createdAt, taskCount, lastTaskAt}]}` |
 | POST | `/api/sessions` | 201 Session. Body `{title?}` |
 | GET | `/api/sessions/{sid}` | `{session, tasks: [Task without result]}` |
-| POST | `/api/sessions/{sid}/tasks` | 202 Task. Body `{type, target, workload?, instruction, asOf?}`. 409 `task_running`, 400 `invalid_as_of` |
+| POST | `/api/sessions/{sid}/tasks` | 202 Task. Body `{type, target, workload?, instruction, asOf?, showMeHandles?}`. 409 `task_running`, 400 `invalid_as_of` or `invalid_show_me_handles` |
 | GET | `/api/sessions/{sid}/tasks/{tid}` | Task with result |
 | GET | `/api/sessions/{sid}/tasks/{tid}/events` | SSE: `event: activity` with `id: <seq>`, then `event: done` |
 | GET | `/api/sessions/{sid}/tasks/{tid}/diff` | `{base, proposed, changes, verification, findings, summary, target, appliable, applies}` for a done diff Task |
@@ -140,6 +189,13 @@ A pure function in the web app. Apply refuses when the live fingerprint differs 
 - Errors use the existing envelope `{error: {code, message, retryable, operationId}}`. Any `/api` route also answers 401
   `unauthenticated` (retried once with a fresh token), 403 `personal_account` or `tenant_not_allowed` for a signed-in
   user the app does not serve, and 403 `consent_required` when the user's directory has not approved the app.
+- After a tenant is selected, the browser sends its ID in `X-Workspace-Tenant` on authenticated API and builder MCP
+  requests. A mismatch with the bearer token's verified `tid` returns 403 `workspace_tenant_mismatch` before the
+  request reaches a workspace handler. Clients that omit the header use the token's tenant.
+- Before offering a directory, the picker calls `/api/workspace/access` with an API token and workspace header for
+  that directory. The web app performs a fresh, tenant-scoped Resource Graph query that returns at most one constant.
+  An empty result qualifies the tenant. Azure RBAC denial returns 403 `workspace_access_denied`. Consent and
+  conditional access use their existing error codes.
 
 ### Timeline history
 
@@ -338,7 +394,7 @@ delta = { observedAt?, model?: {changed fields}, reportOptions?,
 ### Session store (blob container `sessions`)
 
 ```text
-<sid>/session.json                 { id, title, createdAt, conversationId }
+<sid>/session.json                 { id, title, createdAt, conversationId, submissionContract? }
 <sid>/tasks/<seq>/task.json        Task (with base and result)
 <sid>/tasks/<seq>/base.json        raw Base model (entities, signalDefinitions, relationships)
 <sid>/tasks/<seq>/events.jsonl     append blob, one ActivityEvent per line
@@ -352,9 +408,9 @@ No delete path exists, so Sessions are never deleted by construction.
 ### Agent input
 
 The web app sends one user message per Task into the Session's Foundry conversation: a short instruction line plus
-the Task envelope as JSON (`{task: {id, type, target, workload, instruction, asOf?}, relationships: [{name, parent, child}]}`).
+the Task envelope as JSON (`{task: {id, type, target, workload, instruction, asOf?, showMeHandles?}, relationships: [{name, parent, child}]}`).
 `relationships` lists the Base model's relationships for review and design, because `healthmodels inspect` walks
-them but does not return them. Earlier Tasks stay visible to the agent through the conversation history.
+them but does not return them. Earlier Tasks stay visible to the agent through the conversation history. A Session created with the old free-form submission tool starts a fresh Foundry conversation for its next Task so retries use the current hosted agent. The app restores earlier Tasks and results from Blob Storage.
 Only an Explain about a past moment carries `asOf`, and its instruction line names the moment too
 ("Explain why this entity had its health state at 2026-11-11T23:40:00Z ...").
 
@@ -390,22 +446,24 @@ flowchart LR
   - `mcp`: the Azure MCP server. Scope `Mcp.Tools.ReadWrite`, pre-authorizes `web` and lists it as a known client.
     Delegated: ARM `user_impersonation`, Log Analytics `Data.Read`.
   - OBO has no interactive consent. A deploy hook grants admin consent for both in the directory the app belongs to.
-    In any other directory the first sign-in asks `<web client id>/.default` (the bare client id: Entra refuses an app that asks for itself by its URI): the consent covers `web`, and through the
-    known client the MCP server's service principal and its permissions, so one consent is enough. Users of another
-    directory cannot give it for this app (no verified publisher, and ARM access goes beyond basic sign-in), so an
-    administrator of that directory consents once: [infra/README.md](../../infra/README.md#another-directory).
-- Browser: a sign-in page offers "Sign in with Microsoft" (authority `organizations`, any work or school directory,
-  which signs a user in to their own organisation), "Sign in to this app's directory" (the authority of the directory
-  the app is registered in, for its members and guests, taken from `homeDirectory` in `GET /api/config`)
-  and "Guest, personal account or a specific directory". The last takes a subscription ID, a directory domain or a
-  directory ID and signs in at that directory's authority. A subscription ID is resolved by an anonymous `GET
-  https://management.azure.com/subscriptions/<id>?api-version=2022-12-01`: the 401 names the directory in
-  `WWW-Authenticate: Bearer authorization_uri="https://login.windows.net/<tenant id>"`, and a GUID Azure does not know
-  as a subscription is taken as a directory ID. A personal account that signs in at `organizations` or `common` lands
-  in the personal-account tenant, which has no Azure: the page says so and asks for the directory, with the account
-  offered first. After sign-in MSAL.js sends `Authorization: Bearer` on every `/api/*` call, renews it silently at the
-  account's own directory, and reads the activity stream with `fetch` (an `EventSource` cannot send the header).
-  `GET /api/config` (no token) returns the client id, the scope and `homeDirectory`, the directory the app is registered in.
+    If workspace access requires interactive consent, the browser requests `<web client id>/.default` at the
+    selected directory. Its administrator may need to approve delegated permissions for the web app and the MCP
+    server. [Directory consent](../../infra/README.md#another-directory).
+- The browser offers **Sign in with Microsoft**. MSAL uses OpenID Connect at `common` for a fresh visit or at the directory named by a saved link. The chooser
+  asks Azure Resource Manager for memberships using a delegated ARM token. If the sign-in directory cannot list
+  them, it tries known guest directories, including the deployment directory, silently under the same home account.
+  If a guest token needs interaction, one top-level `prompt=none` request lets Microsoft use its existing
+  sign-in cookie. The app checks the returned account and issuer against the pending discovery request,
+  uses the ARM token for the membership list, and returns to the chooser. If Microsoft needs user interaction,
+  the chooser lets the user pick a known authority for lookup. Workspace selection is a separate action.
+  It checks each candidate using a tenant-specific web API token and delegated Azure read. Verified workspaces are
+  shown first. Other memberships returned by ARM can be selected by name for an explicit check or sign-in. The
+  chooser excludes explicit denials. When inventory is unavailable everywhere, it offers only verified known
+  workspaces and manual entry by domain, directory ID, or subscription ID.
+- A successful API token request for the chosen directory locks the workspace to the MSAL home account and the
+  issuing directory. MSAL renewals and Conditional Access challenges use that directory. Sign-out clears the choice.
+  A saved model or builder URL carries a directory ID. A mismatch displays the directory required to open the link
+  before the model, Session or builder loads.
 - Web app: every other `/api/*` route needs a valid token: the issuer `https://login.microsoftonline.com/<tid>/v2.0`
   of the token's own `tid`, audience, `scp`, signature (one common key set). A token of the personal-account tenant
   answers 403 `personal_account`, and a directory outside `ENTRA_ALLOWED_TENANTS` (empty means any; the app's own
@@ -458,7 +516,7 @@ flowchart LR
 - Azure calls stay in the Task: the subscription, resource groups, health model and resource ids of a call must be
   the Task's. A call that names others is answered `Error: refused.`
 - History is bounded: only an Explain reads it, only for the asked entity, from now minus 24 hours, or the period
-  the instruction names (30 days at most). The result's `window` says what was read.
+  the instruction names (30 days at most). After a successful history inspection, the next `submit_result` schema requires a `window` with the recorded bounds. For a current-state Causes walk, the schema and the result omit `window`.
 - An Explain with `asOf` is about that moment, end to end. The agent sets the arguments itself (`history.py`), whatever
   the model passes, so no read is made for now by mistake:
 

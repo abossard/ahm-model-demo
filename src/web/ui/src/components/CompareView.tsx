@@ -67,7 +67,7 @@ export function CompareView({ view, definition, ...shared }: CompareViewProps): 
   const View = definition.Component;
 
   return (
-    <div className={styles.root} data-testid="compare-view" data-mode={definition.compareMode}>
+    <div className={styles.root} data-testid="compare-view" data-show-me-comparison="" data-mode={definition.compareMode}>
       <div className={styles.bar}>
         <Text weight="semibold" data-testid="compare-title">
           Comparing the model now with the model after the changes

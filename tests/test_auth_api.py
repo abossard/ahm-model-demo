@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import importlib
 import io
 import json
@@ -15,7 +16,7 @@ from urllib.error import URLError
 
 import jwt
 from azure.core.credentials import AccessToken
-from azure.core.exceptions import ClientAuthenticationError, ServiceRequestError
+from azure.core.exceptions import ClientAuthenticationError, HttpResponseError, ServiceRequestError
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
@@ -44,7 +45,8 @@ APP_MODULES = (
 )
 PRIVATE = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 OTHER_PRIVATE = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-PUBLIC_SURFACE = {("GET", "/"), ("GET", "/api/config"), ("POST", "/api/agent/token"), ("GET", "/{full_path}")}
+PUBLIC_SURFACE = {("GET", "/"), ("GET", "/api/config"), ("POST", "/api/agent/token"),
+                  ("GET", "/builder/view/{digest}"), ("GET", "/{full_path}")}
 DOCUMENTATION_PATHS = ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect")
 
 
@@ -234,6 +236,40 @@ class EntraCase(unittest.TestCase):
 
 
 class SignInTests(EntraCase):
+    def test_builder_session_is_private_and_azure_creation_is_an_app_action(self):
+        headers = {"Accept": "application/json, text/event-stream"}
+        with TestClient(self.module.app) as client:
+            sid = self.new_session(client)
+            for owner, expected in [(ADA, False), (BOB, True)]:
+                with self.subTest(owner=owner):
+                    result = self.call(client, "POST", "/api/builder/mcp", owner, headers=headers, json={
+                        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": "builder_open", "arguments": {"sessionId": sid}},
+                    }).json()["result"]
+                    self.assertEqual(result["isError"], expected)
+                    if expected:
+                        self.assertNotIn("sessionId", result["structuredContent"])
+            catalog = self.call(client, "POST", "/api/builder/mcp", headers=headers, json={
+                "jsonrpc": "2.0", "id": 2, "method": "tools/list",
+            }).json()["result"]["tools"]
+            visibility = {t["name"]: t["_meta"]["ui"]["visibility"] for t in catalog}
+            self.assertEqual([name for name, visible in visibility.items() if "model" in visible], ["builder_open"])
+            self.assertEqual(visibility["builder_create"], ["app"])
+
+    def test_builder_frame_serves_only_the_expected_document_and_rejects_foreign_origins(self):
+        html = b"<main>Health model builder</main>"
+        path = Path(self.dist.name) / "builder.html"
+        path.write_bytes(html)
+        with TestClient(self.module.app) as client:
+            good = client.get("/builder/view/" + hashlib.sha256(html).hexdigest())
+            self.assertEqual(good.content, html)
+            self.assertIn("connect-src 'none'", good.headers["Content-Security-Policy"])
+            self.assertEqual(client.get("/builder/view/old").status_code, 404)
+            for origin in ["https://other.example", "https://[bad"]:
+                with self.subTest(origin=origin):
+                    response = client.post("/api/builder/mcp", headers={"Origin": origin})
+                    self.assertEqual(response.status_code, 403)
+
     def test_the_config_is_public_and_tells_the_ui_how_to_sign_in(self):
         with TestClient(self.module.app) as client:
             plain = client.get("/api/config")
@@ -254,9 +290,11 @@ class SignInTests(EntraCase):
             for path, methods in self.module.app.openapi()["paths"].items()
             for method in methods
         ]
-        protected = sorted(set(operations) - PUBLIC_SURFACE)
+        # The MCP SDK provides an ASGI endpoint outside FastAPI's OpenAPI inventory.
+        protected = sorted((set(operations) - PUBLIC_SURFACE) | {("POST", "/api/builder/mcp")})
 
-        self.assertEqual(top, {"/", "/api/config", "/api/agent/token", "/assets", "/{full_path:path}"})
+        self.assertEqual(top, {"/", "/api/config", "/api/agent/token", "/assets", "/{full_path:path}",
+                               "/builder/view/{digest}", "/api/builder/mcp"})
         self.assertEqual([d.dependency for d in self.module.api.dependencies], [self.module.authenticated])
         self.assertTrue(PUBLIC_SURFACE <= set(operations))
         self.assertGreaterEqual(len(protected), 12)
@@ -593,6 +631,54 @@ class IsolationTests(EntraCase):
 
 
 class DirectoryTests(EntraCase):
+    def test_workspace_access_checks_the_issuing_tenant_with_no_catalog_fallback(self):
+        denied = HttpResponseError("private Azure details")
+        denied.status_code = 403
+        cases = [
+            (TENANT, mint(), None, 200, None),
+            (OTHER_TENANT, other_directory(), None, 200, None),
+            (TENANT, mint(), denied, 403, "workspace_access_denied"),
+            (OTHER_TENANT, other_directory(), denied, 403, "workspace_access_denied"),
+            (TENANT, mint(), ServiceRequestError("private Azure details"), 503, "health_model_unavailable"),
+        ]
+        with TestClient(self.module.app) as client, mock.patch.object(self.health, "as_user", wraps=self.health.as_user) as as_user:
+            for tenant, token, error, status, code in cases:
+                with self.subTest(tenant=tenant, status=status), mock.patch.object(self.health, "check_workspace_access", side_effect=error) as probe:
+                    response = client.get("/api/workspace/access", headers={**bearer(token), "X-Workspace-Tenant": tenant})
+                    probe.assert_called_once_with()
+                    self.assertEqual(as_user.call_args.args[0].tenant_id, tenant)
+                    self.assertEqual(response.headers["cache-control"], "no-store")
+                    if code:
+                        self.assert_error(response, status, code)
+                        self.assertNotIn("private Azure details", response.text)
+                    else:
+                        self.assertEqual((response.status_code, response.json()), (200, {"tenantId": tenant}))
+
+    def test_workspace_tenant_must_match_the_verified_token_before_reading_models_or_running_builder_tools(self):
+        routes = [
+            ("GET", "/api/workspace/access", None),
+            ("GET", "/api/health-models", None),
+            ("POST", "/api/builder/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                         "params": {"name": "builder_inventory", "arguments": {}}}),
+        ]
+        with TestClient(self.module.app) as client, mock.patch.object(self.health, "as_user", wraps=self.health.as_user) as as_user:
+            for method, path, body in routes:
+                for selected in (None, TENANT.upper(), OTHER_TENANT, ""):
+                    with self.subTest(route=path, selected=selected):
+                        as_user.reset_mock()
+                        headers = {"Accept": "application/json, text/event-stream"}
+                        if selected is not None:
+                            headers["X-Workspace-Tenant"] = selected
+                        response = self.call(client, method, path, headers=headers, json=body)
+                        if selected in (None, TENANT.upper()):
+                            self.assertEqual(response.status_code, 200, response.text)
+                            self.assertEqual(as_user.call_args.args[0].tenant_id, TENANT)
+                            if body:
+                                self.assertFalse(response.json()["result"]["isError"])
+                        else:
+                            self.assert_error(response, 403, "workspace_tenant_mismatch", False)
+                            as_user.assert_not_called()
+
     def test_a_user_of_another_directory_is_served_and_is_not_the_home_user_with_the_same_object_id(self):
         token = other_directory(ADA)
         seen = []
@@ -618,7 +704,8 @@ class DirectoryTests(EntraCase):
     def test_a_personal_account_is_refused_with_its_own_code_before_any_route_runs(self):
         consumers = self.config.CONSUMERS_TENANT_ID
         token = mint(tid=consumers, iss=f"https://login.microsoftonline.com/{consumers}/v2.0")
-        routes = [("GET", "/api/sessions"), ("POST", "/api/sessions"), ("GET", "/api/health-models"), ("GET", "/api/health-model")]
+        routes = [("GET", "/api/sessions"), ("POST", "/api/sessions"), ("GET", "/api/health-models"), ("GET", "/api/health-model"),
+                  ("GET", "/api/workspace/access")]
         reached = []
         original = self.store.list_sessions
         self.store.list_sessions = lambda *args: reached.append(args) or original(*args)
@@ -646,11 +733,11 @@ class DirectoryTests(EntraCase):
             with TestClient(self.module.app) as client:
                 for label, token, status, code in cases:
                     with self.subTest(label=label):
-                        response = client.get("/api/sessions", headers=bearer(token))
-
-                        if code:
-                            self.assert_error(response, status, code, False)
-                        self.assertEqual(response.status_code, status)
+                        for path in ("/api/sessions", "/api/workspace/access"):
+                            response = client.get(path, headers=bearer(token))
+                            if code:
+                                self.assert_error(response, status, code, False)
+                            self.assertEqual(response.status_code, status)
 
     def test_the_token_broker_exchanges_in_the_directory_of_the_user_who_started_the_task(self):
         gate, sent = self.gated()
@@ -874,6 +961,7 @@ class DelegatedAccessTests(EntraCase):
         with TestClient(self.module.app) as client:
             sid = self.new_session(client)
             routes = [
+                ("the tenant access check", "GET", "/api/workspace/access", None),
                 ("the catalog", "GET", "/api/health-models", None),
                 ("the model", "GET", "/api/health-model", None),
                 ("an entity", "GET", "/api/entities/orders-api", None),
@@ -883,7 +971,7 @@ class DelegatedAccessTests(EntraCase):
                 ("a selected model", "GET", f"/api/health-model?model={MODEL}&resourceGroup={GROUP}", None),
             ]
             for label, error, status, code, claims in self.refusals():
-                for name in ("query_models", "has_model", "client", "read_model"):
+                for name in ("check_workspace_access", "query_models", "has_model", "client", "read_model"):
                     setattr(self.health, name, self.raiser(error))
                 for route, method, path, body in routes:
                     with self.subTest(refusal=label, route=route):

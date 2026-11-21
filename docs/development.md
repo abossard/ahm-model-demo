@@ -51,6 +51,8 @@ After `azd up`, run `make dev`. To use another existing environment, run `azd en
 
 ### Without Azure
 
+For a standalone example of inline **Show me** buttons, use the local playground. It includes a detail dialog, view navigation and a two-step walkthrough. [Show me design and playground](../src/web/ui/src/showMe/README.md)
+
 `FOUNDRY_PROJECT_ENDPOINT=fake:` replaces the hosted agent with a scripted agent that returns a canned result per Task type.
 It also replaces health model reads and writes with two fixture models named by `HEALTH_MODEL_NAME` and `HEALTH_MODEL_DESIGN_NAME`.
 The app accepts health reports and drops them.
@@ -95,7 +97,7 @@ az bicep build --file infra/main.bicep --stdout > /dev/null
 
 - The Python suite needs `.venv-health-ui` (`make deps`). It covers the web app and the infrastructure; `tests/test_infra.py` compiles `infra/main.bicep`.
 - The e2e suite builds the UI, serves it with `vite preview` and stubs the API, so it needs no Azure. The stubs answer `GET /api/config` as `local`: nobody signs in.
-  `tests/entra.spec.ts` runs the real MSAL library through the redirect flow against a stand-in for the Entra endpoints, under the policy the web app sends: the sign-in page, a directory named by domain, ID or subscription ID, and a personal account that lands in no directory.
+  `tests/entra.spec.ts` runs the real MSAL library through the redirect flow against a stand-in for the Entra endpoints, under the policy the web app sends: Microsoft sign-in, silent delegated access checks for each directory, refresh and logout, guest access, and opening a saved link from another directory.
   Playwright needs its browser once: `npm --prefix src/web/ui exec playwright -- install chromium`.
 - The real-backend run (`tests/real-backend.spec.ts`, 4 tests) builds the UI and starts uvicorn in the offline mode above on a free port.
   It drives the real web app with the scripted agent and the fixture models, so the run stubs nothing and reaches nothing in Azure. It needs `.venv-health-ui` (`make deps`).

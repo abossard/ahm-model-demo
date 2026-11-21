@@ -17,11 +17,14 @@ from typing import Annotated, Any
 from agent_framework import AgentSession, ContextProvider, FunctionTool, SessionContext, SupportsAgentRun, tool
 from pydantic import Field
 
-from contracts import validate_task_result
+from builder import BUILDER_SKILLS, measurement_problems, note_samples
+from contracts import submission_schema, validate_task_result
+from contracts import show_me
+from contracts.builder_rules import builder_problems, expand_resource_refs
 from grounding import MetricRun, RepoScan, grounded_problems, letters, removed_names, scan_repository, scan_signature, squash, words_of
 from clone import CLONE_TOOL, clone_tool
-from history import instant, window_problems
-from instructions import instructions_for
+from history import instant, read_period, window_problems
+from instructions import POINTING, instructions_for
 from plain import plain_problems
 from reduction import decision_lines, reduce_result, reduction_notice
 from redaction import redact
@@ -63,6 +66,7 @@ KILL_ROUNDS = 3
 
 
 SUBMIT_TOOL = "submit_result"
+SHOW_ME_TOOL = "show_me"
 METRICS_TOOL = "monitor_metrics_query"
 LOG_QUERY_TOOL = "monitor_workspace_log_query"
 QUERY_TOOLS = (METRICS_TOOL, LOG_QUERY_TOOL)
@@ -105,6 +109,11 @@ class RunRecord:
     design: bool = False
     root: str = ""
     task_type: str = ""
+    builder: dict[str, Any] | None = None
+    show_me_handles: list[dict[str, str]] = field(default_factory=list)
+    buttons: dict[str, dict[str, Any]] = field(default_factory=dict)
+    builder_samples: dict[tuple[str, ...], set[float]] = field(default_factory=dict)
+    loaded_skills: set[str] = field(default_factory=set)
     asked: str = ""
     rejected: list[str] = field(default_factory=list)
     nonce: str = ""
@@ -179,7 +188,9 @@ class RunRecord:
 
     def call_returned(self, tool: str, arguments: Mapping[str, Any], text: str) -> None:
         """What a tool call that returned adds to the record. `arguments` are the call's own, names without separators."""
-        if tool == INSPECT_TOOL:
+        if tool == "load_skill" and text and not text.lstrip().lower().startswith("error"):
+            self.loaded_skills.add(str(arguments.get("skillname", "")))
+        elif tool == INSPECT_TOOL:
             requested = arguments.get("entity")
             self.read_entities(text, requested if isinstance(requested, str) and requested else None)
         elif tool == LIST_TOOL:
@@ -190,6 +201,8 @@ class RunRecord:
                 self.note_log_query(arguments, text)
             else:
                 self.note_metric_query(arguments)
+                if self.builder:
+                    note_samples(self.builder_samples, self.builder, arguments, text)
         elif tool == SHELL_TOOL:
             self.note_shell(arguments)
 
@@ -422,6 +435,12 @@ RESULT_KINDS = {"explain": "explain", "review": "diff", "design": "diff"}
 HEALTH_STATES = ("Healthy", "Degraded", "Unhealthy", "Unknown")
 
 
+def result_kind(record: RunRecord) -> str | None:
+    if record.builder:
+        return {"analyze": "builderAnalysis", "propose": "builderProposals"}[record.builder["phase"]]
+    return RESULT_KINDS.get(record.task_type)
+
+
 def task_problems(result: dict[str, Any], record: RunRecord) -> list[str]:
     """The result answers this Task: the kind its type asks for and, for an explain, the entity that was asked."""
     wanted = RESULT_KINDS.get(record.task_type)
@@ -633,13 +652,15 @@ def unreadable(record: RunRecord) -> str:
 
 def blocked_problems(result: dict[str, Any], reason: str) -> list[str]:
     """Nothing could be read, so nothing in the result can rest on a reading: it says why and proposes nothing."""
-    proposed = result["causes"] if result["kind"] == "explain" else [*result["changes"], *result["verification"]]
-    if not proposed:
-        return []
-    return [
-        f"Azure cannot be read for this Task ({reason}), so the result has no readings to rest on: leave "
-        "`causes`, `changes` and `verification` empty, and say why in `summary` and one `high` finding"
-    ]
+    if result["kind"] == "explain":
+        if result["state"] == "Unknown" and not result["causes"]:
+            return []
+        advice = "Use state Unknown, empty causes and explain the access problem in summary."
+    else:
+        if not result["changes"] and not result["verification"]:
+            return []
+        advice = "Leave changes and verification empty. Explain the access problem in summary and a high finding."
+    return [f"Azure cannot be read for this Task ({reason}). {advice}"]
 
 
 DECIDE_AFTER_REPEATS = 1
@@ -651,9 +672,29 @@ MAX_IDLE = 3
 def result_problems(result: dict[str, Any], record: RunRecord, folder: Path) -> list[str]:
     """Everything that keeps a result from being accepted: the schema, then the Task, what the run read and ran, what the web
     app would answer, what ties the result to this workload, and how it is written."""
+    # First correct the Task kind, even if the model blended fields from an earlier Task.
+    wanted = result_kind(record)
+    if wanted and isinstance(result, dict) and "kind" in result and result["kind"] != wanted:
+        return builder_problems(result, record.builder) if record.builder else task_problems(result, record)
+    if isinstance(result, dict) and result.get("kind") == "explain" and record.history_window is None and "window" in result:
+        return window_problems(result, None)
     problems = validate_task_result(result)
     if problems:
         return problems
+    if "showMe" in result:
+        return ["Use show_me to prepare a button, then place its returned marker in the answer."]
+    if record.show_me_handles:
+        if not show_me.marker_keys(result) <= record.buttons.keys():
+            return ["Use only markers returned by show_me for this Task."]
+        if problem := show_me.placement_problem(result):
+            return [problem]
+    if record.builder:
+        missing = set(BUILDER_SKILLS) - record.loaded_skills
+        if missing:
+            return ["Load the planning and build guidance with load_skill(skill_name=...) before submitting: " + ", ".join(sorted(missing))]
+        observed = ([*record.builder.get("observedMetrics", []), *record.builder.get("previousMetrics", [])]
+                    if record.builder["phase"] == "analyze" else record.builder.get("metrics", []))
+        return builder_problems(result, record.builder) + measurement_problems(result, record.builder_samples, observed)
     if task := task_problems(result, record):
         return task
     if reason := unreadable(record):
@@ -675,7 +716,8 @@ def result_problems(result: dict[str, Any], record: RunRecord, folder: Path) -> 
 def accept(folder: Path, result: dict[str, Any], *, partial: bool = False) -> str:
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    return json.dumps({"status": "accepted", **({"partial": True} if partial else {})}, separators=(",", ":"))
+    return json.dumps({"status": "accepted", **({"partial": True} if partial else {}),
+                       **({"showMe": result["showMe"]} if result.get("showMe") else {})}, separators=(",", ":"))
 
 
 def log_rejection(folder: Path, record: RunRecord, problems: list[str]) -> None:
@@ -705,23 +747,33 @@ def forced_result(record: RunRecord, folder: Path, why: str) -> dict[str, Any]:
     kind = RESULT_KINDS.get(record.task_type) or (last.get("kind") if last.get("kind") in ("explain", "diff") else "diff")
     if reason := unreadable(record):
         last, why = {}, f"Azure cannot be read for this Task ({reason})"
-    return reduce_result(
+    result = reduce_result(
         last, lambda candidate: result_problems(candidate, record, folder), kind=kind, asked=record.asked, why=why, state=read_state(record)
     )
+    if kind == "explain" and record.history_window is not None:
+        result["window"] = read_period(record.history_window)
+    return result
 
 
 def submit(folder: Path, result: dict[str, Any], record: RunRecord) -> str:
-    if record.reduced is not None and result == record.reduced:
-        logger.info("submit_result partial result accepted task=%s", folder.name)
-        return accept(folder, result, partial=True)
-    problems = result_problems(result, record, folder)
+    if record.builder:
+        result = expand_resource_refs(result, record.builder["resources"])
+    partial = record.reduced is not None and result == record.reduced
+    problems = [] if partial else result_problems(result, record, folder)
     if not problems:
-        return accept(folder, result)
+        if record.buttons:
+            used = show_me.marker_keys(result)
+            if actions := {key: value for key, value in record.buttons.items() if key in used}:
+                result = {**result, "showMe": actions}
+        return accept(folder, result, partial=partial)
     record.rejections += 1
     record.repeats = record.repeats + 1 if problems == record.rejected else 0
     record.rejected, record.last_result, record.idle = problems, result, 0
     log_rejection(folder, record, problems)
-    if record.repeats >= REDUCE_AFTER_REPEATS or record.rejections >= REDUCE_AFTER_TOTAL:
+    if record.builder:
+        # The builder needs a complete table or a choice of valid designs to continue.
+        lines = problems
+    elif record.repeats >= REDUCE_AFTER_REPEATS or record.rejections >= REDUCE_AFTER_TOTAL:
         record.reduced = forced_result(record, folder, f"the proposal was rejected {record.rejections} times")
         lines = reduction_notice(result, record.reduced)
     elif record.repeats >= DECIDE_AFTER_REPEATS:
@@ -742,6 +794,44 @@ TYPE_TOOLS = {
 }
 
 
+def submission_tool(folder: Path, record: RunRecord) -> FunctionTool:
+    """Only offer a history window when this Task has evidence for one."""
+    @tool(
+        name=SUBMIT_TOOL,
+        schema=submission_schema(result_kind(record), record.asked, record.builder, read_period(record.history_window)),
+        description=(
+            "Submit the Task result described in the instructions. Returns accepted, or the problems to fix "
+            "before submitting again."
+        ),
+        approval_mode="never_require",
+    )
+    def submit_result(result: Annotated[dict[str, Any], Field(description="The TaskResult object.")]) -> str:
+        return submit(folder, result, record)
+
+    return submit_result
+
+
+def pointing_tool(record: RunRecord) -> FunctionTool:
+    @tool(name=SHOW_ME_TOOL, schema=show_me.tool_schema(record.show_me_handles), approval_mode="never_require",
+          description="Prepare an inline Show me button. Place the returned marker at the relevant words in the answer. "
+                      "Choose an id from this Task's data following the handle's idDescription. Only a user click opens the view.")
+    async def register(handle: str, id: str | None = None, highlight: dict | None = None) -> str:
+        action = {"handle": handle, **({"id": id} if id is not None else {}),
+                  **({"highlight": highlight} if highlight is not None else {})}
+        if problem := show_me.action_problem(action, record.show_me_handles):
+            return "Error: " + problem
+        for key, existing in record.buttons.items():
+            if existing == action:
+                return f"[[show:{key}]]"
+        if len(record.buttons) >= show_me.MAX_ACTIONS:
+            return f"Error: A Task can prepare at most {show_me.MAX_ACTIONS} different buttons."
+        key = str(len(record.buttons) + 1)
+        record.buttons[key] = action
+        return f"[[show:{key}]]"
+
+    return register
+
+
 def task_tools(folder: Path, record: RunRecord, wanted: Sequence[str] = (SHELL_TOOL, CLONE_TOOL, SUBMIT_TOOL)) -> list[FunctionTool]:
     @tool(name=SHELL_TOOL, description=SHELL_DESCRIPTION, approval_mode="never_require")
     async def run_shell(
@@ -752,19 +842,11 @@ def task_tools(folder: Path, record: RunRecord, wanted: Sequence[str] = (SHELL_T
     ) -> str:
         return render_shell_run(await run_command(command, folder, clamp_timeout(timeout_seconds)))
 
-    @tool(
-        name=SUBMIT_TOOL,
-        description=(
-            "Submit the Task result described in the instructions. Returns accepted, or the problems to fix "
-            "before submitting again."
-        ),
-        approval_mode="never_require",
-    )
-    def submit_result(result: Annotated[dict[str, Any], Field(description="The TaskResult object.")]) -> str:
-        return submit(folder, result, record)
-
-    tools = {SHELL_TOOL: run_shell, CLONE_TOOL: clone_tool(folder, record), SUBMIT_TOOL: submit_result}
-    return [tools[name] for name in wanted]
+    tools = {SHELL_TOOL: run_shell, CLONE_TOOL: clone_tool(folder, record), SUBMIT_TOOL: submission_tool(folder, record)}
+    offered = [tools[name] for name in wanted]
+    if record.show_me_handles:
+        offered.append(pointing_tool(record))
+    return offered
 
 
 def task_vocabulary(envelope: dict[str, Any] | None) -> set[str]:
@@ -809,12 +891,15 @@ class TaskTools(ContextProvider):
         folder = task_folder(self._workspace, envelope["task"] if envelope else None)
         scope, groups = task_scope(envelope)
         instruction = envelope["task"].get("instruction") if envelope else None
+        handles = envelope["task"].get("showMeHandles", []) if envelope else []
         record = RunRecord(
             expected=expected_reads(envelope),
             edges=edges_of(envelope),
             design=bool(envelope) and envelope["task"].get("type") == "design",
             root=target_name(envelope),
             task_type=envelope["task"].get("type", "") if envelope else "",
+            builder=envelope["task"].get("builder") if envelope else None,
+            show_me_handles=[] if show_me.catalog_problem(handles) else handles,
             asked=asked_entity(envelope),
             nonce=task_nonce(envelope),
             repository=workload_repository(envelope),
@@ -832,6 +917,8 @@ class TaskTools(ContextProvider):
             except AzureUnavailable as error:
                 record.blocked = str(error)
                 context.extend_instructions(self.source_id, f"Azure cannot be read for this Task: {error}")
-        if text := instructions_for(record.task_type, moment=record.as_of is not None):
+        if text := instructions_for(record.task_type, moment=record.as_of is not None, builder=record.builder):
             context.extend_instructions(self.source_id, text)
+        if record.show_me_handles:
+            context.extend_instructions(self.source_id, POINTING)
         context.extend_tools(self.source_id, task_tools(folder, record, TYPE_TOOLS.get(record.task_type, tuple(TYPE_TOOLS["design"]))))

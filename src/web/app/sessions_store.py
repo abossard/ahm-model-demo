@@ -122,6 +122,7 @@ class MemorySessionsStore:
         self._bases = {}
         self._events = {}
         self._applies = {}
+        self._creations = {}
 
     def _seqs(self, owner, sid):
         return sorted(seq for (o, s, seq) in self._tasks if (o, s) == (owner, sid))
@@ -206,6 +207,13 @@ class MemorySessionsStore:
     async def append_apply(self, owner, sid, seq, outcome):
         self._applies.setdefault((owner, sid, seq), []).append(dumps(outcome))
 
+    async def claim_creation(self, owner, sid, seq, intent):
+        return json.loads(self._creations.setdefault((owner, sid, seq), dumps(intent)))
+
+    async def get_creation(self, owner, sid, seq):
+        text = self._creations.get((owner, sid, seq))
+        return json.loads(text) if text else None
+
     async def read_applies(self, owner, sid, seq):
         return [json.loads(line) for line in self._applies.get((owner, sid, seq), [])]
 
@@ -232,6 +240,21 @@ class BlobSessionsStore:
         self._container.upload_blob(
             name, dumps(value).encode("utf-8"), overwrite=overwrite, metadata=metadata
         )
+
+    def _claim_creation(self, name, intent):
+        try:
+            self._write(name, intent, overwrite=False)
+        except ResourceExistsError:
+            return self._read_json(name)
+        return intent
+
+    async def claim_creation(self, owner, sid, seq, intent):
+        name = f"{home(owner)}/{sid}/tasks/{seq}/creation.json"
+        return await asyncio.to_thread(self._claim_creation, name, intent)
+
+    async def get_creation(self, owner, sid, seq):
+        name = f"{home(owner)}/{sid}/tasks/{seq}/creation.json"
+        return await asyncio.to_thread(self._read_json, name)
 
     def _append(self, name, value):
         blob = self._container.get_blob_client(name)

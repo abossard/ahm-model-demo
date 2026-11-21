@@ -352,7 +352,7 @@ def base_problems(result, base):
     return problems
 
 
-def validate_result(result, base=None, target=None):
+def validate_result(result, base=None, target=None, *, allowed_ids=()):
     changes = result.get("changes") if isinstance(result, dict) else None
     too_many = count_problems(changes) if isinstance(changes, list) else []
     if too_many:
@@ -363,11 +363,13 @@ def validate_result(result, base=None, target=None):
     problems = list(dict.fromkeys(describe(error) for error in errors))
     if not problems and result["kind"] == "diff":
         present = present_in(base) if base is not None else set()
+        # A new model can monitor resources its user explicitly selected in other resource groups.
+        allowed = present | {folded(resource_id) for resource_id in allowed_ids}
         problems = (
             reference_problems(result)
             + name_problems(result["changes"])
             + size_problems(result["changes"])
-            + scope_problems(result["changes"], target, present)
+            + scope_problems(result["changes"], target, allowed)
         )
         if base is not None:
             problems += (

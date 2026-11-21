@@ -11,6 +11,7 @@ from azure.core.credentials import AccessToken
 from azure.core.exceptions import HttpResponseError
 from azure.core.pipeline.transport import RequestsTransport
 from azure.mgmt.cloudhealth import CloudHealthMgmtClient
+from azure.mgmt.resourcegraph import ResourceGraphClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "web" / "app"))
 
@@ -291,6 +292,26 @@ class CacheTests(unittest.TestCase):
 
         self.assertEqual(graph.resources.call_count, 3)
         self.assertTrue(all(result == rows for result in results))
+
+    def test_workspace_access_uses_the_callers_arm_token_for_one_bounded_read_even_in_an_empty_tenant(self):
+        for rows in ([], [{"readable": 1}]):
+            with self.subTest(rows=rows):
+                response = {"data": rows, "count": len(rows), "totalRecords": len(rows), "resultTruncated": "false"}
+                harness = self.harness(lambda request: (200, {"Content-Type": "application/json"}, response))
+                session = requests.Session()
+                session.mount("https://", harness.adapter)
+                harness.graphs.side_effect = lambda credential: ResourceGraphClient(credential, transport=RequestsTransport(session=session))
+                for _ in range(2):
+                    self.assertIsNone(harness.models.check_workspace_access())
+
+                harness.graphs.assert_called_once_with(harness.credential)
+                self.assertEqual(len(harness.adapter.calls), 2)
+                for request in harness.adapter.calls:
+                    self.assertTrue(request.url.startswith(ARM + "/providers/Microsoft.ResourceGraph/resources?"))
+                    self.assertEqual(request.headers["Authorization"], "Bearer token")
+                    body = json.loads(request.body)
+                    self.assertEqual(body["query"], "resources | take 1 | project readable = 1")
+                    self.assertNotIn("subscriptions", body)
 
     def test_a_failed_catalog_query_is_not_cached(self):
         harness = self.harness()

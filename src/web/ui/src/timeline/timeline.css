@@ -21,3 +21,24 @@
 .tl-mark { color: var(--colorNeutralForeground1); line-height: 1; }
 .tl-mark[data-mark="annotation"] { color: var(--colorBrandForeground1); }
 .tl-pin { display: inline-block; width: 2px; height: 12px; background: var(--colorBrandForeground1); flex-shrink: 0; }
+
+/* The band shares the row and scroll coordinates used to paint the timeline canvas. */
+.tl-show-me-lanes {
+  position: absolute;
+  inset: auto 0 0;
+  overflow: hidden;
+  pointer-events: none;
+  display: none;
+}
+#timeline-panel [role="tree"]:has([data-focused][data-show-me-highlight]) .tl-show-me-lanes { display: block; }
+.tl-show-me-band {
+  position: absolute;
+  inset-inline: 0;
+  transform: translateY(calc(-1 * var(--timeline-scroll, 0px)));
+  box-sizing: border-box;
+  color: var(--show-me-blue);
+  border-block: 2px solid currentColor;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+#timeline-panel [role="tree"]:has([data-show-me-highlight="amber"]) .tl-show-me-band { color: var(--show-me-amber); }
+#timeline-panel [role="tree"]:has([data-show-me-highlight="violet"]) .tl-show-me-band { color: var(--show-me-violet); }
