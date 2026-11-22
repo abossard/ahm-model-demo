@@ -60,13 +60,32 @@ def prose_fields(result):
         yield proposal, "tradeoff"
 
 
-def marker_keys(result):
-    return {key for row, field in prose_fields(result) for key in _MARKER.findall(row[field])}
+def referenced_keys(result):
+    prose = {key for row, field in prose_fields(result) for key in _MARKER.findall(row[field])}
+    return prose | {step["id"] for step in result.get("nextSteps", [])}
+
+
+def reference_problem(result, buttons):
+    if not referenced_keys(result) <= buttons.keys():
+        return "Use only Show me ids returned by show_me for this Task."
+    labels, targets = set(), set()
+    for step in result.get("nextSteps", []):
+        label = step["label"].strip().casefold()
+        if _CONTROL.search(step["label"]) or "[[show:" in label:
+            return "Use plain single-line text for each next step label."
+        action = buttons[step["id"]]
+        target = (action["handle"], action.get("id"))
+        if label in labels or target in targets:
+            return "Give each next step a distinct label and destination."
+        labels.add(label)
+        targets.add(target)
+    return placement_problem(result)
 
 
 def _without_buttons(result):
     clean = deepcopy(result)
     clean.pop("showMe", None)
+    clean.pop("nextSteps", None)
     for row, field in prose_fields(clean):
         if _MARKER.search(row[field]):
             row[field] = _MARKER.sub("", row[field]).strip()
@@ -93,10 +112,10 @@ def placement_problem(result):
 def result_problem(result, handles):
     actions = result.get("showMe", {})
     # Older answers may contain literal marker-like text. They have no clickable references.
-    if not actions and not handles:
+    if not actions and not handles and "nextSteps" not in result:
         return ""
-    if marker_keys(result) != actions.keys():
-        return "Each Show me marker in the answer must reference a button prepared for this Task."
-    if problem := placement_problem(result):
+    if problem := reference_problem(result, actions):
         return problem
+    if referenced_keys(result) != actions.keys():
+        return "Every saved Show me action must appear in the answer or its next steps."
     return next((p for action in actions.values() if (p := action_problem(action, handles))), "")

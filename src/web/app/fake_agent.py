@@ -211,11 +211,11 @@ def builder_result(builder):
 
 def pointing_calls(task, result, relationships=()):
     handles = task.get("showMeHandles", [])
-    actions, calls = {}, []
+    actions, calls, choices = {}, [], []
     if not handles:
         return calls, actions
 
-    def point(field, key, handle, id_, color, label, *, legacy=None):
+    def point(field, key, handle, id_, color, label, *, legacy=None, next_label=None):
         # A previously installed client can still request its original destinations.
         if legacy and not any(h["name"] == handle for h in handles):
             handle, id_ = legacy
@@ -229,37 +229,42 @@ def pointing_calls(task, result, relationships=()):
         marker = f"[[show:{number}]]"
         field[key] += " " + marker
         calls.extend(call(f"show_{number}", "show_me", action, marker))
+        if next_label and len(choices) < 3 and all(c["label"] != next_label for c in choices):
+            choices.append({"id": number, "label": next_label})
 
     if result["kind"] == "builderAnalysis":
         inventory = task["builder"]["resources"]
         refs = {r["id"].casefold(): r["ref"] for r in inventory}
         if inventory:
-            point(result, "summary", "builder", "resource/" + inventory[0]["ref"], "blue", "Reviewed resource")
+            point(result, "summary", "builder", "resource/" + inventory[0]["ref"], "blue", "Reviewed resource",
+                  next_label="Inspect the resource")
         for decision in result["plan"].get("decisions", []):
             if decision["basis"] == "measurement" and decision["resourceIds"]:
                 ref = refs[decision["resourceIds"][0].casefold()]
-                point(decision, "reason", "builder", "signal/" + ref, "amber", "Observed signal")
+                point(decision, "reason", "builder", "signal/" + ref, "amber", "Observed signal", next_label="See the measured signal")
                 break
     elif result["kind"] == "builderProposals":
         for proposal in result["proposals"]:
-            point(proposal, "tradeoff", "builder", "design/" + proposal["id"], "violet", "Design preview")
+            point(proposal, "tradeoff", "builder", "design/" + proposal["id"], "violet", "Design preview",
+                  next_label="Explore " + proposal["title"])
     elif result["kind"] == "explain":
         cause = next(iter(result["causes"]), None)
         point(cause or result, "note" if cause else "summary", "panel", "entity/" + result["entity"],
-              "violet", "Explained entity", legacy=("node-detail", result["entity"]))
+              "violet", "Explained entity", legacy=("node-detail", result["entity"]), next_label="Explore the entity")
         for row in result["causes"]:
             if row["signal"]:
                 point(row, "note", "timeline", f"signal/{row['entity']}/{row['signal']}", "amber", "Order errors over time",
-                      legacy=("health-timeline", None))
+                      legacy=("health-timeline", None), next_label="Follow the signal")
         if task.get("asOf"):
             point(result, "summary", "timeline", "entity/" + result["entity"], "blue", "Historical state",
                   legacy=("health-timeline", None))
     else:
-        point(result, "summary", "graph", "view/coverage", "blue", "Signal coverage", legacy=("model-view", "coverage"))
+        point(result, "summary", "graph", "view/coverage", "blue", "Signal coverage", legacy=("model-view", "coverage"),
+              next_label="See signal coverage")
         for finding in result["findings"]:
             if finding.get("entity"):
                 point(finding, "text", "panel", "entity/" + finding["entity"], "amber", "Entity in this finding",
-                      legacy=("node-detail", finding["entity"]))
+                      legacy=("node-detail", finding["entity"]), next_label="Inspect the entity")
         edge = next((r for r in relationships if r["parent"] == "orders-api" and r["child"] == "orders-db"), None)
         if task["type"] == "review" and edge:
             changes = {change["id"]: change for change in result["changes"]}
@@ -267,9 +272,13 @@ def pointing_calls(task, result, relationships=()):
             point(changes["c2"], "reason", "panel", "change/c3", "amber", "Proposed queue entity")
             if any(h["name"] == "graph" for h in handles):
                 changes["c4"]["reason"] += " Its existing database dependency follows the same direction."
-            point(changes["c4"], "reason", "graph", "connection/" + edge["name"], "violet", "Existing database dependency")
+            point(changes["c4"], "reason", "graph", "connection/" + edge["name"], "violet", "Existing database dependency",
+                  next_label="Trace the database connection")
         elif result["changes"]:
-            point(result["changes"][0], "reason", "panel", "comparison", "violet", "Compare proposed design")
+            point(result["changes"][0], "reason", "panel", "comparison", "violet", "Compare proposed design",
+                  next_label="Compare the proposed design")
+    if len(choices) >= 2:
+        result["nextSteps"] = choices
     return calls, actions
 
 

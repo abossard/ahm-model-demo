@@ -227,6 +227,26 @@ describe("Builder review and approval", () => {
     expect(client.preview).not.toHaveBeenCalled();
   });
 
+  it.each([["resource/R1", true], ["resource/R9", false]] as const)("reopens a suggested builder destination %s", async (id, available) => {
+    const resource = {id: rows[0]!.resourceId, name: "api", type: "t", location: "westus"};
+    const choices = [{id: "1", label: "Inspect the API"}, {id: "2", label: "Read its signal"}];
+    await show({sessionId: "topic", analysis: {...analysis, showMeHandles: [builderDestination("analyze")],
+      builder: {...analysis.builder, resources: [resource]}, result: {...analysis.result, nextSteps: choices,
+        showMe: {"1": {handle: "builder", id}, "2": {handle: "builder", id: "signal/R1"}}}}});
+    expect(host.querySelector("[data-builder-target]")).toBeNull();
+    const button = host.querySelector<HTMLButtonElement>('[data-next-step="1"]')!;
+    button.focus();
+    await act(async () => button.click());
+    if (available) {
+      expect(host.querySelector("[data-builder-target]")?.textContent).toContain(resource.id);
+      await click("Close details");
+      expect(document.activeElement).toBe(button);
+    } else {
+      expect(host.textContent).toContain("This destination is no longer available.");
+    }
+    expect(client.preview).not.toHaveBeenCalled();
+  });
+
   it.each(["legacy", "offered", "unoffered"] as const)("links saved decision evidence once for a %s answer", async mode => {
     const source = rows[0]!;
     const hasMarker = mode !== "legacy";

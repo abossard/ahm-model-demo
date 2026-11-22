@@ -2,6 +2,7 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createShowMe, type ShowMeAction } from "../../src/showMe";
 import { ShowMeText } from "../../src/showMe/ShowMeText";
+import { ShowMeNextSteps } from "../../src/showMe/NextSteps";
 
 const checks = document.getElementById("checks")!;
 const historyPanel = document.getElementById("history")!;
@@ -66,6 +67,9 @@ function Assistant() {
       text="The database migration is waiting for review. [[show:1]] Approval is the last release check." /></p>
     <p><ShowMeText registry={registry} actions={actions}
       text="The rollback rehearsal passed on the latest run. [[show:2]]" /></p>
+    <ShowMeNextSteps registry={registry} actions={actions} choices={[
+      { id: "1", label: "Inspect the migration" }, { id: "2", label: "See release history" },
+    ]} />
     <button type="button" onClick={() => void advance()}>
       {["Walk through the checks", "Next · Release history", "Finish walkthrough"][step]}
     </button>

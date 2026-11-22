@@ -46,7 +46,7 @@ APP_MODULES = (
 PRIVATE = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 OTHER_PRIVATE = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 PUBLIC_SURFACE = {("GET", "/"), ("GET", "/api/config"), ("POST", "/api/agent/token"),
-                  ("GET", "/builder/view/{digest}"), ("GET", "/{full_path}")}
+                  ("GET", "/builder/view/{digest}"), ("GET", "/diagram/view/{digest}"), ("GET", "/{full_path}")}
 DOCUMENTATION_PATHS = ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect")
 
 
@@ -253,22 +253,39 @@ class SignInTests(EntraCase):
                 "jsonrpc": "2.0", "id": 2, "method": "tools/list",
             }).json()["result"]["tools"]
             visibility = {t["name"]: t["_meta"]["ui"]["visibility"] for t in catalog}
-            self.assertEqual([name for name, visible in visibility.items() if "model" in visible], ["builder_open"])
+            self.assertEqual({name for name, visible in visibility.items() if "model" in visible},
+                             {"builder_open", "show_health_model_diagram"})
             self.assertEqual(visibility["builder_create"], ["app"])
 
-    def test_builder_frame_serves_only_the_expected_document_and_rejects_foreign_origins(self):
-        html = b"<main>Health model builder</main>"
-        path = Path(self.dist.name) / "builder.html"
-        path.write_bytes(html)
+    def test_frames_serve_only_their_expected_document_and_reject_foreign_origins(self):
         with TestClient(self.module.app) as client:
-            good = client.get("/builder/view/" + hashlib.sha256(html).hexdigest())
-            self.assertEqual(good.content, html)
-            self.assertIn("connect-src 'none'", good.headers["Content-Security-Policy"])
-            self.assertEqual(client.get("/builder/view/old").status_code, 404)
+            for view in ("builder", "diagram"):
+                with self.subTest(view=view):
+                    html = f"<main>{view}</main>".encode()
+                    (Path(self.dist.name) / f"{view}.html").write_bytes(html)
+                    good = client.get(f"/{view}/view/" + hashlib.sha256(html).hexdigest())
+                    self.assertEqual(good.content, html)
+                    self.assertIn("connect-src 'none'", good.headers["Content-Security-Policy"])
+                    self.assertEqual(client.get(f"/{view}/view/old").status_code, 404)
             for origin in ["https://other.example", "https://[bad"]:
                 with self.subTest(origin=origin):
                     response = client.post("/api/builder/mcp", headers={"Origin": origin})
                     self.assertEqual(response.status_code, 403)
+
+    def test_diagram_tool_accepts_only_the_view_data_it_can_display(self):
+        diagram = {"anchor": {"name": "cart", "displayName": "Shopping cart", "healthState": "Healthy",
+                              "impact": "Standard", "signals": []}, "neighbors": [], "leaf": True}
+        headers = {"Accept": "application/json, text/event-stream"}
+        with TestClient(self.module.app) as client:
+            for args, valid in [({}, True), ({"diagram": diagram}, True), ({"diagram": {"leaf": True}}, False)]:
+                with self.subTest(args=args):
+                    result = self.call(client, "POST", "/api/builder/mcp", headers=headers, json={
+                        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": "show_health_model_diagram", "arguments": args},
+                    }).json()["result"]
+                    self.assertEqual(result["isError"], not valid)
+                    if valid:
+                        self.assertEqual(result["structuredContent"], {"diagram": args.get("diagram")})
 
     def test_the_config_is_public_and_tells_the_ui_how_to_sign_in(self):
         with TestClient(self.module.app) as client:
@@ -294,7 +311,7 @@ class SignInTests(EntraCase):
         protected = sorted((set(operations) - PUBLIC_SURFACE) | {("POST", "/api/builder/mcp")})
 
         self.assertEqual(top, {"/", "/api/config", "/api/agent/token", "/assets", "/{full_path:path}",
-                               "/builder/view/{digest}", "/api/builder/mcp"})
+                               "/builder/view/{digest}", "/diagram/view/{digest}", "/api/builder/mcp"})
         self.assertEqual([d.dependency for d in self.module.api.dependencies], [self.module.authenticated])
         self.assertTrue(PUBLIC_SURFACE <= set(operations))
         self.assertGreaterEqual(len(protected), 12)

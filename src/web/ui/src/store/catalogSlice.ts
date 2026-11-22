@@ -39,6 +39,7 @@ export const catalogSlice: StateCreator<Store, [], [], CatalogState & CatalogAct
   // Switching models is the one place that clears what belonged to the previous model.
   chooseModel: (selected) => {
     const before = get().selected;
+    get().endTour();
     // A moment picked on one model is never asked about on another: the page returns to now while the next one loads.
     if (before !== null && !sameModel(before, selected)) get().selectMoment(null);
     set({

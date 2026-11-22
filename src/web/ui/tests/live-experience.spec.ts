@@ -187,6 +187,23 @@ test.describe("@live-readonly the shell and the catalog", () => {
 });
 
 test.describe("@live-readonly the models", () => {
+  test("the assistant tour opens the deployed diagram and guides the reader to the timeline", async ({ page, request }) => {
+    const catalog = await catalogOf(request);
+    await open(page, selector(catalog.default));
+    await page.getByTestId("task-menu").click();
+    await page.getByTestId("menu-tour").click();
+    const tour = page.getByTestId("assistant-tour");
+    const title = tour.getByTestId("tour-stop-title");
+    await expect(title).toHaveText("Meet your model");
+    const diagram = tour.frameLocator('iframe[title="Interactive health model diagram"]').getByTestId("health-model-diagram");
+    await expect(diagram).toBeVisible();
+    await tour.getByRole("button", { name: "Explore the timeline" }).click();
+    await expect(title).toHaveText("Turn back the clock");
+    await expect(page.locator("#timeline-panel[data-show-me-highlight]")).toBeInViewport();
+    await tour.getByRole("button", { name: "End tour" }).click();
+    await expect(tour).toHaveCount(0);
+  });
+
   test("@live-readonly draws every model of the catalog from its address, with a node per entity", async ({ page, request }) => {
     const findings = await watch(page);
     const catalog = await catalogOf(request);

@@ -20,6 +20,21 @@ The workspace advertises up to three handles. A builder turn advertises one. Eac
 3. The tool returns a marker such as `[[show:1]]`. The agent inserts it beside the relevant words in a summary, cause, finding, change reason, builder decision or design trade-off. For example, “Order errors exceeded the threshold. [[show:1]] The database remained healthy.” The accepted result stores the referenced actions in its own `showMe` map. The HTTP and Task result contracts cover the field limits and validation. [Task contract](../../../../../docs/redesign/plan.md)
 4. `ShowMeText` renders a native button at that position. Rendering or restoring a result has no navigation side effect. Clicking resolves its saved action through the browser's registered callback, using the Task's model and checking that the ID still exists. A missing destination gives feedback beside the button. Previously saved handle names still resolve. The host can also link structured evidence in older answers.
 
+## Offer next steps
+
+A saved answer can include a `nextSteps` array with two or three choices. Each choice names an action that `show_me` prepared for this Task. If the tool returned `[[show:2]]`, the choice uses the string `"2"` as its `id`. The browser renders its `label` on the button. Clicking opens the destination using the same registry as an inline button.
+
+```tsx
+import { ShowMeNextSteps } from "./showMe/NextSteps";
+
+<ShowMeNextSteps registry={registry} actions={actions} choices={[
+  { id: "1", label: "Inspect the migration" },
+  { id: "2", label: "See release history" },
+]} />
+```
+
+For a branching tour, import `NextSteps` from the same module and pass `choices` and `onChoose(id)`. Each id can identify a tour stop. The host opens that stop and supplies its next choices. Both components use a labelled group of keyboard-accessible buttons.
+
 ## Add a destination
 
 The host owns navigation. Register a callback that validates its domain ID, reveals its destination, and returns the mounted `Element`. Return `null` if the target has disappeared. Keep the chat mounted when changing a page or opening details. The playground uses a nonmodal dialog so its answer stays interactive.

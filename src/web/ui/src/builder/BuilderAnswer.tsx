@@ -1,6 +1,7 @@
 import { createContext, useContext, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createShowMe } from "../showMe";
+import { ShowMeNextSteps } from "../showMe/NextSteps";
 import { ShowMeButton, ShowMeText, type ShowMeTextProps } from "../showMe/ShowMeText";
 import { SHOW_ME_MARKER } from "../showMe/markers";
 import { builderDestination, resourceEvidence, type AnswerTask } from "./builderDestinations";
@@ -119,9 +120,12 @@ export function BuilderAnswer({ task, analysis, sessionId, tools, children }: {
     <div className="builder-answer" data-inspecting={detail ? "" : undefined}
       onKeyDown={event => { if (detail && event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); close(); } }}>
       <div className="builder-answer-source" onClickCapture={event => {
-        const button = event.target instanceof Element && event.target.closest<HTMLElement>("[data-show-me-handle]");
+        const button = event.target instanceof Element && event.target.closest<HTMLElement>("[data-show-me-handle], [data-next-step]");
         if (button) opener.current = button;
-      }}>{children}</div>
+      }}>{children}
+        {task?.result?.nextSteps && answer?.actions && <ShowMeNextSteps key={task.seq} choices={task.result.nextSteps}
+          actions={answer.actions} registry={registry} />}
+      </div>
       {detail && <aside className="builder-inspector" aria-label="Show me details">
         <button type="button" className="close-inspector" onClick={close}>Close details</button>
         <section ref={target} tabIndex={-1} aria-label={detail.kind === "design" ? detail.title : detail.evidence.resource.name}

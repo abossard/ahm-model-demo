@@ -683,10 +683,8 @@ def result_problems(result: dict[str, Any], record: RunRecord, folder: Path) -> 
         return problems
     if "showMe" in result:
         return ["Use show_me to prepare a button, then place its returned marker in the answer."]
-    if record.show_me_handles:
-        if not show_me.marker_keys(result) <= record.buttons.keys():
-            return ["Use only markers returned by show_me for this Task."]
-        if problem := show_me.placement_problem(result):
+    if record.show_me_handles or "nextSteps" in result:
+        if problem := show_me.reference_problem(result, record.buttons):
             return [problem]
     if record.builder:
         missing = set(BUILDER_SKILLS) - record.loaded_skills
@@ -762,7 +760,7 @@ def submit(folder: Path, result: dict[str, Any], record: RunRecord) -> str:
     problems = [] if partial else result_problems(result, record, folder)
     if not problems:
         if record.buttons:
-            used = show_me.marker_keys(result)
+            used = show_me.referenced_keys(result)
             if actions := {key: value for key, value in record.buttons.items() if key in used}:
                 result = {**result, "showMe": actions}
         return accept(folder, result, partial=partial)
@@ -798,7 +796,8 @@ def submission_tool(folder: Path, record: RunRecord) -> FunctionTool:
     """Only offer a history window when this Task has evidence for one."""
     @tool(
         name=SUBMIT_TOOL,
-        schema=submission_schema(result_kind(record), record.asked, record.builder, read_period(record.history_window)),
+        schema=submission_schema(result_kind(record), record.asked, record.builder, read_period(record.history_window),
+                                 next_steps=bool(record.show_me_handles)),
         description=(
             "Submit the Task result described in the instructions. Returns accepted, or the problems to fix "
             "before submitting again."
@@ -813,7 +812,7 @@ def submission_tool(folder: Path, record: RunRecord) -> FunctionTool:
 
 def pointing_tool(record: RunRecord) -> FunctionTool:
     @tool(name=SHOW_ME_TOOL, schema=show_me.tool_schema(record.show_me_handles), approval_mode="never_require",
-          description="Prepare an inline Show me button. Place the returned marker at the relevant words in the answer. "
+          description="Prepare a destination. Place its marker in the answer or use its numeric key in nextSteps. "
                       "Choose an id from this Task's data following the handle's idDescription. Only a user click opens the view.")
     async def register(handle: str, id: str | None = None, highlight: dict | None = None) -> str:
         action = {"handle": handle, **({"id": id} if id is not None else {}),

@@ -1,6 +1,6 @@
 import type { JSX } from "react";
 import { Button, Text, makeStyles, tokens } from "@fluentui/react-components";
-import { ChevronLeft20Regular, PanelLeftContract20Regular } from "@fluentui/react-icons";
+import { ChevronLeft20Regular, Map20Regular, PanelLeftContract20Regular } from "@fluentui/react-icons";
 import { actions, useStore } from "../store/store";
 
 const useStyles = makeStyles({
@@ -40,6 +40,7 @@ export function WorkspaceHeader({
 }): JSX.Element {
   const styles = useStyles();
   const target = useStore((state) => state.workspaceTarget);
+  const canTour = useStore(state => state.model.kind === "success");
   return (
     <div className={styles.root}>
       {back ? (
@@ -57,6 +58,9 @@ export function WorkspaceHeader({
       <Text as="h2" size={back ? 300 : 400} className={styles.title} title={title} data-testid={titleTestId}>
         {title}
       </Text>
+      {canTour ? <Button appearance="subtle" size="small" icon={<Map20Regular />} onClick={actions.startTour} data-testid="workspace-tour">
+        Tour
+      </Button> : null}
       {target ? (
         <button className="show-me-expand" type="button" onClick={() => actions.setWorkspaceTarget(null)}>Expand answer</button>
       ) : null}

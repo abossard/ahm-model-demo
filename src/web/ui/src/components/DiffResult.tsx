@@ -21,7 +21,7 @@ import { openFailure } from "../model/errors";
 import type { DiffView, Finding, FindingSeverity, Task, VerificationRow } from "../model/types";
 import { actions, useStore } from "../store/store";
 import { AnswerText, ResultAgentText } from "./AgentText";
-import { ResultLink, VerificationLink } from "./ShowMeResult";
+import { ResultLink, ResultNextSteps, VerificationLink } from "./ShowMeResult";
 import type { ShowMeAction } from "../showMe";
 import { ApplyResult, SelectionBar } from "./ApplyPanel";
 import { ChangeList } from "./ChangeList";
@@ -226,6 +226,7 @@ export function DiffResult({ task }: { readonly task: Task }): JSX.Element {
           </Text>
           <Findings view={view} />
           <VerificationSummary view={view} />
+          <ResultNextSteps task={task} />
         </div>
         <HowSure confidence={task.result?.kind === "diff" ? task.result.confidence : undefined} testId="diff-confidence" />
         <VerificationRows view={view} />

@@ -8,9 +8,12 @@ import { formatSignalValue } from "../model/signalValue";
 import type { ExplainResult as ExplainResultData, Task } from "../model/types";
 import { actions, useStore } from "../store/store";
 import { askedMoment } from "../model/tasks";
-import { lookedAt, stateHeading } from "../model/wording";
+import { formatSessionTime, lookedAt, stateHeading } from "../model/wording";
 import { ResultAgentText } from "./AgentText";
-import { ResultLink } from "./ShowMeResult";
+import { ResultLink, ResultNextSteps } from "./ShowMeResult";
+import { HealthModelDiagram } from "./HealthModelDiagram";
+import { useAtMoment } from "../timeline/useAtMoment";
+import { selectModelAt, selectMomentMinute } from "../store/timelineSlice";
 import { HealthBadge } from "./HealthBadge";
 import { HowSure } from "./HowSure";
 import { OffScreenTarget } from "./OffScreenTarget";
@@ -62,7 +65,8 @@ export function ExplainResult({
   readonly result: ExplainResultData;
 }): JSX.Element {
   const styles = useStyles();
-  const model = useStore((state) => state.model);
+  const model = useAtMoment(selectModelAt);
+  const minute = useAtMoment(selectMomentMinute);
   const selected = useStore((state) => state.selected);
   const onScreen = selected !== null && sameModel(task.target, selected);
   const names = useMemo(() => chainEntities(result), [result]);
@@ -70,7 +74,7 @@ export function ExplainResult({
   const looked = result.window ? lookedAt(result.window) : null;
   const asked = askedMoment(task);
   const display = useMemo(
-    () => new Map(model.kind === "success" ? model.value.entities.map((entity) => [entity.name, entity.displayName] as const) : []),
+    () => new Map(model?.entities.map((entity) => [entity.name, entity.displayName] as const)),
     [model],
   );
 
@@ -149,6 +153,9 @@ export function ExplainResult({
           </li>
         ))}
       </ol>
+      {onScreen && model && display.has(result.entity) && <HealthModelDiagram model={model} entityName={result.entity}
+        timeLabel={minute === null ? "Model now" : `Model at ${formatSessionTime(new Date(minute))}`} />}
+      <ResultNextSteps task={task} />
     </div>
   );
 }

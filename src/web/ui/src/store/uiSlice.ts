@@ -39,6 +39,8 @@ export interface UiState {
   /** The entities an open Explain result traces, marked on the graph. */
   readonly chainNames: readonly string[];
   readonly workspaceOpen: boolean;
+  /** Where End tour takes the reader. The open topic and question stay in the workspace underneath. */
+  readonly tourReturn: "workspace" | "page" | null;
   readonly workspaceTarget: "graph" | "timeline" | null;
   readonly workspaceWidth: number;
   readonly workspaceTab: WorkspaceTab;
@@ -74,6 +76,8 @@ export interface UiActions {
   readonly setChain: (names: readonly string[]) => void;
   readonly setWorkspaceTarget: (target: UiState["workspaceTarget"]) => void;
   readonly setWorkspaceOpen: (open: boolean) => void;
+  readonly startTour: () => void;
+  readonly endTour: () => void;
   readonly toggleWorkspace: () => void;
   readonly setWorkspaceWidth: (width: number) => void;
   readonly setWorkspaceTab: (tab: WorkspaceTab) => void;
@@ -113,6 +117,7 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
   focusSeq: 0,
   chainNames: [],
   workspaceOpen: false,
+  tourReturn: null,
   workspaceTarget: null,
   workspaceWidth: WORKSPACE_DEFAULT_WIDTH,
   workspaceTab: "tasks",
@@ -189,8 +194,17 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
     })),
   setChain: (chainNames) => set({ chainNames: [...chainNames] }),
   setWorkspaceTarget: (workspaceTarget) => set({ workspaceTarget }),
-  setWorkspaceOpen: (workspaceOpen) => set({ workspaceOpen }),
-  toggleWorkspace: () => set((state) => ({ workspaceOpen: !state.workspaceOpen })),
+  setWorkspaceOpen: (workspaceOpen) => set({ workspaceOpen, tourReturn: null }),
+  startTour: () => {
+    const state = get();
+    if (state.tourReturn || !state.selected || state.model.kind !== "success") return;
+    set({ workspaceOpen: true, tourReturn: state.workspaceOpen ? "workspace" : "page", workspaceTarget: null });
+  },
+  endTour: () => {
+    const { tourReturn } = get();
+    if (tourReturn) set({ workspaceOpen: tourReturn === "workspace", tourReturn: null, workspaceTarget: null });
+  },
+  toggleWorkspace: () => set((state) => ({ workspaceOpen: state.tourReturn ? true : !state.workspaceOpen, tourReturn: null })),
   setWorkspaceWidth: (width) =>
     set({ workspaceWidth: Math.min(WORKSPACE_MAX_WIDTH, Math.max(WORKSPACE_MIN_WIDTH, Math.round(width))) }),
   setWorkspaceTab: (workspaceTab) => set({ workspaceTab }),

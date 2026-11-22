@@ -246,7 +246,7 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
     void get().refreshSession();
     if (task.kind !== "success") return;
     // With the workspace closed nobody sees the result open by itself, so the user is told.
-    if (!get().workspaceOpen) notify(task.value);
+    if (!get().workspaceOpen || get().tourReturn) notify(task.value);
     await loadDiffOf(task.value);
   };
 
@@ -369,7 +369,7 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
       set({ launch: { kind: "failed", input, label, step, error, made, running } });
     };
     // The workspace opens at once on what is being done, so the click is never dead.
-    set({ launch: { kind: "starting", input, label, step: get().sessionId === null ? "session" : "task" }, workspaceOpen: true });
+    set({ launch: { kind: "starting", input, label, step: get().sessionId === null ? "session" : "task" }, workspaceOpen: true, tourReturn: null });
 
     let open = openSessionOf();
     // The open Session may still show a Task that has ended since: ask again before saying one runs.
@@ -486,7 +486,7 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
     showFinished: async () => {
       const { notice } = get();
       if (notice === null) return;
-      set({ notice: null, workspaceOpen: true, workspaceTab: "tasks" });
+      set({ notice: null, workspaceOpen: true, workspaceTab: "tasks", tourReturn: null });
       if (get().sessionId !== notice.sessionId) await get().openSession(notice.sessionId);
       if (get().taskSeq !== notice.seq) await get().openTask(notice.seq);
     },
@@ -509,6 +509,7 @@ export const tasksSlice: StateCreator<Store, [], [], TasksState & TasksActions> 
       const sid = get().sessionId;
       set((state) => ({
         ...NO_TASK,
+        tourReturn: null,
         taskSeq: seq,
         task: seq === null ? IDLE : known ? { kind: "success", value: known } : LOADING,
         watching: state.watching?.sessionId === sid && state.watching?.seq === seq ? null : state.watching,

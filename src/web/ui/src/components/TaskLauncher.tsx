@@ -25,6 +25,7 @@ import {
   Add20Regular,
   DocumentSearch20Regular,
   Lightbulb20Regular,
+  Map20Regular,
   Sparkle20Regular,
 } from "@fluentui/react-icons";
 import { launchFailure } from "../model/errors";
@@ -76,6 +77,7 @@ function useLaunchState(): LaunchState {
 export function TaskMenu(): JSX.Element {
   const styles = useStyles();
   const { starting, model, question, past } = useLaunchState();
+  const canTour = useStore(state => state.model.kind === "success");
   return (
     <Menu>
       <MenuTrigger disableButtonEnhancement>
@@ -93,6 +95,9 @@ export function TaskMenu(): JSX.Element {
       </MenuTrigger>
       <MenuPopover>
         <MenuList>
+          <MenuItem icon={<Map20Regular />} disabled={!canTour} onClick={actions.startTour} data-testid="menu-tour">
+            Take a tour
+          </MenuItem>
           <MenuItem
             icon={<DocumentSearch20Regular />}
             disabled={!model}

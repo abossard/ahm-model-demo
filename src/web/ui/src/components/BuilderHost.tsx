@@ -69,7 +69,8 @@ export default function BuilderHost() {
         return {};
       };
       bridge.oncalltool = async params => {
-        if (!list.tools.some(t => t.name === params.name)) throw new Error("Unknown builder action.");
+        if (!list.tools.some(t => t.name === params.name && (t._meta?.ui as {resourceUri?: string})?.resourceUri === uri))
+          throw new Error("Unknown builder action.");
         const result = await client.callTool(params, undefined, {timeout: 600000}) as CallToolResult;
         const state = result.structuredContent;
         if (!closed && !result.isError && state) {

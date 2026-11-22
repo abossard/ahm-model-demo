@@ -150,6 +150,7 @@ function WorkspaceToggle(): JSX.Element {
         aria-label={finished ? "History, an answer is ready" : running ? "History, the assistant is working" : "History"}
         onClick={() => actions.toggleWorkspace()}
         data-testid="workspace-toggle"
+        data-tour-target="history"
       >
         History
         {finished ? (

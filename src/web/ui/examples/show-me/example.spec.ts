@@ -18,7 +18,10 @@ for (const width of [390, 1280]) {
     await expect(chat).toBeInViewport();
 
     // The user can still act on the reply while details are open.
-    await chat.locator('[data-show-me-id="history"]').click();
+    const choices = chat.getByRole("group", { name: "Where next?" });
+    await expect(choices.getByRole("button")).toHaveCount(2);
+    await choices.getByRole("button", { name: "See release history" }).focus();
+    await page.keyboard.press("Enter");
     await expect(page).toHaveURL(/#history$/);
     await expect(releaseHistory).toHaveAttribute("data-show-me-highlight", "violet");
     await expect(releaseHistory).toHaveAccessibleDescription("Latest run");

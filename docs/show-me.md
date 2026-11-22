@@ -4,6 +4,10 @@ Choose **Show me** beside a claim to see what the assistant is referring to. The
 
 To follow these examples, start the local app with its scripted agent and select the **hm-local** model. [Local setup without Azure](development.md#without-azure)
 
+## Explore a dependency map
+
+Open **Ask → Take a tour**, or open an Explain answer for the model on screen. The **Dependency map** draws the selected entity and its direct dependencies. For a leaf, it shows the entities that depend on it. Select a card to see its signal readings at the moment shown in the caption. A brief animation traces the connection toward the parent when motion is enabled. The map is a sandboxed MCP App linked to the `show_health_model_diagram` tool. [Diagram View](../src/web/ui/src/diagram/DiagramView.tsx)
+
 ## Trace a dependency on the graph
 
 Choose **Ask**, then **Check this model**. In **Proposed changes**, find the relationship named `orders-api-order-queue`. Its explanation says that the API’s existing database dependency follows the same direction. Choose **Show me** beside that sentence. The graph brings **Orders API** and **Orders database** into view and traces their connection in violet.

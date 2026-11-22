@@ -1,4 +1,4 @@
-import type { ShowMeAction, ShowMeDescriptor } from "../showMe";
+import type { NextStep, ShowMeAction, ShowMeDescriptor } from "../showMe";
 export type HealthState =
   | "Healthy"
   | "Degraded"
@@ -240,6 +240,7 @@ export interface ExplainCause {
 }
 
 export interface ExplainResult {
+  readonly nextSteps?: readonly NextStep[];
   readonly showMe?: Readonly<Record<string, ShowMeAction>>;
   readonly kind: "explain";
   readonly entity: string;
@@ -288,6 +289,7 @@ export interface SubmittedChange {
 }
 
 export interface DiffTaskResult {
+  readonly nextSteps?: readonly NextStep[];
   readonly showMe?: Readonly<Record<string, ShowMeAction>>;
   readonly kind: "diff";
   readonly summary: string;

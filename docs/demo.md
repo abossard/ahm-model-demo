@@ -27,6 +27,12 @@ In **Workload**, expand **Analysis activity** to inspect a run. The first checks
 
 Creating a model requires permission to write Azure Monitor health models in the destination group. After creation, **Signal access** lists each resource that supplies an enabled signal. Choose **Grant Monitoring Reader** to assign the role to the model's identity with your Azure account. Azure checks your permission to assign roles at each resource. The result for each resource stays in the Session, and you can retry a failed grant. Signals can show **Unknown** until Azure collects the next reading.
 
+## Take a tour
+
+Open a health model and choose **Ask → Take a tour**. Each stop offers a few places to go next. Try **Trace a dependency** to highlight a real connection, then **Read a signal** to find a reading on the timeline. In the assistant’s dependency map, select an entity to inspect its signals. **Back** retraces the path you chose. **End tour** returns you to your question or the model.
+
+Saved assistant answers can also offer **Where next?** buttons. Reopen a question from History to follow another suggestion.
+
 ## Browse a model
 
 - The graph opens `hm-<env>`: the root `Health Pulse`, three user flows, four system components and the Azure resources that hold the signals.

@@ -23,7 +23,7 @@ _RESOURCE_VALIDATORS = {
 
 
 def submission_schema(kind: str | None, entity: str = "", builder: dict | None = None,
-                      window: dict[str, str] | None = None) -> dict | None:
+                      window: dict[str, str] | None = None, *, next_steps: bool = False) -> dict | None:
     """Describe only this Task's result in the hosted tool's existing result argument."""
     if kind is None:
         return None
@@ -49,6 +49,8 @@ def submission_schema(kind: str | None, entity: str = "", builder: dict | None =
     result = inline(_SCHEMA["$defs"][kind])
     # The submit tool attaches the buttons the run actually prepared.
     result["properties"].pop("showMe", None)
+    if not next_steps:
+        result["properties"].pop("nextSteps", None)
     if kind == "explain":
         fields = result["properties"]
         if entity:

@@ -26,7 +26,7 @@ from starlette.datastructures import Headers, MutableHeaders
 
 import apply
 from builder import Builder
-from builder_mcp import BuilderMCP
+from builder_mcp import DIAGRAM_URI, URI as BUILDER_URI, BuilderMCP
 from contracts.show_me import catalog_problem
 import history_store
 import inventory
@@ -1201,13 +1201,18 @@ async def unknown_api_path():
     return _not_found("not_found", "There is no such API route.")
 
 
-builder_mcp = BuilderMCP(authenticated, lambda caller: Builder(caller, store, runner, health), UI_DIST_DIR / "builder.html")
+builder_mcp = BuilderMCP(authenticated, lambda caller: Builder(caller, store, runner, health), UI_DIST_DIR)
 app.add_route("/api/builder/mcp", builder_mcp, methods=["GET", "POST", "DELETE"])
 
 
 @app.get("/builder/view/{digest}")
 def builder_sandbox(digest: str):
-    return builder_mcp.sandbox_view(digest)
+    return builder_mcp.sandbox_view(BUILDER_URI, digest)
+
+
+@app.get("/diagram/view/{digest}")
+def diagram_sandbox(digest: str):
+    return builder_mcp.sandbox_view(DIAGRAM_URI, digest)
 
 
 app.include_router(api)

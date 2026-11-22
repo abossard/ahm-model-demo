@@ -3,6 +3,7 @@ import type { Task, VerificationRow } from "../model/types";
 import type { ShowMeAction, ShowMeRegistry } from "../showMe";
 import { SHOW_ME_MARKER, withoutShowMeMarkers } from "../showMe/markers";
 import { ShowMeButton, ShowMeText } from "../showMe/ShowMeText";
+import { ShowMeNextSteps } from "../showMe/NextSteps";
 import type { ShowChange } from "../store/diffShowMe";
 import { actions, useStore } from "../store/store";
 import { workspaceShowMe } from "../store/workspaceShowMe";
@@ -34,6 +35,12 @@ export function ShowMeResult({ task, children }: { readonly task: Task; readonly
   }, [context]);
 
   return <Context.Provider value={context}>{children}</Context.Provider>;
+}
+
+export function ResultNextSteps({ task }: { task: Task }) {
+  const context = useContext(Context);
+  if (!task.result?.nextSteps || !context?.actions) return null;
+  return <ShowMeNextSteps key={task.id} choices={task.result.nextSteps} actions={context.actions} registry={context.registry} />;
 }
 
 export function ResultText({ text, renderText }: { text: string; renderText: (text: string) => ReactNode }) {

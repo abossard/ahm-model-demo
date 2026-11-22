@@ -1,5 +1,5 @@
 import type { ActivityEvent, DiffTaskResult, ModelSelection, TaskStatus } from "../model/types";
-import type { ShowMeAction, ShowMeDescriptor } from "../showMe";
+import type { NextStep, ShowMeAction, ShowMeDescriptor } from "../showMe";
 
 export interface ResourceGroup {
   id: string;
@@ -30,6 +30,7 @@ export interface AnalysisRow {
 }
 
 export interface Analysis {
+  nextSteps?: NextStep[];
   kind: "builderAnalysis";
   showMe?: Record<string, ShowMeAction>;
   summary: string;
@@ -114,7 +115,7 @@ export interface BuilderState {
   target?: ModelSelection & { location?: string };
   analysis?: BuilderTask<Analysis>;
   failedRevision?: BuilderTask<Analysis>;
-  proposal?: BuilderTask<{ kind: "builderProposals"; proposals: Proposal[]; showMe?: Record<string, ShowMeAction> }>;
+  proposal?: BuilderTask<{ kind: "builderProposals"; proposals: Proposal[]; showMe?: Record<string, ShowMeAction>; nextSteps?: NextStep[] }>;
   creation?: {
     status: "creating" | "partial" | "created";
     proposalId: string;

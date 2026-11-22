@@ -143,6 +143,48 @@ async function expectExposed(target: Locator) {
   })).toBe(true);
 }
 
+for (const width of [1280, 390]) {
+  test(`the assistant tour branches through the real model at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const reduced = width === 390;
+    await page.emulateMedia({ reducedMotion: reduced ? "reduce" : "no-preference" });
+    await boot(page);
+    await page.getByTestId("task-menu").click();
+    await page.getByTestId("menu-tour").click();
+    const tour = page.getByTestId("assistant-tour");
+    const title = tour.getByTestId("tour-stop-title");
+    const choices = tour.getByRole("group", { name: "Where next?" }).getByRole("button");
+    await expect(title).toHaveText("Meet your model");
+    await expect(choices).toHaveCount(3);
+
+    const frame = tour.frameLocator('iframe[title="Interactive health model diagram"]');
+    const diagram = frame.getByTestId("health-model-diagram");
+    const nodeButton = diagram.getByRole("button", { name: /^Web frontend/ });
+    await nodeButton.click();
+    await expect(nodeButton).toHaveAttribute("aria-pressed", "true");
+    await expect(diagram.getByTestId("diagram-readings")).toContainText("HTTP 5xx");
+    await expect(diagram.locator(".hm-diagram__trace").first()).toHaveCSS("animation-name", reduced ? "none" : "hm-diagram-rollup");
+
+    await tour.getByRole("button", { name: "Trace a dependency" }).click();
+    await expect(title).toHaveText("Follow that thread");
+    await expect(page.locator(".react-flow__edge-path[data-show-me-highlight]")).toBeInViewport();
+    await expect(choices).toHaveCount(3);
+    await tour.getByRole("button", { name: "Read a signal" }).click();
+    await expect(title).toHaveText("A little signal sleuthing");
+    const lane = page.getByTestId("tl-label-signal").and(page.locator("[data-show-me-highlight]"));
+    await expectExposed(lane);
+    await expectExposed(title);
+    await expect(choices).toHaveCount(3);
+    await tour.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(title).toHaveText("Follow that thread");
+    await tour.getByRole("button", { name: "End tour" }).click();
+    await expect(tour).toHaveCount(0);
+    await expect(page.locator("[data-show-me-highlight]")).toHaveCount(0);
+    await expect(page.getByTestId("task-menu")).toBeFocused();
+    await expect(page).not.toHaveURL(/[?&]session=/);
+  });
+}
+
 test("Show me advertises destinations, restores inline buttons and reveals the target beside the answer", async ({ page }) => {
   await boot(page);
   await newSession(page, "Show me this finding");
@@ -158,6 +200,9 @@ test("Show me advertises destinations, restores inline buttons and reveals the t
   const { session, task } = openTaskIds(page);
   const saved = await (await page.request.get(`/api/sessions/${session}/tasks/${task}`)).json();
   expect(saved.showMeHandles).toEqual(offered);
+  expect(saved.result.nextSteps.map((step: { label: string }) => step.label)).toEqual([
+    "See signal coverage", "Inspect the entity", "Trace the database connection",
+  ]);
   expect(Object.values(saved.result.showMe)).toContainEqual(expect.objectContaining({ handle: "panel", id: "entity/orders-api" }));
   const finding = page.getByTestId("finding-0");
   const entityButton = finding.getByRole("button", { name: /^Show me/ });
@@ -178,6 +223,10 @@ test("Show me advertises destinations, restores inline buttons and reveals the t
   await expect(page.locator("[data-show-me-highlight]")).toHaveCount(0);
 
   const result = workspace(page);
+  const nextSteps = result.getByRole("group", { name: "Where next?" });
+  await expect(nextSteps.getByRole("button")).toHaveCount(3);
+  await nextSteps.getByRole("button", { name: "See signal coverage" }).click();
+  await expect(coverage).toHaveAttribute("data-show-me-highlight", "blue");
   await result.locator('[data-show-me-id="node/orders-api"]').click();
   await expect(page.locator('[data-graph-area] [data-show-me-highlight="blue"]'))
     .toHaveAttribute("data-entity", "orders-api");

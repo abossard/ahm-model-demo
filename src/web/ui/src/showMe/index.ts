@@ -23,6 +23,12 @@ export interface ShowMeAction {
   readonly highlight?: ShowMeHighlight;
 }
 
+/** A saved answer uses the numeric key from its Show me action map as the id. */
+export interface NextStep {
+  readonly id: string;
+  readonly label: string;
+}
+
 export type ShowMeOutcome = "shown" | "unavailable" | "superseded";
 
 export interface ShowMeRegistry {

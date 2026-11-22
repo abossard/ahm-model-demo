@@ -1,4 +1,4 @@
-"""The authenticated MCP Apps boundary for the first-party builder View."""
+"""Authenticated MCP tools and sandboxed Views for Health Pulse."""
 
 import hashlib
 import logging
@@ -22,6 +22,8 @@ from sessions_store import SessionLimit, SessionNotFound, StoreUnavailable, Task
 from task_runner import AgentsBusy, TaskRunning, UserBusy
 
 URI = "ui://health-models/builder-v1.html"
+DIAGRAM_URI = "ui://health-models/diagram-v1.html"
+DIAGRAM_TOOL = "show_health_model_diagram"
 MIME = "text/html;profile=mcp-app"
 EXTENSION = "io.modelcontextprotocol/ui"
 VIEW_POLICY = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts allow-forms"
@@ -45,6 +47,23 @@ ROW = obj({"resourceId": ARM_ID, "displayName": string(120), "purpose": string(8
 REVIEWED = {"sessionId": SESSION, "analysisSeq": SEQUENCE,
             "rows": {"type": "array", "minItems": 1, "maxItems": MAX_BUILDER_RESOURCES, "items": ROW}}
 TURN = {"showMeHandles": HANDLES_SCHEMA}
+
+STATE = {"enum": ["Healthy", "Degraded", "Unhealthy", "Unknown", "Deleted"]}
+SIGNAL_FIELDS = {
+    "name": string(512), "displayName": {"type": ["string", "null"], "maxLength": 1024},
+    "healthState": STATE, "value": {"type": ["string", "number", "null"], "maxLength": 1024},
+}
+ENTITY_FIELDS = {
+    "name": string(512), "displayName": string(1024), "healthState": STATE, "impact": string(128),
+    "signals": {"type": "array", "maxItems": 24, "items": obj(SIGNAL_FIELDS, SIGNAL_FIELDS)},
+}
+COUNT = {"type": "integer", "minimum": 0}
+DIAGRAM_ENTITY = obj({**ENTITY_FIELDS, "signalCount": COUNT}, ENTITY_FIELDS)
+DIAGRAM_INPUT = obj({"diagram": obj({
+    "anchor": {"anyOf": [DIAGRAM_ENTITY, {"type": "null"}]},
+    "neighbors": {"type": "array", "items": DIAGRAM_ENTITY, "maxItems": 6},
+    "leaf": {"type": "boolean"}, "timeLabel": string(200), "neighborCount": COUNT,
+}, ("anchor", "neighbors", "leaf"))})
 
 
 def ids():
@@ -84,29 +103,40 @@ class BuilderServer(Server):
 
 
 class BuilderMCP:
-    def __init__(self, authenticated, service, view_file):
+    def __init__(self, authenticated, service, dist):
         self.authenticated = authenticated
-        self.view_file = view_file
+        self.views = {URI: ("Health model builder", dist / "builder.html"),
+                      DIAGRAM_URI: ("Health model diagram", dist / "diagram.html")}
         self.server = BuilderServer("Health model builder", version="1")
 
         @self.server.list_tools()
         async def list_tools():
-            return [types.Tool(name=name, description=description, inputSchema=schema,
+            builder_tools = [types.Tool(name=name, description=description, inputSchema=schema,
                                _meta={"ui": {"resourceUri": URI, "visibility": ["app", "model"] if name == "builder_open" else ["app"]}})
                     for name, (_, description, schema) in TOOLS.items()]
+            return [*builder_tools, types.Tool(
+                name=DIAGRAM_TOOL, description="Show the selected entity, its neighbors and their signal readings. "
+                "For a leaf, neighbors are its parents. Otherwise they are its dependencies.",
+                inputSchema=DIAGRAM_INPUT, annotations=types.ToolAnnotations(readOnlyHint=True),
+                _meta={"ui": {"resourceUri": DIAGRAM_URI, "visibility": ["app", "model"]}},
+            )]
 
         @self.server.list_resources()
         async def list_resources():
-            return [types.Resource(uri=URI, name="Health model builder", mimeType=MIME)]
+            return [types.Resource(uri=uri, name=name, mimeType=MIME) for uri, (name, _) in self.views.items()]
 
         @self.server.read_resource()
         async def read_resource(uri):
-            if str(uri) != URI:
-                raise ValueError("Unknown builder resource.")
-            return [ReadResourceContents(self.view_file.read_text(encoding="utf-8"), MIME, {"ui": {"csp": {}}})]
+            if str(uri) not in self.views:
+                raise ValueError("Unknown View.")
+            _, path = self.views[str(uri)]
+            return [ReadResourceContents(path.read_text(encoding="utf-8"), MIME, {"ui": {"csp": {}}})]
 
         @self.server.call_tool()
         async def call_tool(name, arguments):
+            if name == DIAGRAM_TOOL:
+                return types.CallToolResult(structuredContent={"diagram": arguments.get("diagram")},
+                                            content=[types.TextContent(type="text", text="Health model diagram")])
             if name not in TOOLS:
                 return error_result("unknown_tool", "Unknown builder action.")
             caller = self.server.request_context.request.state.builder_caller
@@ -154,12 +184,12 @@ class BuilderMCP:
         async with manager.run():
             await manager.handle_request(scope, receive, send)
 
-    def sandbox_view(self, digest):
+    def sandbox_view(self, uri, digest):
         # The first-party host serves exactly the document it read through MCP in an opaque-origin frame.
         try:
-            html = self.view_file.read_bytes()
+            html = self.views[uri][1].read_bytes()
         except FileNotFoundError:
-            return PlainTextResponse("The builder view is unavailable.", status_code=404)
+            return PlainTextResponse("The View is unavailable.", status_code=404)
         if digest != hashlib.sha256(html).hexdigest():
-            return PlainTextResponse("The builder has changed. Reopen it.", status_code=404)
+            return PlainTextResponse("The View has changed. Reopen it.", status_code=404)
         return HTMLResponse(html, headers={"Content-Security-Policy": VIEW_POLICY})

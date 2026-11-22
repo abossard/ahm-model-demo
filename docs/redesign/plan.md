@@ -74,13 +74,13 @@ Task = {
 ```text
 TaskResult =
   | { kind: "explain", entity, state, summary,
-      showMe?: Record<string, ShowMeAction>,
+      showMe?: Record<string, ShowMeAction>, nextSteps?: [{ id, label }],
       confidence?: "high"|"medium"|"low",
       window?: { from, to },                          // ISO. Present exactly when the run read history
       causes: [{ entity, signal: string|null, state, threshold: string|null, value: string|number|null,
                  rollup: string|null, note }] }      // ordered from the asked entity down to the root cause
   | { kind: "diff", summary,
-      showMe?: Record<string, ShowMeAction>,
+      showMe?: Record<string, ShowMeAction>, nextSteps?: [{ id, label }],
       confidence?: "high"|"medium"|"low",
       changes: [{ id, op: "add"|"change"|"remove",
                   kind: "entity"|"signalDefinition"|"relationship",
@@ -90,8 +90,8 @@ TaskResult =
       verification: [{ entity, signal, status: "verified"|"failing"|"not_run",
                        query: string|null, value: string|number|null, error: string|null }],
       findings: [{ severity: "high"|"medium"|"low", entity: string|null, text, changeIds: [string] }] }
-  | { kind: "builderAnalysis", summary, showMe?: Record<string, ShowMeAction>, rows: BuilderRow[], plan: { objective, flows, gaps, decisions?: [{ choice, reason, basis: "inventory"|"measurement"|"assumption"|"userInput", resourceIds }] }, metrics: BuilderMetric[], omittedMetrics?: [{ resourceId, reason }] }
-  | { kind: "builderProposals", showMe?: Record<string, ShowMeAction>, proposals: [{ id, title, summary, tradeoff, structure: "planned"|"direct"|"grouped",
+  | { kind: "builderAnalysis", summary, showMe?: Record<string, ShowMeAction>, nextSteps?: [{ id, label }], rows: BuilderRow[], plan: { objective, flows, gaps, decisions?: [{ choice, reason, basis: "inventory"|"measurement"|"assumption"|"userInput", resourceIds }] }, metrics: BuilderMetric[], omittedMetrics?: [{ resourceId, reason }] }
+  | { kind: "builderProposals", showMe?: Record<string, ShowMeAction>, nextSteps?: [{ id, label }], proposals: [{ id, title, summary, tradeoff, structure: "planned"|"direct"|"grouped",
         groups: [{ name, purpose, resourceIds: string[] }] }],
       metrics?: [{ resourceId, metricName, metricNamespace, aggregation, operator, threshold, sample }] }
 ```
@@ -127,6 +127,8 @@ The hosted `show_me(handle, id?, highlight?)` tool prepares a button and returns
 `ShowMeAction` contains a handle name, an optional id of up to 256 characters and an optional highlight object with a color (`blue`, `amber` or `violet`) and/or a plain-text label of up to 120 characters. The server checks the mapping against the Task's catalog and marker placements. A click runs the browser's registered handler while the answer stays on screen. The browser checks current availability and resolves the id in the context of that answer. The map reopens with the Task. Earlier workspace answers keep their saved handle names. Plain results remain readable.
 
 The builder retains its ordered inventory and signal evidence with each Task so its references resolve after a Session reopens. Each new revision or proposal receives a plain copy of the confirmed plan. Compiling a proposal removes its inline markers before deriving model properties, proposed changes, plan.md and modelspec.md. An answer can therefore point into a preview without changing what that preview deploys.
+
+All four result kinds can offer `nextSteps` when the browser advertises destinations. Each of the two or three choices has a distinct single-line `label` of up to 80 characters and an `id` containing the numeric key from this Task's `show_me` marker. For example, `{"id":"2","label":"Trace the database connection"}` uses `showMe["2"]`. Choices must open distinct destinations. An action may be referenced by a choice, by inline prose, or by both. The answer saves the order and labels alongside the action map. The browser displays these choices under **Where next?** whenever the reader opens the answer.
 
 #### Health model builder
 

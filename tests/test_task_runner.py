@@ -198,8 +198,17 @@ class SuccessTests(unittest.IsolatedAsyncioTestCase):
         result["summary"] += " [[show:1]]"
         handles = [{"name": "builder", "description": "Inspect a resource.", "idDescription": "resource/Rn"}]
         action = {"handle": "builder", "id": "resource/R1"}
+        signal = {**action, "id": "signal/R1"}
+        choices = [{"id": "1", "label": "Inspect the resource"}, {"id": "2", "label": "Read its signal"}]
+        with_choices = {**result, "nextSteps": choices}
         for label, answer, mapping, expected in (
             ("accepted", result, {"1": action}, "done"),
+            ("next step used only in the menu", with_choices, {"1": action, "2": signal}, "done"),
+            ("next step outside the mapping", with_choices, {"1": action}, "failed"),
+            ("same destination twice", with_choices, {"1": action, "2": {**action, "highlight": {"color": "violet"}}}, "failed"),
+            ("single suggestion", {**result, "nextSteps": choices[:1]}, {"1": action}, "failed"),
+            ("four suggestions", {**result, "nextSteps": choices * 2}, {"1": action, "2": signal}, "failed"),
+            ("multiline label", {**result, "nextSteps": [choices[0], {**choices[1], "label": "A\nB"}]}, {"1": action, "2": signal}, "failed"),
             ("no registration", result, {}, "failed"),
             ("foreign handle", result, {"1": {**action, "handle": "graph"}}, "failed"),
             ("marker in an editable field", {**result, "plan": {**result["plan"], "objective": "Serve orders. [[show:1]]"}},
@@ -215,6 +224,7 @@ class SuccessTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(task["showMeHandles"], handles)
                     self.assertEqual(task["result"]["showMe"], mapping)
                     self.assertEqual(task["result"]["summary"], result["summary"])
+                    self.assertEqual(task["result"].get("nextSteps"), answer.get("nextSteps"))
                     envelope = json.loads(env.agent.calls[0][1].split("\n", 1)[1])["task"]
                     self.assertEqual(envelope["showMeHandles"], handles)
                     self.assertEqual(envelope["builder"]["resources"], [{**resource, "ref": "R1"}])

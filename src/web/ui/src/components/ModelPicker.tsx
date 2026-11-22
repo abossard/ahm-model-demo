@@ -178,7 +178,7 @@ export function ModelPicker(): JSX.Element | null {
           ) : null}
         </Combobox>
       </Field>
-      <Link href={workspaceLink("/builder")} aria-label="Create new health model">Create model</Link>
+      <Link href={workspaceLink("/builder")} aria-label="Create new health model" data-tour-target="builder">Create model</Link>
       <input type="hidden" data-testid="model-picker" value={selectedKey} readOnly />
       <span className={styles.visuallyHidden} role="status" data-testid="model-picker-status">
         {announcement}

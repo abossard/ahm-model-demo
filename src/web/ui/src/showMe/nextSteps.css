@@ -1,0 +1,27 @@
+.next-steps {
+  display: grid;
+  gap: .5rem;
+  margin-block: .75rem;
+}
+
+.next-steps-label { font-weight: 600; }
+.next-steps-choices { display: flex; flex-wrap: wrap; gap: .45rem; }
+.next-steps-choices button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .65em;
+  max-width: 100%;
+  padding: .4em .75em;
+  border: 1px solid var(--colorNeutralStroke1, var(--line, GrayText));
+  border-radius: .5rem;
+  background: var(--colorNeutralBackground1, var(--surface, Canvas));
+  color: var(--colorBrandForeground1, var(--accent, LinkText));
+  font: inherit;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.next-steps-choices button:hover { border-color: currentColor; }
+.next-steps-choices button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.next-steps-choices button:disabled { opacity: .6; cursor: default; }

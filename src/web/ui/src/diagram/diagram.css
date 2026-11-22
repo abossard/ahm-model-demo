@@ -1,0 +1,123 @@
+.hm-diagram {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: var(--borderRadiusLarge);
+  background: var(--colorNeutralBackground1);
+  color: var(--colorNeutralForeground1);
+  font-size: var(--fontSizeBase200);
+  line-height: var(--lineHeightBase200);
+}
+
+.hm-diagram figcaption, .hm-diagram__relation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+}
+
+.hm-diagram figcaption {
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+}
+
+.hm-diagram figcaption svg { color: var(--colorBrandForeground1); }
+.hm-diagram figcaption > span { margin-inline-start: auto; color: var(--colorNeutralForeground2); }
+.hm-diagram p { margin: 12px; }
+
+.hm-diagram__stage {
+  padding: 12px 14px;
+  background-color: var(--canvas-bg);
+  background-image: radial-gradient(circle, var(--canvas-grid) 1px, transparent 1px);
+  background-size: 12px 12px;
+}
+
+.hm-diagram__row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  justify-content: center;
+}
+
+.hm-diagram__row[data-single="true"] { grid-template-columns: minmax(0, 64%); }
+
+.hm-diagram__node {
+  display: grid;
+  align-content: center;
+  text-align: start;
+  min-width: 0;
+  min-height: 45px;
+  padding: 5px 7px;
+  color: var(--colorNeutralForeground1);
+  background: var(--colorNeutralBackground1);
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: var(--borderRadiusMedium);
+  box-shadow: var(--shadow2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.hm-diagram__node:hover { border-color: var(--colorBrandStroke1); }
+.hm-diagram__node[aria-pressed="true"] {
+  border-color: var(--colorBrandStroke1);
+  box-shadow: 0 0 0 1px var(--colorBrandStroke1);
+}
+.hm-diagram button:focus-visible, .hm-diagram summary:focus-visible { outline: 2px solid var(--colorStrokeFocus2); outline-offset: 2px; }
+.hm-diagram__node .entity-node__header {
+  display: grid;
+  grid-template-columns: 27px minmax(0, auto);
+  align-items: center;
+  justify-content: center;
+  gap: 1px 7px;
+  min-height: 0;
+  padding: 0;
+}
+.hm-diagram__node .entity-node__name { font-size: inherit; line-height: inherit; }
+.hm-diagram__node .entity-node__icon {
+  grid-row: 1 / 3;
+  display: grid;
+  place-items: center;
+  height: 27px;
+  border-radius: var(--borderRadiusMedium);
+  background: var(--colorNeutralBackground3);
+}
+.hm-diagram__node[aria-pressed="true"] .entity-node__icon {
+  background: var(--colorBrandBackground2);
+}
+.hm-diagram__state, .hm-diagram__reading { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.hm-diagram__edges { display: block; width: 100%; height: 24px; overflow: visible; }
+.hm-diagram__trace { opacity: 0; }
+@media (prefers-reduced-motion: no-preference) {
+  .hm-diagram__trace { stroke-dasharray: .12 1.2; animation: hm-diagram-rollup 950ms ease-in-out; }
+}
+@keyframes hm-diagram-rollup {
+  0% { stroke-dashoffset: .12; opacity: 0; }
+  15%, 80% { opacity: 1; }
+  100% { stroke-dashoffset: -1; opacity: 0; }
+}
+
+.hm-diagram__relation { color: var(--colorNeutralForeground2); padding-block: 5px; }
+.hm-diagram__pager { display: inline-flex; align-items: center; gap: 4px; margin-inline-start: auto; white-space: nowrap; }
+.hm-diagram__pager button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: var(--borderRadiusMedium);
+  color: inherit;
+  background: var(--colorNeutralBackground1);
+  cursor: pointer;
+}
+.hm-diagram__pager button:disabled { color: var(--colorNeutralForegroundDisabled); cursor: default; }
+.hm-diagram__details {
+  border-top: 1px solid var(--colorNeutralStroke2);
+  border-radius: 0 0 var(--borderRadiusLarge) var(--borderRadiusLarge);
+  padding: 7px 12px;
+  background: var(--colorNeutralBackground2);
+}
+.hm-diagram summary { cursor: pointer; font-weight: var(--fontWeightSemibold); }
+.hm-diagram__signals { list-style: none; padding: 0; margin: 3px 0 0; }
+.hm-diagram__signals li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 8px; padding: 2px 0; }
+.hm-diagram__reading { color: var(--colorNeutralForeground2); font-variant-numeric: tabular-nums; }

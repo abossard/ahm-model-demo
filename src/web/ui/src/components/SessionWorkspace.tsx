@@ -1,4 +1,4 @@
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { lazy, Suspense, useEffect, useRef, useSyncExternalStore } from "react";
 import type { CSSProperties, JSX, KeyboardEvent, PointerEvent } from "react";
 import { makeStyles, mergeClasses, tokens } from "@fluentui/react-components";
 import { actions, useStore } from "../store/store";
@@ -16,6 +16,7 @@ import { escapeIsFree } from "./escapeFree";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
 const KEY_STEP = 16;
+const AssistantTour = lazy(() => import("../tour/AssistantTour").then(module => ({ default: module.AssistantTour })));
 const PHONE = "(max-width: 720px)";
 
 function watchPhone(change: () => void): () => void {
@@ -154,6 +155,7 @@ export function SessionWorkspace(): JSX.Element {
   const inSession = useStore((state) => state.sessionId !== null);
   const launching = useStore((state) => state.launch.kind !== "idle");
   const form = useStore((state) => state.workspaceTab === "new");
+  const touring = useStore(state => state.tourReturn !== null);
   const over = useStore((state) => state.timelineOpen && state.timelineFullscreen);
   // On a phone the panel is a sheet over the whole page: a modal, so what it covers is out of reach until it closes.
   const sheet = useSyncExternalStore(watchPhone, isPhone, () => false) && open && !target;
@@ -206,7 +208,8 @@ export function SessionWorkspace(): JSX.Element {
     >
       {open ? (
         <div className={styles.panel}>
-          {inSession ? <SessionView /> : form ? <NewTaskView /> : launching ? <StartingView /> : <SessionList />}
+          {touring ? <Suspense fallback={<p role="status">Opening tour…</p>}><AssistantTour /></Suspense>
+            : inSession ? <SessionView /> : form ? <NewTaskView /> : launching ? <StartingView /> : <SessionList />}
         </div>
       ) : null}
       {open ? <ResizeHandle asideRef={asideRef} /> : null}

@@ -259,6 +259,22 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     later["task"]["showMeHandles"] = catalog
                 client, _ = await self.run_agent([json.dumps(current), json.dumps(later)], [[call("submit_result", result=DIFF)]])
                 self.assertNotIn("show_me", client.tool_names)
+                self.assertNotIn("nextSteps", client.submission_schemas[0]["properties"])
+
+    async def test_next_steps_can_reference_actions_only_used_in_the_menu(self):
+        current = json.loads(envelope("t-7").split("\n", 1)[1])
+        current["task"]["showMeHandles"] = [{"name": "graph", "description": "Open the model graph.", "idDescription": "view/<layout>"}]
+        steps = [{"id": "1", "label": "See signal coverage"}, {"id": "2", "label": "See dependencies"}]
+        graph = {"handle": "graph", "id": "view/zoom"}
+        coverage = {"handle": "graph", "id": "view/coverage"}
+        client, response = await self.run_agent([json.dumps(current)], [
+            [call("show_me", **coverage), call("show_me", **graph)],
+            [call("submit_result", result={**DIFF, "nextSteps": steps})],
+        ])
+        self.assertIn("nextSteps", client.submission_schemas[0]["properties"])
+        saved = {"1": coverage, "2": graph}
+        self.assertEqual(submissions(response.messages), [{"status": "accepted", "showMe": saved}])
+        self.assertEqual(json.loads((self.workspace / "tasks/t-7/result.json").read_text()), {**DIFF, "nextSteps": steps, "showMe": saved})
 
     async def test_builder_reviews_inventory_then_proposes_distinct_models_without_reading_a_target(self):
         resource = {"id": RESOURCE_ID, "name": "ca-web", "type": "Microsoft.App/containerApps"}

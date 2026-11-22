@@ -55,6 +55,17 @@
       "type": "object", "maxProperties": 16, "propertyNames": { "pattern": "^([1-9]|1[0-6])$" },
       "additionalProperties": { "$ref": "#/$defs/showMeAction" }
     },
+    "nextSteps": {
+      "description": "Two or three destinations the reader may choose next. Use the numeric id from a show_me marker.",
+      "type": "array", "minItems": 2, "maxItems": 3,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "label"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^([1-9]|1[0-6])$" },
+          "label": { "type": "string", "maxLength": 80, "pattern": "\\S" }
+        }
+      }
+    },
     "builderText": { "type": "string", "minLength": 1, "maxLength": 800, "pattern": "\\S" },
     "builderLabel": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "\\S" },
     "builderResourceId": { "type": "string", "minLength": 1, "maxLength": 2048 },
@@ -103,6 +114,7 @@
       "type": "object", "additionalProperties": false, "required": ["kind", "summary", "rows", "plan", "metrics"],
       "properties": {
         "kind": { "const": "builderAnalysis" },
+        "nextSteps": { "$ref": "#/$defs/nextSteps" },
         "showMe": { "$ref": "#/$defs/showMe" },
         "plan": { "$ref": "#/$defs/builderPlan" },
         "metrics": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/builderMetric" } },
@@ -150,6 +162,7 @@
       "type": "object", "additionalProperties": false, "required": ["kind", "proposals"],
       "properties": {
         "kind": { "const": "builderProposals" },
+        "nextSteps": { "$ref": "#/$defs/nextSteps" },
         "showMe": { "$ref": "#/$defs/showMe" },
         "proposals": { "type": "array", "minItems": 2, "maxItems": 3, "items": { "$ref": "#/$defs/builderProposal" } },
         "metrics": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/builderMetric" } }
@@ -176,6 +189,7 @@
       "required": ["kind", "entity", "state", "summary", "causes"],
       "properties": {
         "kind": { "const": "explain" },
+        "nextSteps": { "$ref": "#/$defs/nextSteps" },
         "showMe": { "$ref": "#/$defs/showMe" },
         "entity": { "$ref": "#/$defs/text" },
         "state": { "$ref": "#/$defs/healthState" },
@@ -205,6 +219,7 @@
       "required": ["kind", "summary", "changes", "verification", "findings"],
       "properties": {
         "kind": { "const": "diff" },
+        "nextSteps": { "$ref": "#/$defs/nextSteps" },
         "showMe": { "$ref": "#/$defs/showMe" },
         "confidence": { "$ref": "#/$defs/confidence" },
         "summary": { "$ref": "#/$defs/text" },
