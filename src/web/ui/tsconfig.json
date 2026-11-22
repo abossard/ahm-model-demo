@@ -21,5 +21,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "examples/show-me", "vite.config.ts"]
+  "include": ["src", "examples/show-me", "onboarding", "playwright.onboarding.config.ts", "vite.config.ts"]
 }

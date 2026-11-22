@@ -7,7 +7,7 @@ WEB_PYTHON ?= $(WEB_VENV)/bin/python
 # Must match the base image in src/web/Dockerfile so local runs use the same interpreter as the container.
 PYTHON_VERSION ?= 3.14
 
-.PHONY: help env deps ui dev gate
+.PHONY: help env deps ui dev gate onboarding-tour
 
 gate:
 	@scripts/local-env.sh > /dev/null
@@ -16,8 +16,9 @@ help:
 	@echo "make dev   start the web app locally against the selected azd environment"
 	@echo "make ui    build the SPA that web serves from src/web/ui/dist"
 	@echo "make env   print the azd environment mapping without starting anything"
+	@echo "make onboarding-tour   record the offline builder and regenerate the illustrated guide"
 	@echo
-	@echo "Requires a provisioned environment: run 'azd provision' first, then 'azd env select <name>'."
+	@echo "make dev and make env require a provisioned azd environment."
 	@echo "web http://127.0.0.1:$(WEB_PORT)"
 
 env:
@@ -40,6 +41,11 @@ deps:
 
 ui: deps
 	@npm --prefix src/web/ui run build
+
+onboarding-tour: deps
+	@command -v ffmpeg >/dev/null || { echo "Install FFmpeg to encode the tour GIFs."; exit 1; }
+	@cd src/web/ui && npx --no-install playwright install chromium
+	@npm --prefix src/web/ui run e2e -- --config playwright.onboarding.config.ts
 
 dev: gate ui
 	@set -e; \

@@ -61,4 +61,6 @@ Choose **Create model** beside the model picker. Select individual resources or 
 
 Revise the workload plan, compare designs and download `plan.md` and `modelspec.md` for the one you choose. When you select **Confirm creation in Azure**, the app creates a new health model in your chosen resource group. [Builder walkthrough](docs/demo.md#create-a-health-model)
 
+Choose **Tour this model** on the receipt to follow its first signal. [Orders onboarding example with screenshots and GIFs](docs/onboarding/tour/README.md)
+
 [Demo guide](docs/demo.md) · [Local development and tests](docs/development.md) · [Infrastructure](infra/README.md) · [Architecture](docs/redesign/plan.md)

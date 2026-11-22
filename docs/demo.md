@@ -18,6 +18,8 @@ Your directory's consent policy and your Azure roles decide what opens. Reader o
 
 ## Create a health model
 
+Follow the Orders example from resource selection to a CPU permission error and the first healthy reading. [Illustrated builder and tour walkthrough](onboarding/tour/README.md)
+
 1. Choose **Create model** beside the model picker. Select resources individually or choose an entire resource group. Under **New model destination**, choose a suggested prefix based on your selection or enter your own. Select a destination group in the same subscription. The preview shows the full Azure resource name, including its unique suffix.
 2. Run the analysis. In **Workload**, select a node in the dependency graph to inspect its role in the plan. **Why these choices were made** explains what came from Azure inventory, signal checks, user input or an assumption. Correct a resource's role or failure impact, or exclude it. To change the plan, enter an adjustment under **What should change?** and choose **Revise plan**. Review the updated graph and the changes in the same Session.
 3. Choose **Confirm and suggest models**. Compare the proposed designs, open one, and inspect the graph, signals and coverage gaps. Download **plan.md** and **modelspec.md** from that preview. Both describe the selected design.

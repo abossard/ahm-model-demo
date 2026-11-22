@@ -24,6 +24,7 @@ It provisions Azure, deploys the web app and creates the hosted agent. See the [
 |---------|---------|
 | `make deps` | Create `.venv-health-ui` (Python 3.14) with the web app requirements. Install the UI packages when `src/web/ui/node_modules` is missing. |
 | `make ui` | Run `make deps`, then build the UI into `src/web/ui/dist`. |
+| `make onboarding-tour` | Regenerate the [Orders onboarding guide](onboarding/tour/README.md) with browser screenshots, GIFs and excerpts from the local fixture. Requires `ffmpeg` on your path. |
 | `make dev` | Run `make ui`, then serve the web app at http://127.0.0.1:8080 against the selected azd environment. `WEB_PORT` changes the port. |
 | `make env` | Print the variables `make dev` exports. They include the Application Insights connection string. |
 | `azd hooks run postup` | Print the web app links again. |
@@ -50,6 +51,10 @@ After `azd up`, run `make dev`. To use another existing environment, run `azd en
 - Tasks run on the deployed agent and Apply writes live health models. [Without Azure](#without-azure) avoids that.
 
 ### Without Azure
+
+For the illustrated builder tour, run `make onboarding-tour` from the repository root. It drives Chromium through the local fixture and writes the guide and media to `docs/onboarding/tour/`. To edit the instructions, change the [guide template](../src/web/ui/onboarding/guide.md). The [builder capture](../src/web/ui/onboarding/builder.ts) and [tour capture](../src/web/ui/onboarding/tour.ts) choose the screens and read the quoted text from their controls.
+
+The **Onboarding tour** GitHub Actions workflow runs on relevant pushes to `main` or through **Run workflow**. Its run summary lists the guide and media under **Artifacts** for download and review. [Workflow runs](https://github.com/abossard/ahm-model-demo/actions/workflows/onboarding-tour.yml)
 
 For a standalone example of inline **Show me** buttons, use the local playground. It includes a detail dialog, view navigation and a two-step walkthrough. [Show me design and playground](../src/web/ui/src/showMe/README.md)
 
