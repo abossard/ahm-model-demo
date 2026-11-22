@@ -86,7 +86,7 @@ flowchart TB
         SIG_APPLY["SG37: Apply request failures"]:::signal
         SIG_STORE["SG22, SG44: session-store failures"]:::signal
         SIG_MCP["SG28: MCP availability"]:::signal
-        SIG_AI["SG33-SG36: model and platform health"]:::signal
+        SIG_AI["SG33, SG34, SG36: model and platform health"]:::signal
         SIG_PLATFORM["SG48-SG50: platform events"]:::signal
         SIG_WEB["SG01-SG06, SG09-SG14,<br/>SG16-SG21, SG39-SG43:<br/>web errors and platform load"]:::signal
 
@@ -528,6 +528,41 @@ AppDependencies
 - Precise locator and version: no separate flow alert is proposed initially because the root alert can reduce alert noise while child entities explain impact
 - Status: done
 
+### S15: Build-time signal verification
+
+- Evidence class: observed result
+- Original location/reference: exact CORE KQL run against `law-anboahmdemo` and `az monitor metrics list` for the deployed resources
+- Precise locator and version: read 2026-11-21T19:08Z; route, read, report, Session and Task failure counts returned one numeric row with value 0; latency queries returned no row without traffic; web and MCP CPU, memory, response and restart metrics returned 288 points; Blob returned two healthy points; Foundry client errors reached 2 in 24 hours and server errors remained 0; filtered 429 had zero points
+- Status: done
+
+### S16: Task timing and hosted-agent access
+
+- Evidence class: source fact plus observed result
+- Original location/reference: `src/web/app/config.py`, `src/web/app/task_runner.py`, and live Foundry reads
+- Precise locator and version: Task timeout 600 seconds; agent budgets 240/360/420 seconds by Task type; direct `agent_get` and `agent_container_status_get` returned 403 on 2026-11-21
+- Status: done
+
+### S17: Session-store behavior
+
+- Evidence class: source fact
+- Original location/reference: `src/web/app/sessions_store.py`, `src/web/app/apply.py`, `infra/modules/storage.bicep`
+- Precise locator and version: Session, Task and Apply records use the private `sessions` Blob container; store spans use `sessions.store.*`; account has `Standard_LRS`, shared-key access disabled and a private endpoint
+- Status: done
+
+### S18: Supported Azure metric definitions
+
+- Evidence class: observed result
+- Original location/reference: `az monitor metrics list-definitions` on `WEB_CORE`, `MCP_CORE`, `BLOB_CORE`, and `FOUNDRY_CORE`
+- Precise locator and version: read 2026-11-21; confirms CpuPercentage, MemoryPercentage, ResponseTime, RestartCount, Blob Availability, SuccessE2ELatency, ClientErrors, ServerErrors and ModelRequests with StatusCode dimensions
+- Status: done
+
+### S19: CORE deployment and live confirmation
+
+- Evidence class: observed result
+- Original location/reference: `azd up -e anboahmdemo --no-prompt`, deployment `anboahmdemo-1795289462`, CloudHealth REST reads, role assignment reads and public endpoint requests
+- Precise locator and version: deployment succeeded at 2026-11-21T19:34:13.642837Z; model and design model are Succeeded; 27 authored entities and 26 authored relationships exist; Application Insights discovery adds 3 more entities and 2 relationships; both public endpoints returned 200; Reader and Monitoring Reader are assigned to the new model principal; CORE root is Healthy and all four user flows are Healthy after role propagation
+- Status: done
+
 ## User input and decisions
 
 | Input or decision and affected items | Attribution and source | Input/decision date/time | Recorded at | Status |
@@ -536,37 +571,39 @@ AppDependencies
 | Include View, Report, Task and Apply as separate user flows | Derived from S02-S04, S13; confirmation pending | unavailable before this plan | 2026-11-21T19:03:06Z | new |
 | Use 99% on the root and four flows | Proposed from the existing model and missing user commitment, G01 | unavailable before this plan | 2026-11-21T19:03:06Z | new |
 | Alert only the CORE root when Unhealthy | Proposed from existing source and WAF guidance, G03 | unavailable before this plan | 2026-11-21T19:03:06Z | new |
+| Deploy the validated CORE Bicep with `azd up -e anboahmdemo --no-prompt` | Standing deployment request in the current conversation, S01; exact retry followed the failed immutable-edge attempt | 2026-11-21T19:49Z | 2026-11-21T19:49:54Z | done |
 
 ## Derived entity plan
 
 | Model and entity identity/role | Flows, resources and dependencies | Proposed health meaning and user impact | Supporting sources and short derivation | Evidence gaps or conflicts | Intent acceptance | Status |
 |-------------------------------|-----------------------------------|-----------------------------------------|-----------------------------------------|----------------------------|-------------------|--------|
-| `M_CORE`, `E_CORE_ROOT`, root | Parent of `UF_VIEW`, `UF_REPORT`, `UF_TASK`, `UF_APPLY`, `E_PLATFORM`; `WorstOf`; `ignoreUnknown=false` so missing evidence is visible. | Healthy when all required flows are Healthy. Degraded when one is Degraded or the Limited platform context is Unhealthy. Unhealthy when any required flow is Unhealthy. Unknown if required evidence cannot be established. | S07 root topology; S11, S12 propagation; S01 scope | 99% target and alert recipient G01, G02 | pending | new |
-| `UF_VIEW`, user flow | Depends on `SC_WEB_VIEW` and `SC_MODEL_READ`. | Healthy when model browsing and history work. Unhealthy when reads fail or become unacceptable; Unknown if both request and dependency evidence are missing. | S02, S04 | 99% G01 | pending | new |
-| `UF_REPORT`, user flow | Depends on `SC_WEB_REPORT` and `SC_REPORT_INGEST`. | Healthy when a valid report is accepted. Degraded after limited failures; Unhealthy after repeated failures. | S02, S04 | 99% G01 | pending | new |
-| `UF_TASK`, user flow | Depends on `SC_WEB_TASK`, `SC_TASK_STORE`, `SC_AGENT_RUNTIME`, `SC_AI_INFERENCE`. | Healthy when Tasks are accepted, stored, executed and return a result before the timeout. | S02-S04, S16 | 99% G01; live direct agent read G07 | pending | new |
-| `UF_APPLY`, user flow | Depends on `SC_WEB_APPLY`, `SC_MODEL_WRITE`, `SC_APPLY_STATE`. | Healthy when selected changes apply as approved and the result is persisted. A 409 base change is a conflict response, not an outage. | S13 | 99% G01; partial-write telemetry G06 | pending | new |
-| `SC_WEB_VIEW`, system component | Parent `UF_VIEW`; child `R_WEB_VIEW`. | Request and web hosting health for View-specific routes. | S04 | none beyond threshold assumptions | pending | new |
-| `R_WEB_VIEW`, Azure resource entity | Bound to `WEB_CORE`; parent `SC_WEB_VIEW`. Copy unique to View. | Home availability, web CPU, memory, response time and restart behavior for the View flow. | S05-S09 | threshold G05 | pending | new |
-| `SC_MODEL_READ`, virtual system component | Parent `UF_VIEW`; leaf with `Q_MODEL_READ_FAILURES` and `Q_MODEL_READ_LATENCY`. | Healthy while catalog, model, graph, stream and history calls complete. | S04, S08 | no traffic in observed window G08 | pending | new |
-| `SC_WEB_REPORT`, system component | Parent `UF_REPORT`; child `R_WEB_REPORT`. | Report route and shared web hosting health. | S04 | threshold G05 | pending | new |
-| `R_WEB_REPORT`, Azure resource entity | Bound to `WEB_CORE`; parent `SC_WEB_REPORT`. Copy unique to Report. | Web ingress, resource load and restart behavior for report requests. | S05-S09 | threshold G05 | pending | new |
-| `SC_REPORT_INGEST`, virtual system component | Parent `UF_REPORT`; leaf with `Q_REPORT_FAILURES`. | Healthy when CloudHealth accepts report ingestion; expected 4xx user or access errors do not count. | S04 | no traffic in observed window G08 | pending | new |
-| `SC_WEB_TASK`, system component | Parent `UF_TASK`; child `R_WEB_TASK`. | Session and Task API acceptance and event streaming. | S04 | threshold G05 | pending | new |
-| `R_WEB_TASK`, Azure resource entity | Bound to `WEB_CORE`; parent `SC_WEB_TASK`. Copy unique to Tasks. | Home availability, web load, response and restart behavior for Task APIs. | S05-S09 | threshold G05 | pending | new |
-| `SC_TASK_STORE`, system component | Parent `UF_TASK`; child `R_STORAGE_TASK`; failure and latency KQL on the component. | Healthy when Session, Task and Activity records can be read and written. | S04, S09, S17 | exact operation span names need traffic G08 | pending | new |
-| `R_STORAGE_TASK`, Azure resource entity | Bound to `BLOB_CORE`; parent `SC_TASK_STORE`. Copy unique to Tasks. | Blob availability and end-to-end latency for the sessions container. | S07, S09, S17 | live metrics currently Unknown when idle G09 | pending | new |
-| `SC_AGENT_RUNTIME`, system component | Parent `UF_TASK`; children `R_HOSTED_AGENT`, `R_MCP_SERVER`. | Healthy when the assistant executes and its Azure read tools are reachable. | S02-S04, S07 | direct agent state unavailable G07 | pending | new |
-| `R_HOSTED_AGENT`, Azure project resource entity | Bound to `PROJECT_CORE`; parent `SC_AGENT_RUNTIME`; project hosts `health-model-agent`. | Healthy while Tasks complete and remain below timeout thresholds. | S03, S05, S07 | direct agent definition/container read returned 403 G07 | pending | new |
-| `R_MCP_SERVER`, Azure resource entity | Bound to `MCP_CORE`; parent `SC_AGENT_RUNTIME`. | Healthy while external health checks pass and the one-replica Container App is responsive. | S07-S09 | telemetry is external availability plus platform metrics; no internal App Insights role G07 | pending | new |
-| `SC_AI_INFERENCE`, system component | Parent `UF_TASK`; child `R_FOUNDRY_ACCOUNT`. | Healthy while the deployed model serves agent requests without server errors or unacceptable throttling. | S05, S07, S09, S18 | metric 429 has Unknown when no throttled series exists G09 | pending | new |
-| `R_FOUNDRY_ACCOUNT`, Azure resource entity | Bound to `FOUNDRY_CORE`; deployment `gpt-54-mini` / model `gpt-5.4-mini`; parent `SC_AI_INFERENCE`. | Healthy on no server errors and available Resource Health; Degraded on throttling or elevated client errors; Unhealthy after repeated throttling or any server error. | S05, S07, S09, S18 | model-specific monitoring read denied G07 | pending | new |
-| `SC_WEB_APPLY`, system component | Parent `UF_APPLY`; child `R_WEB_APPLY`. | UI, diff and confirmation path remain available. | S13 | no Apply-specific duration source | pending | new |
-| `R_WEB_APPLY`, Azure resource entity | Bound to `WEB_CORE`; parent `SC_WEB_APPLY`. Copy unique to Apply. | Home availability, web load and restart behavior for Apply. | S05-S09 | threshold G05 | pending | new |
-| `SC_MODEL_WRITE`, virtual system component | Parent `UF_APPLY`; leaf with `Q_APPLY_5XX` and proposed `Q_APPLY_OUTCOME`. | Healthy when Apply has no server errors. Partial or rejected per-change writes should be visible separately once instrumentation exists. A 409 base change is expected and excluded. | S13, G06 | G06 blocks full write-outcome visibility | pending | new |
-| `SC_APPLY_STATE`, system component | Parent `UF_APPLY`; child `R_STORAGE_APPLY`; session-store KQL. | Healthy when the apply result and Task diff state persist. | S04, S13, S17 | exact write span verification G08 | pending | new |
-| `R_STORAGE_APPLY`, Azure resource entity | Bound to `BLOB_CORE`; parent `SC_APPLY_STATE`. Copy unique to Apply. | Blob availability and latency for storing apply state. | S09, S17 | live metrics idle-Unknown G09 | pending | new |
-| `E_PLATFORM`, virtual context entity | Parent `E_CORE_ROOT`; impact `Limited`. | Unhealthy on critical Service Health events, repeated failed ARM operations or high platform alert activity; cannot make the parent more than Degraded. | S03, S07, S11, S12 | same-region monitoring availability G10 | pending | new |
+| `M_CORE`, `E_CORE_ROOT`, root | Parent of `UF_VIEW`, `UF_REPORT`, `UF_TASK`, `UF_APPLY`, `E_PLATFORM`; `WorstOf`; `ignoreUnknown=false` so missing evidence is visible. | Healthy when all required flows are Healthy. Degraded when one is Degraded or the Limited platform context is Unhealthy. Unhealthy when any required flow is Unhealthy. Unknown if required evidence cannot be established. | S07 root topology; S11, S12 propagation; S01 scope | 99% target and alert recipient G01, G02 | deployed | done |
+| `UF_VIEW`, user flow | Depends on `SC_WEB_VIEW` and `SC_MODEL_READ`. | Healthy when model browsing and history work. Unhealthy when reads fail or become unacceptable; Unknown if both request and dependency evidence are missing. | S02, S04 | 99% G01 | deployed | done |
+| `UF_REPORT`, user flow | Depends on `SC_WEB_REPORT` and `SC_REPORT_INGEST`. | Healthy when a valid report is accepted. Degraded after limited failures; Unhealthy after repeated failures. | S02, S04 | 99% G01 | deployed | done |
+| `UF_TASK`, user flow | Depends on `SC_WEB_TASK`, `SC_TASK_STORE`, `SC_AGENT_RUNTIME`, `SC_AI_INFERENCE`. | Healthy when Tasks are accepted, stored, executed and return a result before the timeout. | S02-S04, S16 | 99% G01; live direct agent read G07 | deployed | done |
+| `UF_APPLY`, user flow | Depends on `SC_WEB_APPLY`, `SC_MODEL_WRITE`, `SC_APPLY_STATE`. | Healthy when selected changes apply as approved and the result is persisted. A 409 base change is a conflict response, not an outage. | S13 | 99% G01; partial-write telemetry G06 | deployed | done |
+| `SC_WEB_VIEW`, system component | Parent `UF_VIEW`; child `R_WEB_VIEW`. | Request and web hosting health for View-specific routes. | S04 | none beyond threshold assumptions | deployed | done |
+| `R_WEB_VIEW`, Azure resource entity | Bound to `WEB_CORE`; parent `SC_WEB_VIEW`. Copy unique to View. | Home availability, web CPU, memory, response time and restart behavior for the View flow. | S05-S09 | threshold G05 | deployed | done |
+| `SC_MODEL_READ`, virtual system component | Parent `UF_VIEW`; leaf with `Q_MODEL_READ_FAILURES` and `Q_MODEL_READ_LATENCY`. | Healthy while catalog, model, graph, stream and history calls complete. | S04, S08 | no traffic in observed window G08 | deployed | done |
+| `SC_WEB_REPORT`, system component | Parent `UF_REPORT`; child `R_WEB_REPORT`. | Report route and shared web hosting health. | S04 | threshold G05 | deployed | done |
+| `R_WEB_REPORT`, Azure resource entity | Bound to `WEB_CORE`; parent `SC_WEB_REPORT`. Copy unique to Report. | Web ingress, resource load and restart behavior for report requests. | S05-S09 | threshold G05 | deployed | done |
+| `SC_REPORT_INGEST`, virtual system component | Parent `UF_REPORT`; leaf with `Q_REPORT_FAILURES`. | Healthy when CloudHealth accepts report ingestion; expected 4xx user or access errors do not count. | S04 | no traffic in observed window G08 | deployed | done |
+| `SC_WEB_TASK`, system component | Parent `UF_TASK`; child `R_WEB_TASK`. | Session and Task API acceptance and event streaming. | S04 | threshold G05 | deployed | done |
+| `R_WEB_TASK`, Azure resource entity | Bound to `WEB_CORE`; parent `SC_WEB_TASK`. Copy unique to Tasks. | Home availability, web load, response and restart behavior for Task APIs. | S05-S09 | threshold G05 | deployed | done |
+| `SC_TASK_STORE`, system component | Parent `UF_TASK`; child `R_STORAGE_TASK`; failure and latency KQL on the component. | Healthy when Session, Task and Activity records can be read and written. | S04, S09, S17 | exact operation span names need traffic G08 | deployed | done |
+| `R_STORAGE_TASK`, Azure resource entity | Bound to `BLOB_CORE`; parent `SC_TASK_STORE`. Copy unique to Tasks. | Blob availability and end-to-end latency for the sessions container. | S07, S09, S17 | live metrics currently Unknown when idle G09 | deployed | done |
+| `SC_AGENT_RUNTIME`, system component | Parent `UF_TASK`; children `R_HOSTED_AGENT`, `R_MCP_SERVER`. | Healthy when the assistant executes and its Azure read tools are reachable. | S02-S04, S07 | direct agent state unavailable G07 | deployed | done |
+| `R_HOSTED_AGENT`, Azure project resource entity | Bound to `PROJECT_CORE`; parent `SC_AGENT_RUNTIME`; project hosts `health-model-agent`. | Healthy while Tasks complete and remain below timeout thresholds. | S03, S05, S07 | direct agent definition/container read returned 403 G07 | deployed | done |
+| `R_MCP_SERVER`, Azure resource entity | Bound to `MCP_CORE`; parent `SC_AGENT_RUNTIME`. | Healthy while external health checks pass and the one-replica Container App is responsive. | S07-S09 | telemetry is external availability plus platform metrics; no internal App Insights role G07 | deployed | done |
+| `SC_AI_INFERENCE`, system component | Parent `UF_TASK`; child `R_FOUNDRY_ACCOUNT`. | Healthy while the deployed model serves agent requests without server errors or elevated client errors. | S05, S07, S09, S18 | a 429-specific metric is omitted because no series existed; G09 | deployed | done |
+| `R_FOUNDRY_ACCOUNT`, Azure resource entity | Bound to `FOUNDRY_CORE`; deployment `gpt-54-mini` / model `gpt-5.4-mini`; parent `SC_AI_INFERENCE`. | Healthy on no server errors and available Resource Health; Degraded on throttling or elevated client errors; Unhealthy after repeated throttling or any server error. | S05, S07, S09, S18 | model-specific monitoring read denied G07 | deployed | done |
+| `SC_WEB_APPLY`, system component | Parent `UF_APPLY`; child `R_WEB_APPLY`. | UI, diff and confirmation path remain available. | S13 | no Apply-specific duration source | deployed | done |
+| `R_WEB_APPLY`, Azure resource entity | Bound to `WEB_CORE`; parent `SC_WEB_APPLY`. Copy unique to Apply. | Home availability, web load and restart behavior for Apply. | S05-S09 | threshold G05 | deployed | done |
+| `SC_MODEL_WRITE`, virtual system component | Parent `UF_APPLY`; leaf with `Q_APPLY_5XX`; `Q_APPLY_OUTCOME` is a documented gap. | Healthy when Apply has no server errors. Partial or rejected per-change writes should be visible separately once instrumentation exists. A 409 base change is expected and excluded. | S13, G06 | G06 blocks full write-outcome visibility | deployed | done |
+| `SC_APPLY_STATE`, system component | Parent `UF_APPLY`; child `R_STORAGE_APPLY`; session-store KQL. | Healthy when the apply result and Task diff state persist. | S04, S13, S17 | exact write span verification G08 | deployed | done |
+| `R_STORAGE_APPLY`, Azure resource entity | Bound to `BLOB_CORE`; parent `SC_APPLY_STATE`. Copy unique to Apply. | Blob availability and latency for storing apply state. | S09, S17 | live metrics idle-Unknown G09 | deployed | done |
+| `E_PLATFORM`, virtual context entity | Parent `E_CORE_ROOT`; impact `Limited`. | Unhealthy on critical Service Health events, repeated failed ARM operations or high platform alert activity; cannot make the parent more than Degraded. | S03, S07, S11, S12 | same-region monitoring availability G10 | deployed | done |
+| Existing discovery observation | Root child with impact `Suppressed`; contains entities generated by the Application Insights discovery rule. | Preserved for portal observation only. Its Unknown children cannot change CORE health. | S03, S07, S09 | discovered entities cannot be deleted manually and are not part of the user-flow plan | excluded | new |
 
 ## Signals
 
@@ -576,66 +613,66 @@ Every metric row is on the exact resource ID in the entity plan. Every KQL row i
 
 | Signal | Entity | Kind and data source | Measurement | Degraded and unhealthy rule | Sources or gap | Verification | Status |
 |--------|--------|----------------------|-------------|-----------------------------|----------------|--------------|--------|
-| `SG01` View route failures | `SC_WEB_VIEW` | Log Analytics KQL; `WS_CORE` | `Q_WEB_VIEW_5XX`; PT5M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04; G05 | Not run with route filter | new |
-| `SG02` View home availability | `R_WEB_VIEW` | Log Analytics KQL; `WS_CORE` | `Q_WEB_HOME_AVAILABILITY`; PT15M; refresh PT5M | Degraded < 100%; Unhealthy < 67% | S07, S08 | Live 100%, 2026-11-21 | new |
-| `SG03` View CPU percentage | `R_WEB_VIEW` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/CpuPercentage`; Average; PT5M; refresh PT5M | Degraded > 80%; Unhealthy > 95% | S07, S18; G05 | Live 0% at 18:50Z | new |
-| `SG04` View memory percentage | `R_WEB_VIEW` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/MemoryPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S18; G05 | Live 12% at 18:50Z | new |
-| `SG05` View response time | `R_WEB_VIEW` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/ResponseTime`; Average; PT5M | Degraded > 3000 ms; Unhealthy > 5000 ms | S07, S18; G05 | Live 8.67 ms at 18:50Z | new |
-| `SG06` View restart count | `R_WEB_VIEW` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/RestartCount`; Total; PT5M | Degraded > 0; Unhealthy > 1 | S18; G05 | Not run | new |
-| `SG07` Model read failures | `SC_MODEL_READ` | Log Analytics KQL; `WS_CORE` | `Q_MODEL_READ_FAILURES`; PT15M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04; G05, G08 | Not run; no relevant traffic in 24h | new |
-| `SG08` Model read latency | `SC_MODEL_READ` | Log Analytics KQL; `WS_CORE` | `Q_MODEL_READ_LATENCY`; PT15M; refresh PT5M; p95 | Degraded > 5000 ms; Unhealthy > 40000 ms | S04 timeline request budget; G05, G08 | Not run; no relevant traffic in 24h | new |
-| `SG09` Report route failures | `SC_WEB_REPORT` | Log Analytics KQL; `WS_CORE` | `Q_WEB_REPORT_5XX`; PT5M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04; G05 | Not run with route filter | new |
-| `SG10` Report home availability | `R_WEB_REPORT` | Log Analytics KQL; `WS_CORE` | `Q_WEB_HOME_AVAILABILITY`; PT15M; refresh PT5M | Degraded < 100%; Unhealthy < 67% | S07, S08 | Live 100%, 2026-11-21 | new |
-| `SG11` Report CPU percentage | `R_WEB_REPORT` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/CpuPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S18; G05 | Live 0% at 18:50Z | new |
-| `SG12` Report memory percentage | `R_WEB_REPORT` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/MemoryPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S18; G05 | Live 12% at 18:50Z | new |
-| `SG13` Report response time | `R_WEB_REPORT` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/ResponseTime`; Average; PT5M | Degraded > 3000 ms; Unhealthy > 5000 ms | S07, S18; G05 | Live 8.67 ms at 18:50Z | new |
-| `SG14` Report restart count | `R_WEB_REPORT` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/RestartCount`; Total; PT5M | Degraded > 0; Unhealthy > 1 | S18; G05 | Not run | new |
-| `SG15` Report ingestion failures | `SC_REPORT_INGEST` | Log Analytics KQL; `WS_CORE` | `Q_REPORT_FAILURES`; PT15M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04; G05, G08 | Not run; no relevant traffic in 24h | new |
+| `SG01` View route failures | `SC_WEB_VIEW` | Log Analytics KQL; `WS_CORE` | `Q_WEB_VIEW_5XX`; PT5M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04, S15; G05 | Exact query returned 0; no matching flow traffic | done |
+| `SG02` View home availability | `R_WEB_VIEW` | Log Analytics KQL; `WS_CORE` | `Q_WEB_HOME_AVAILABILITY`; PT15M; refresh PT5M | Degraded < 100%; Unhealthy < 67% | S07, S08, S15 | Live 100%, 2026-11-21 | done |
+| `SG03` View CPU percentage | `R_WEB_VIEW` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/CpuPercentage`; Average; PT5M; refresh PT5M | Degraded > 80%; Unhealthy > 95% | S07, S15, S18; G05 | 288 points; min 0%, max 0.1% | done |
+| `SG04` View memory percentage | `R_WEB_VIEW` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/MemoryPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S15, S18; G05 | 288 points; min 9%, max 12% | done |
+| `SG05` View response time | `R_WEB_VIEW` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/ResponseTime`; Average; PT5M | Degraded > 3000 ms; Unhealthy > 5000 ms | S07, S15, S18; G05 | 288 points; min 3 ms, max 16.67 ms | done |
+| `SG06` View restart count | `R_WEB_VIEW` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/RestartCount`; Total; PT5M | Degraded > 0; Unhealthy > 1 | S15, S18; G05 | 288 points; all 0 | done |
+| `SG07` Model read failures | `SC_MODEL_READ` | Log Analytics KQL; `WS_CORE` | `Q_MODEL_READ_FAILURES`; PT15M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04, S15; G05, G08 | Exact query returned 0; no matching traffic | done |
+| `SG08` Model read latency | `SC_MODEL_READ` | Log Analytics KQL; `WS_CORE` | `Q_MODEL_READ_LATENCY`; PT15M; refresh PT5M; p95 | Degraded > 5000 ms; Unhealthy > 40000 ms | S04, S15; G05, G08 | Exact query returned no row; starts Unknown without traffic | done |
+| `SG09` Report route failures | `SC_WEB_REPORT` | Log Analytics KQL; `WS_CORE` | `Q_WEB_REPORT_5XX`; PT5M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04, S15; G05 | Exact query returned 0; no matching traffic | done |
+| `SG10` Report home availability | `R_WEB_REPORT` | Log Analytics KQL; `WS_CORE` | `Q_WEB_HOME_AVAILABILITY`; PT15M; refresh PT5M | Degraded < 100%; Unhealthy < 67% | S07, S08, S15 | Live 100%, 2026-11-21 | done |
+| `SG11` Report CPU percentage | `R_WEB_REPORT` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/CpuPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S15, S18; G05 | 288 points; min 0%, max 0.1% | done |
+| `SG12` Report memory percentage | `R_WEB_REPORT` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/MemoryPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S15, S18; G05 | 288 points; min 9%, max 12% | done |
+| `SG13` Report response time | `R_WEB_REPORT` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/ResponseTime`; Average; PT5M | Degraded > 3000 ms; Unhealthy > 5000 ms | S07, S15, S18; G05 | 288 points; min 3 ms, max 16.67 ms | done |
+| `SG14` Report restart count | `R_WEB_REPORT` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/RestartCount`; Total; PT5M | Degraded > 0; Unhealthy > 1 | S15, S18; G05 | 288 points; all 0 | done |
+| `SG15` Report ingestion failures | `SC_REPORT_INGEST` | Log Analytics KQL; `WS_CORE` | `Q_REPORT_FAILURES`; PT15M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04, S15; G05, G08 | Exact query returned 0; no matching traffic | done |
 
 ### Task runtime signals
 
 | Signal | Entity | Kind and data source | Measurement | Degraded and unhealthy rule | Sources or gap | Verification | Status |
 |--------|--------|----------------------|-------------|-----------------------------|----------------|--------------|--------|
-| `SG16` Task route failures | `SC_WEB_TASK` | Log Analytics KQL; `WS_CORE` | `Q_WEB_TASK_5XX`; PT5M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04; G05 | Not run with route filter | new |
-| `SG17` Task home availability | `R_WEB_TASK` | Log Analytics KQL; `WS_CORE` | `Q_WEB_HOME_AVAILABILITY`; PT15M; refresh PT5M | Degraded < 100%; Unhealthy < 67% | S07, S08 | Live 100%, 2026-11-21 | new |
-| `SG18` Task web CPU percentage | `R_WEB_TASK` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/CpuPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S18; G05 | Live 0% at 18:50Z | new |
-| `SG19` Task web memory percentage | `R_WEB_TASK` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/MemoryPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S18; G05 | Live 12% at 18:50Z | new |
-| `SG20` Task web response time | `R_WEB_TASK` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/ResponseTime`; Average; PT5M | Degraded > 3000 ms; Unhealthy > 5000 ms | S07, S18; G05 | Live 8.67 ms at 18:50Z | new |
-| `SG21` Task web restart count | `R_WEB_TASK` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/RestartCount`; Total; PT5M | Degraded > 0; Unhealthy > 1 | S18; G05 | Not run | new |
-| `SG22` Session store failures | `SC_TASK_STORE` | Log Analytics KQL; `WS_CORE` | `Q_SESSION_STORE_FAILURES`; PT15M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04, G05, G08 | Not run with Session traffic | new |
-| `SG23` Session store latency | `SC_TASK_STORE` | Log Analytics KQL; `WS_CORE` | `Q_SESSION_STORE_LATENCY`; PT15M; refresh PT5M; p95 | Degraded > 2000 ms; Unhealthy > 10000 ms | S04; G05, G08 | Not run | new |
-| `SG24` Task storage availability | `R_STORAGE_TASK` | Azure resource metric; `BLOB_CORE` | `Microsoft.Storage/storageAccounts/blobServices/Availability`; Average; PT1M | Degraded < 99.9%; Unhealthy < 99% | S07, S18; G05, G09 | Live Unknown at 18:51Z | new |
-| `SG25` Task storage end-to-end latency | `R_STORAGE_TASK` | Azure resource metric; `BLOB_CORE` | `Microsoft.Storage/storageAccounts/blobServices/SuccessE2ELatency`; Average; PT1M | Degraded > 2000 ms; Unhealthy > 5000 ms | S07, S18; G05, G09 | Live Unknown at 18:51Z | new |
-| `SG26` Failed agent Tasks | `R_HOSTED_AGENT` | Log Analytics KQL; `WS_CORE` | `Q_AGENT_TASK_FAILURES`; PT15M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S03, S04, S07 | Live 0 at 18:48Z | new |
-| `SG27` Agent Task duration | `R_HOSTED_AGENT` | Log Analytics KQL; `WS_CORE` | `Q_AGENT_TASK_LATENCY`; PT15M; refresh PT5M; p95 | Degraded > 450000 ms; Unhealthy > 570000 ms | S03, S07, S04 task timeout | Live Unknown with no Task rows | new |
-| `SG28` MCP availability | `R_MCP_SERVER` | Log Analytics KQL; `WS_CORE` | `Q_MCP_AVAILABILITY`; PT15M; refresh PT5M | Degraded < 100%; Unhealthy < 67% | S07, S08 | Live 100%, 2026-11-21 | new |
-| `SG29` MCP CPU percentage | `R_MCP_SERVER` | Azure resource metric; `MCP_CORE` | `Microsoft.App/containerApps/CpuPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S18; G05 | Live 0% at 18:46Z | new |
-| `SG30` MCP memory percentage | `R_MCP_SERVER` | Azure resource metric; `MCP_CORE` | `Microsoft.App/containerApps/MemoryPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S18; G05 | Live 15% at 18:47Z | new |
-| `SG31` MCP response time | `R_MCP_SERVER` | Azure resource metric; `MCP_CORE` | `Microsoft.App/containerApps/ResponseTime`; Average; PT5M | Degraded > 7000 ms; Unhealthy > 10000 ms | S07, S18; G05 | Live 3 ms at 18:46Z | new |
-| `SG32` MCP restart count | `R_MCP_SERVER` | Azure resource metric; `MCP_CORE` | `Microsoft.App/containerApps/RestartCount`; Total; PT5M | Degraded > 0; Unhealthy > 1 | S18; G05 | Not run | new |
-| `SG33` Foundry client errors | `R_FOUNDRY_ACCOUNT` | Azure resource metric; `FOUNDRY_CORE` | `Microsoft.CognitiveServices/accounts/ClientErrors`; Total; PT5M | Degraded > 2; Unhealthy > 10 | S07, S18; G05 | Live 0 at 18:50Z | new |
-| `SG34` Foundry server errors | `R_FOUNDRY_ACCOUNT` | Azure resource metric; `FOUNDRY_CORE` | `Microsoft.CognitiveServices/accounts/ServerErrors`; Total; PT5M | Unhealthy > 0 | S07, S18 | Live 0 at 18:50Z | new |
-| `SG35` Throttled model requests | `R_FOUNDRY_ACCOUNT` | Azure resource metric; `FOUNDRY_CORE`; dimension `StatusCode eq '429'` | `Microsoft.CognitiveServices/accounts/ModelRequests`; Total; PT5M | Degraded > 0; Unhealthy > 10 | S07, S18 | Live Unknown at 18:50Z because no 429 series existed | new |
-| `SG36` Foundry Resource Health | `R_FOUNDRY_ACCOUNT` | Azure Resource Health; `FOUNDRY_CORE` | Resource Health signal; refresh PT5M | Degraded or Unhealthy according to Azure availability state | S07, S12 | Live Healthy and Available at 18:46Z | new |
+| `SG16` Task route failures | `SC_WEB_TASK` | Log Analytics KQL; `WS_CORE` | `Q_WEB_TASK_5XX`; PT5M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04, S15; G05 | Exact query returned 0; no matching flow traffic | done |
+| `SG17` Task home availability | `R_WEB_TASK` | Log Analytics KQL; `WS_CORE` | `Q_WEB_HOME_AVAILABILITY`; PT15M; refresh PT5M | Degraded < 100%; Unhealthy < 67% | S07, S08, S15 | Live 100%, 2026-11-21 | done |
+| `SG18` Task web CPU percentage | `R_WEB_TASK` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/CpuPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S15, S18; G05 | 288 points; min 0%, max 0.1% | done |
+| `SG19` Task web memory percentage | `R_WEB_TASK` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/MemoryPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S15, S18; G05 | 288 points; min 9%, max 12% | done |
+| `SG20` Task web response time | `R_WEB_TASK` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/ResponseTime`; Average; PT5M | Degraded > 3000 ms; Unhealthy > 5000 ms | S07, S15, S18; G05 | 288 points; min 3 ms, max 16.67 ms | done |
+| `SG21` Task web restart count | `R_WEB_TASK` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/RestartCount`; Total; PT5M | Degraded > 0; Unhealthy > 1 | S15, S18; G05 | 288 points; all 0 | done |
+| `SG22` Session store failures | `SC_TASK_STORE` | Log Analytics KQL; `WS_CORE` | `Q_SESSION_STORE_FAILURES`; PT15M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04, S15, S17; G05, G08 | Exact query returned 0; no matching Session traffic | done |
+| `SG23` Session store latency | `SC_TASK_STORE` | Log Analytics KQL; `WS_CORE` | `Q_SESSION_STORE_LATENCY`; PT15M; refresh PT5M; p95 | Degraded > 2000 ms; Unhealthy > 10000 ms | S04, S15, S17; G05, G08 | Exact query returned no row; starts Unknown without traffic | done |
+| `SG24` Task storage availability | `R_STORAGE_TASK` | Azure resource metric; `BLOB_CORE` | `Microsoft.Storage/storageAccounts/blobServices/Availability`; Average; PT1M | Degraded < 99.9%; Unhealthy < 99% | S07, S15, S18; G05, G09 | 2 points; both 100% | done |
+| `SG25` Task storage end-to-end latency | `R_STORAGE_TASK` | Azure resource metric; `BLOB_CORE` | `Microsoft.Storage/storageAccounts/blobServices/SuccessE2ELatency`; Average; PT1M | Degraded > 2000 ms; Unhealthy > 5000 ms | S07, S15, S18; G05, G09 | 2 points; 129.75 to 354 ms | done |
+| `SG26` Failed agent Tasks | `R_HOSTED_AGENT` | Log Analytics KQL; `WS_CORE` | `Q_AGENT_TASK_FAILURES`; PT15M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S03, S04, S07, S15 | Exact query returned 0 | done |
+| `SG27` Agent Task duration | `R_HOSTED_AGENT` | Log Analytics KQL; `WS_CORE` | `Q_AGENT_TASK_LATENCY`; PT15M; refresh PT5M; p95 | Degraded > 450000 ms; Unhealthy > 570000 ms | S03, S07, S15, S16 | Exact query returned no row without Task traffic | done |
+| `SG28` MCP availability | `R_MCP_SERVER` | Log Analytics KQL; `WS_CORE` | `Q_MCP_AVAILABILITY`; PT15M; refresh PT5M | Degraded < 100%; Unhealthy < 67% | S07, S08, S15 | Exact query returned 100% | done |
+| `SG29` MCP CPU percentage | `R_MCP_SERVER` | Azure resource metric; `MCP_CORE` | `Microsoft.App/containerApps/CpuPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S15, S18; G05 | 288 points; min 0%, max 0.2% | done |
+| `SG30` MCP memory percentage | `R_MCP_SERVER` | Azure resource metric; `MCP_CORE` | `Microsoft.App/containerApps/MemoryPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S15, S18; G05 | 288 points; min 6.8%, max 16% | done |
+| `SG31` MCP response time | `R_MCP_SERVER` | Azure resource metric; `MCP_CORE` | `Microsoft.App/containerApps/ResponseTime`; Average; PT5M | Degraded > 7000 ms; Unhealthy > 10000 ms | S07, S15, S18; G05 | 288 points; min 2.2 ms, max 45 ms | done |
+| `SG32` MCP restart count | `R_MCP_SERVER` | Azure resource metric; `MCP_CORE` | `Microsoft.App/containerApps/RestartCount`; Total; PT5M | Degraded > 0; Unhealthy > 1 | S15, S18; G05 | 288 points; all 0 | done |
+| `SG33` Foundry client errors | `R_FOUNDRY_ACCOUNT` | Azure resource metric; `FOUNDRY_CORE` | `Microsoft.CognitiveServices/accounts/ClientErrors`; Total; PT5M | Degraded > 2; Unhealthy > 10 | S07, S15, S18; G05 | 288 points; max 2, total 2 in 24h | done |
+| `SG34` Foundry server errors | `R_FOUNDRY_ACCOUNT` | Azure resource metric; `FOUNDRY_CORE` | `Microsoft.CognitiveServices/accounts/ServerErrors`; Total; PT5M | Unhealthy > 0 | S07, S15, S18 | 288 points; all 0 | done |
+| `SG35` 429-specific model requests | `R_FOUNDRY_ACCOUNT` | Azure resource metric; `FOUNDRY_CORE`; dimension `StatusCode eq '429'` | `Microsoft.CognitiveServices/accounts/ModelRequests`; Total; PT5M | Proposed: Degraded > 0; Unhealthy > 10 | S07, S15, S18, G09 | No datapoints in 24 hours; omitted from Bicep. `SG33` carries client errors, including throttling. | problem: filtered 429 metric has no series |
+| `SG36` Foundry Resource Health | `R_FOUNDRY_ACCOUNT` | Azure Resource Health; `FOUNDRY_CORE` | Resource Health signal; refresh PT5M | Degraded or Unhealthy according to Azure availability state | S07, S12, S15 | Live Healthy and Available | done |
 
 ### Apply and platform signals
 
 | Signal | Entity | Kind and data source | Measurement | Degraded and unhealthy rule | Sources or gap | Verification | Status |
 |--------|--------|----------------------|-------------|-----------------------------|----------------|--------------|--------|
-| `SG37` Apply request failures | `SC_MODEL_WRITE` | Log Analytics KQL; `WS_CORE` | `Q_APPLY_5XX`; PT5M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S13; G05 | Not run; no Apply traffic in 24h | new |
+| `SG37` Apply request failures | `SC_MODEL_WRITE` | Log Analytics KQL; `WS_CORE` | `Q_APPLY_5XX`; PT5M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S13, S15; G05 | Exact query returned 0; no Apply traffic | done |
 | `SG38` Apply write outcome | `SC_MODEL_WRITE` | Log Analytics KQL; `WS_CORE` | `Q_APPLY_OUTCOME`; PT15M; `healthmodel.apply` span; refresh PT5M | Degraded > 0; Unhealthy > 2 | G06 | Cannot verify because the span does not exist | problem: missing `healthmodel.apply` telemetry |
-| `SG39` Apply home availability | `R_WEB_APPLY` | Log Analytics KQL; `WS_CORE` | `Q_WEB_HOME_AVAILABILITY`; PT15M; refresh PT5M | Degraded < 100%; Unhealthy < 67% | S07, S08 | Live 100%, 2026-11-21 | new |
-| `SG40` Apply web CPU percentage | `R_WEB_APPLY` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/CpuPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S18; G05 | Live 0% at 18:50Z | new |
-| `SG41` Apply web memory percentage | `R_WEB_APPLY` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/MemoryPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S18; G05 | Live 12% at 18:50Z | new |
-| `SG42` Apply web response time | `R_WEB_APPLY` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/ResponseTime`; Average; PT5M | Degraded > 3000 ms; Unhealthy > 5000 ms | S07, S18; G05 | Live 8.67 ms at 18:50Z | new |
-| `SG43` Apply web restart count | `R_WEB_APPLY` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/RestartCount`; Total; PT5M | Degraded > 0; Unhealthy > 1 | S18; G05 | Not run | new |
-| `SG44` Apply state persistence failures | `SC_APPLY_STATE` | Log Analytics KQL; `WS_CORE` | `Q_SESSION_STORE_FAILURES`; PT15M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04, S13; G05, G08 | Not run with Apply traffic | new |
-| `SG45` Apply state persistence latency | `SC_APPLY_STATE` | Log Analytics KQL; `WS_CORE` | `Q_SESSION_STORE_LATENCY`; PT15M; refresh PT5M; p95 | Degraded > 2000 ms; Unhealthy > 10000 ms | S04, S13; G05, G08 | Not run | new |
-| `SG46` Apply storage availability | `R_STORAGE_APPLY` | Azure resource metric; `BLOB_CORE` | `Microsoft.Storage/storageAccounts/blobServices/Availability`; Average; PT1M | Degraded < 99.9%; Unhealthy < 99% | S07, S18; G05, G09 | Live Unknown at 18:51Z | new |
-| `SG47` Apply storage end-to-end latency | `R_STORAGE_APPLY` | Azure resource metric; `BLOB_CORE` | `Microsoft.Storage/storageAccounts/blobServices/SuccessE2ELatency`; Average; PT1M | Degraded > 2000 ms; Unhealthy > 5000 ms | S07, S18; G05, G09 | Live Unknown at 18:51Z | new |
-| `SG48` Critical Service Health events | `E_PLATFORM` | Log Analytics KQL; `WS_CORE` | `Q_PLATFORM_SERVICE_HEALTH`; PT15M; refresh PT5M | Unhealthy > 0; Limited impact to root | S03, S07 | Live 0 at 18:48Z | new |
-| `SG49` Failed ARM operations | `E_PLATFORM` | Log Analytics KQL; `WS_CORE` | `Q_PLATFORM_ARM_FAILURES`; PT15M; refresh PT5M | Unhealthy > 0; Limited impact to root | S03, S07 | Live 0 at 18:48Z | new |
-| `SG50` Platform alert activity | `E_PLATFORM` | Log Analytics KQL; `WS_CORE` | `Q_PLATFORM_ALERT_ACTIVITY`; PT15M; refresh PT5M | Unhealthy > 20; Limited impact to root | S03, S07 | Live 0 at 18:49Z | new |
+| `SG39` Apply home availability | `R_WEB_APPLY` | Log Analytics KQL; `WS_CORE` | `Q_WEB_HOME_AVAILABILITY`; PT15M; refresh PT5M | Degraded < 100%; Unhealthy < 67% | S07, S08, S15 | Live 100%, 2026-11-21 | done |
+| `SG40` Apply web CPU percentage | `R_WEB_APPLY` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/CpuPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S15, S18; G05 | 288 points; min 0%, max 0.1% | done |
+| `SG41` Apply web memory percentage | `R_WEB_APPLY` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/MemoryPercentage`; Average; PT5M | Degraded > 80%; Unhealthy > 95% | S07, S15, S18; G05 | 288 points; min 9%, max 12% | done |
+| `SG42` Apply web response time | `R_WEB_APPLY` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/ResponseTime`; Average; PT5M | Degraded > 3000 ms; Unhealthy > 5000 ms | S07, S15, S18; G05 | 288 points; min 3 ms, max 16.67 ms | done |
+| `SG43` Apply web restart count | `R_WEB_APPLY` | Azure resource metric; `WEB_CORE` | `Microsoft.App/containerApps/RestartCount`; Total; PT5M | Degraded > 0; Unhealthy > 1 | S15, S18; G05 | 288 points; all 0 | done |
+| `SG44` Apply state persistence failures | `SC_APPLY_STATE` | Log Analytics KQL; `WS_CORE` | `Q_SESSION_STORE_FAILURES`; PT15M; refresh PT5M | Degraded > 0; Unhealthy > 2 | S04, S13, S15, S17; G05, G08 | Exact query returned 0; no Apply traffic | done |
+| `SG45` Apply state persistence latency | `SC_APPLY_STATE` | Log Analytics KQL; `WS_CORE` | `Q_SESSION_STORE_LATENCY`; PT15M; refresh PT5M; p95 | Degraded > 2000 ms; Unhealthy > 10000 ms | S04, S13, S15, S17; G05, G08 | Exact query returned no row; starts Unknown without traffic | done |
+| `SG46` Apply storage availability | `R_STORAGE_APPLY` | Azure resource metric; `BLOB_CORE` | `Microsoft.Storage/storageAccounts/blobServices/Availability`; Average; PT1M | Degraded < 99.9%; Unhealthy < 99% | S07, S15, S18; G05, G09 | 2 points; both 100% | done |
+| `SG47` Apply storage end-to-end latency | `R_STORAGE_APPLY` | Azure resource metric; `BLOB_CORE` | `Microsoft.Storage/storageAccounts/blobServices/SuccessE2ELatency`; Average; PT1M | Degraded > 2000 ms; Unhealthy > 5000 ms | S07, S15, S18; G05, G09 | 2 points; 129.75 to 354 ms | done |
+| `SG48` Critical Service Health events | `E_PLATFORM` | Log Analytics KQL; `WS_CORE` | `Q_PLATFORM_SERVICE_HEALTH`; PT15M; refresh PT5M | Unhealthy > 0; Limited impact to root | S03, S07, S15 | Exact query returned 0 | done |
+| `SG49` Failed ARM operations | `E_PLATFORM` | Log Analytics KQL; `WS_CORE` | `Q_PLATFORM_ARM_FAILURES`; PT15M; refresh PT5M | Unhealthy > 0; Limited impact to root | S03, S07, S15 | Exact query returned 0 | done |
+| `SG50` Platform alert activity | `E_PLATFORM` | Log Analytics KQL; `WS_CORE` | `Q_PLATFORM_ALERT_ACTIVITY`; PT15M; refresh PT5M | Unhealthy > 20; Limited impact to root | S03, S07, S15 | Exact query returned 0 | done |
 
 ## Gaps and open decisions
 
@@ -644,25 +681,25 @@ Every metric row is on the exact resource ID in the entity plan. Every KQL row i
 | `G01` No user commitment for the 99% health objective | user input | `E_CORE_ROOT`, all four `UF_` entities | Existing model uses 99.0. Degraded does not count as downtime, per S12. | Confirm the 99% target or supply per-flow targets and the measurement period. Owner: workload owner. | new |
 | `G02` The enabled action group has no recipients | user input | `A1`, root alerts | `ACTION_CORE` has zero email, SMS, webhook, push, automation, function, logic app, event hub or role receivers. | Add and confirm at least one notification route. Owner: workload owner. | problem: alert would notify nobody |
 | `G03` Alert placement is not confirmed | user input | `A1`, `A2` | Proposal is root-only, Unhealthy, severity 2. No metric or scheduled-query alerts exist in the resource group. | Accept root-only or request a direct flow alert and owner. Owner: workload owner. | new |
-| `G04` Live CloudHealth alert binding cannot be independently read with the available generic ARM output | research/lookup | `A1` | Source Bicep declares the root alert and live action group exists, but generic `az resource show` returned only provisioning state. | `healthmodel-build` should inspect the CloudHealth alert subresource/API before deploy. | problem: alert binding not independently verified |
+| `G04` Live CloudHealth alert binding cannot be independently read with the available generic ARM output | research/lookup | `A1` | The deployed root entity now exposes its alert through the entity REST API. | Verified: Severity 2 and `ACTION_CORE` are present on the CORE root. | done |
 | `G05` Starting thresholds are assumptions, not commitments | assumption | `SG01`-`SG50`, except explicit live/source thresholds | Current model supplies 2-error, 5/10-second, 95%, 450/570-second and 67% rules. New degraded cutoffs use lower starting values. | Tune after one week of real flow traffic and document accepted changes. | new |
 | `G06` Apply does not emit a complete per-change outcome signal | user input | `SC_MODEL_WRITE`, `SG38` | FastAPI route 5xx and apply response exist, but `partial`, `change_rejected`, `forbidden`, `not_found`, `conflict` and `interrupted` have no dedicated dependency span. | Add a `healthmodel.apply` dependency span with overall outcome and failed change count. Owner: web app team. | problem: partial Apply can be invisible |
 | `G07` Direct hosted-agent definition and container-state reads are forbidden to the current identity | research/lookup | `R_HOSTED_AGENT` | Foundry `agent_get` and `agent_container_status_get` returned 403 for `accounts/AIServices/agents/read`. Task KQL remains available. | Build with an identity granted agent read, or keep user-impact KQL as the authoritative signal and document the access limitation. | problem: hosted-agent data-plane state unavailable |
 | `G08` Authenticated flow traffic was absent in the observed window | research/lookup | View, Report, Task and Apply route/dependency queries | Live 24-hour telemetry primarily showed the home page and probes. No `foundry.agent.*`, `healthmodel.*` or session-store dependency spans ran. | Execute one read, report, Task and Apply fixture in a safe test scope during build verification, then rerun Q01-Q13 and Q17. | problem: proposed flow-specific queries are not yet live-verified |
-| `G09` Several platform metrics return Unknown when idle | research/lookup | `R_STORAGE_TASK`, `R_STORAGE_APPLY`, 429 signal | Storage availability/latency and the filtered 429 metric were Unknown. Zero-result KQL session-store and Task failure queries should provide positive quiet-period evidence. | Build must confirm the healthy zero-row KQL and accept or remove Unknown metric signals. | new |
+| `G09` Several platform metrics return Unknown when idle | research/lookup | `R_STORAGE_TASK`, `R_STORAGE_APPLY`, SG35 | Storage had only two points in 24 hours, and the filtered 429 metric had zero points. Zero-result KQL session-store and Task failure queries provide positive quiet-period evidence. | Bicep omits SG35 and keeps SG33. Verify storage after the first Session traffic and tune if the sparse metric dominates health. | new |
 | `G10` Workload, monitoring data and health model are co-located in one region, and the Container Apps environment is not zone redundant | assumption | `M_CORE`, `E_PLATFORM`, `WEB_CORE`, `MCP_CORE` | All visible workload resources and the model are in Sweden Central. Official guidance recommends separating the health model region/subscription for resilience. | Confirm this demo accepts co-location and single-region semantics, or plan a separate monitoring subscription/region. | new |
-| `G11` Ignore-Unknown behavior is a design choice | assumption | `E_CORE_ROOT`, `UF_*`, virtual components | Proposed `ignoreUnknown=false` surfaces uncertainty. Quiet-period zero-result KQL should keep each flow evaluable. | Accept visible Unknown for missing evidence, or explicitly choose `ignoreUnknown=true` with the resulting false-healthy risk. | new |
-| `G12` Test and design models are not part of CORE | assumption | All live models other than `HM_CORE` | The resource group contains one design target and three E2E/verification models. | Keep them out unless the user wants a separate test-platform model. | new |
+| `G11` Ignore-Unknown behavior is a design choice | assumption | `E_CORE_ROOT`, `UF_*`, virtual components | CORE is deployed with `ignoreUnknown=false`. Live evaluation still reports each flow Healthy when a zero-valued failure signal is Healthy and a latency or sparse metric signal is Unknown. The Unknown child is visible in the graph. | Keep this behavior for quiet periods, or choose a different rollup only after observing user-flow traffic. | new |
+| `G12` Test and design models are not part of CORE | assumption | All live models other than `HM_CORE` | The prior three test/verification models were absent before the retry. The managed `hm-anboahmdemo-design` target was recreated and remains separate. | Keep the design model and any future test models out unless the user requests a separate test-platform model. | done |
 
 ## Intent acceptance
 
 | Concrete intent and affected models/entities | State | Attributable user acceptance/reference | Status |
 |---------------------------------------------|-------|----------------------------------------|--------|
-| Use `M_CORE` on `HM_CORE`, display it as `CORE`, and replace the stale movie-request tree | pending | S01 names CORE; final topology still requires user review | new |
-| Model the four flows `UF_VIEW`, `UF_REPORT`, `UF_TASK`, `UF_APPLY` | pending | Derived from S02-S04, S13; no explicit acceptance yet | new |
-| Duplicate shared web and storage resources per flow in a single-parent tree | pending | Proposed by this modelspec; no user acceptance yet | new |
-| Set 99% on the root and four user flows | pending | No acceptance; G01 | new |
-| Use 5-minute/15-minute windows and the listed thresholds | pending | Starting assumptions G05 | new |
-| Keep platform context with Limited impact | pending | Existing live intent plus S11-S12; no explicit user acceptance | new |
-| Alert the root only on Unhealthy, severity 2 | pending | Existing source intent; recipients missing G02, binding gap G04 | new |
+| Use `M_CORE` on `HM_CORE`, display it as `CORE`, and replace the stale movie-request tree | deployed | Standing request S01 and successful deployment S19 | done |
+| Model the four flows `UF_VIEW`, `UF_REPORT`, `UF_TASK`, `UF_APPLY` | deployed | Derived from S02-S04 and S13; deployment S19 | done |
+| Duplicate shared web and storage resources per flow in a single-parent tree | deployed | Live authored relationship count 26; S19 | done |
+| Set 99% on the root and four user flows | deployed for this demo | Standing deployment request S01; G01 remains open for a user commitment | done |
+| Use 5-minute/15-minute windows and the listed thresholds | deployed for this demo | Starting assumptions G05 remain tunable | done |
+| Keep platform context with Limited impact | deployed | S11-S12, S19 | done |
+| Alert the root only on Unhealthy, severity 2 | deployed; routing incomplete | S10, S19; no receivers remains G02 | problem: alert would notify nobody |
 | Add Apply outcome instrumentation for complete model-write health | pending | G06; no code change was made by this plan | new |

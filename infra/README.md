@@ -2,7 +2,8 @@
 
 `main.bicep` provisions the whole demo at subscription scope, in one region: the resource group, a small virtual
 network, a web Container App and an Azure MCP server Container App, two Entra app registrations, a Foundry account
-with a project and a model, a private blob store for Sessions, and two Azure Health Models.
+with a project and a model, a private blob store for Sessions, an Event Hubs diagnostics stream, and two Azure
+Health Models.
 
 - Set `AZURE_LOCATION` to `swedencentral` before the first provision. Foundry hosted agents are not available
   in North Europe, and every resource uses `location`. A region cannot change in place.
@@ -23,7 +24,27 @@ with a project and a model, a private blob store for Sessions, and two Azure Hea
 | Storage account with the `sessions` container, its private endpoint and private DNS zone | `storage.bicep` | Session store. |
 | Foundry account, project `proj-<env>`, model, egress policy | `foundry.bicep` | See Foundry. |
 | `hm-<env>`, `hm-<env>-design` | `health-model*.bicep`, `design-health-model.bicep` | See Health models. |
-| Activity log diagnostics | `subscription-monitoring.bicep` | Subscription scope. `azd down` leaves it behind, so the `predown` hook deletes it (see Deploying). |
+| Event Hubs namespace `ehns-<env>-<token>` and hub `diagnostics` | `event-hub.bicep` | Standard, one throughput unit with auto-inflate to four, four partitions and one-day retention. |
+| Resource, platform and activity-log diagnostics | `event-hub-diagnostics.bicep`, `subscription-monitoring.bicep` | Routes every supported project-owned log and metric category to the `diagnostics` hub. The subscription setting stays behind `azd down`, so the `predown` hook deletes it (see Deploying). |
+
+## Diagnostic stream
+
+- `event-hub.bicep` creates a Standard namespace in the workload region. Local SAS authentication is required by Azure
+  Monitor diagnostic settings. The `azure-monitor-diagnostics` rule has Manage, Send and Listen because the diagnostic
+  destination requires all three rights. The template does not output connection strings or keys.
+- `event-hub-diagnostics.bicep` creates one `to-event-hub` diagnostic setting on both Container Apps, the Container Apps
+  environment, ACR, the Foundry account and project, the storage account and blob service, VNet, private endpoint,
+  private DNS zone, subnet network security groups attached in the same resource group, Log Analytics, Application Insights, and both health models.
+- Each supported resource sends `allLogs` and `AllMetrics`; metrics-only and logs-only resources send what the service
+  exposes. Web tests and action groups do not support diagnostic settings.
+- `subscription-monitoring.bicep` sends Administrative, ServiceHealth, ResourceHealth and Alert activity categories to
+  both Log Analytics and Event Hubs.
+- The project has no Kubernetes cluster. Advanced Container Networking Services and cluster network observability are
+  not deployed. Container Apps environment logs and VNet/NSG private networking diagnostics provide the available
+  container and network evidence for this workload.
+- The Event Grid system topic currently visible in the live resource group is provider-created for the storage account,
+  is not an infrastructure-owned resource, and is not modeled by the Bicep graph. Its DeliveryFailures and metrics can
+  be exported later when that topic is brought under IaC ownership.
 
 ## Network
 
@@ -54,7 +75,8 @@ with a project and a model, a private blob store for Sessions, and two Azure Hea
   public host name, which resolves privately only inside the VNet.
 - Nothing outside the VNet reaches the store, so `make dev` exports `SESSIONS_CONTAINER_URL=memory:` and keeps
   Sessions in process memory.
-- Blob diagnostics go to Log Analytics. The agent never touches the store, so its egress policy has no blob host.
+- Blob diagnostics go to Log Analytics and Event Hubs. The agent never touches the store, so its egress policy has no
+  blob host.
 
 ## Foundry
 

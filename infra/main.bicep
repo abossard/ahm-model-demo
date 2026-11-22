@@ -86,11 +86,24 @@ module storage 'modules/storage.bicep' = {
   }
 }
 
+module eventHub 'modules/event-hub.bicep' = {
+  scope: rg
+  name: 'event-hub'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    resourceToken: resourceToken
+    tags: tags
+  }
+}
+
 module subscriptionMonitoring 'modules/subscription-monitoring.bicep' = {
   name: 'subscription-monitoring-${deployment().location}'
   params: {
     diagnosticSettingName: 'diag-${namePrefix}-activity'
     logAnalyticsWorkspaceId: foundation.outputs.workspaceId
+    eventHubAuthorizationRuleId: eventHub.outputs.authorizationRuleId
+    eventHubName: eventHub.outputs.eventHubName
   }
 }
 
@@ -395,6 +408,30 @@ module designHealthModel 'modules/design-health-model.bicep' = {
   }
 }
 
+module eventHubDiagnostics 'modules/event-hub-diagnostics.bicep' = {
+  scope: rg
+  name: 'event-hub-diagnostics'
+  params: {
+    eventHubAuthorizationRuleId: eventHub.outputs.authorizationRuleId
+    eventHubName: eventHub.outputs.eventHubName
+    webContainerAppName: web.outputs.containerAppName
+    mcpContainerAppName: mcp.outputs.containerAppName
+    containerEnvironmentName: 'cae-${namePrefix}'
+    registryName: foundation.outputs.registryName
+    foundryAccountName: foundry.outputs.accountName
+    foundryProjectName: foundry.outputs.projectName
+    storageAccountName: storage.outputs.storageName
+    vnetName: 'vnet-${namePrefix}'
+    privateEndpointName: 'pe-${namePrefix}-blob'
+    privateDnsZoneName: 'privatelink.blob.${environment().suffixes.storage}'
+    subnetNetworkSecurityGroupIds: foundation.outputs.subnetNetworkSecurityGroupIds
+    workspaceName: 'law-${namePrefix}'
+    applicationInsightsName: foundation.outputs.applicationInsightsName
+    healthModelName: healthModel.outputs.modelName
+    designHealthModelName: designHealthModel.outputs.modelName
+  }
+}
+
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = rbac.outputs.registryLoginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = foundation.outputs.registryName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = foundation.outputs.environmentId
@@ -425,3 +462,5 @@ output ENTRA_MCP_CLIENT_ID string = entra.outputs.mcpClientId
 output MCP_SCOPE string = entra.outputs.mcpScope
 output MCP_URL string = 'https://${mcp.outputs.fqdn}/'
 output FOUNDRY_AGENT_PRINCIPAL_ID string = foundryAgentPrincipalId
+output EVENT_HUB_NAMESPACE_NAME string = eventHub.outputs.namespaceName
+output EVENT_HUB_NAME string = eventHub.outputs.eventHubName

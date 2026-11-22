@@ -155,6 +155,8 @@ output identityPrincipalId string = identity.properties.principalId
 output mcpIdentityId string = mcpIdentity.id
 output mcpIdentityClientId string = mcpIdentity.properties.clientId
 output mcpIdentityPrincipalId string = mcpIdentity.properties.principalId
+// Read the subnet bindings Azure returns, including groups attached by deployment policy.
+output subnetNetworkSecurityGroupIds array = map(vnet.properties.subnets ?? [], subnet => subnet.?properties.?networkSecurityGroup.?id ?? '')
 output vnetId string = vnet.id
 output privateEndpointSubnetId string = '${vnet.id}/subnets/${privateEndpointSubnetName}'
 output registryName string = registry.name

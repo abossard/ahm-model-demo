@@ -105,7 +105,7 @@ resource relAppHostingContainerApp 'Microsoft.CloudHealth/healthmodels/relations
 
 resource relSendHealthReportsAppHosting 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
-  name: 'r-send-health-reports-app-hosting'
+  name: 'r-send-health-reports-app-hosting-reports'
   properties: {
     parentEntityName: entityNames.sendHealthReports
     childEntityName: entityNames.systemAppHostingReports
@@ -135,7 +135,7 @@ resource relReportAppHostingContainerApp 'Microsoft.CloudHealth/healthmodels/rel
 
 resource relRunAgentTasksAppHosting 'Microsoft.CloudHealth/healthmodels/relationships@2026-05-01-preview' = {
   parent: model
-  name: 'r-run-agent-tasks-app-hosting'
+  name: 'r-run-agent-tasks-app-hosting-tasks'
   properties: {
     parentEntityName: entityNames.runAgentTasks
     childEntityName: entityNames.systemAppHostingTasks

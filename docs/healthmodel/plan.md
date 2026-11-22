@@ -19,7 +19,7 @@ CORE shows whether people can use the core of the app: view a health model, send
 | Run a Task | Create a Session, ask the assistant to Review, Explain or Design, and receive the result | Web and API, Session and Task storage, Assistant execution, Model inference | Task API errors, store failures, Task failures, Task time, MCP availability, model errors and throttling | 99% (assumed) | Overall CORE alert |
 | Apply approved changes | Confirm selected changes, write them to the live model, and save the outcome | Web and API, Model change writer, Apply result storage | Apply API errors, web load, storage health, Apply outcome once instrumented | 99% (assumed) | Overall CORE alert |
 
-**Not modelled:** the design-target model `hm-anboahmdemo-design`; the three test models in the resource group; Azure Container Registry, networking, managed identities and private endpoint support; the Container Apps environment as a separate entity; the automatically created Event Grid system topic. These are deployment support or test assets rather than separate user outcomes.
+**Not modelled:** the design-target model `hm-anboahmdemo-design`; Azure Container Registry, networking, managed identities and private endpoint support; the Container Apps environment as a separate entity; the automatically created Event Grid system topic. The three old test models are no longer present. Existing Application Insights discovery remains as a suppressed observation, but it does not change CORE health. These are deployment support, observation or test assets rather than separate user outcomes.
 
 ## Diagram
 
@@ -113,7 +113,7 @@ Read top to bottom. Each flow has its own copy of shared parts, so a failure see
 | The web app returns more than 2 server errors in 5 minutes | The affected Container App copy, its Web and API component, that user flow and CORE turn **Unhealthy** | Overall CORE alert fires |
 | Azure MCP fails 2 of 3 outside checks in 15 minutes | Container App `ca-anboahmdemo-mcp`, Assistant execution, Run a Task and CORE turn **Unhealthy**. View, Report and Apply stay **Healthy** | Overall CORE alert fires |
 | The sessions Blob service is unavailable | The two session-storage resource copies, Session and Task storage, Apply result storage, Run a Task, Apply approved changes and CORE turn **Unhealthy**. View and Report stay **Healthy** | Overall CORE alert fires |
-| The model deployment returns more than 10 throttled requests in 5 minutes | Foundry account `aif-anboahmdemo-iqub3z72xhlxs`, Model inference, Run a Task and CORE turn **Unhealthy**. One to 10 throttled requests first makes them **Degraded** | Only the Unhealthy state fires the overall alert |
+| The model deployment returns more than 10 client or throttled errors in 5 minutes | Foundry account `aif-anboahmdemo-iqub3z72xhlxs`, Model inference, Run a Task and CORE turn **Unhealthy**. Three to 10 errors first make them **Degraded** | Only the Unhealthy state fires the overall alert |
 | A critical Azure Service Health event arrives | Azure platform context turns **Unhealthy**, but CORE only turns **Degraded** because the dependency has limited impact | No overall alert because the root is not Unhealthy |
 
 ## Assumptions

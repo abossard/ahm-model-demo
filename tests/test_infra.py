@@ -100,8 +100,9 @@ LOG_ANALYTICS = ("ca7f3f0b-7d91-482c-8e09-c5d840d0eac5", "e8dac03d-d467-4a7e-929
 AGENT_APP_PENDING = {
     "src/web/ui/tests/denseModel.ts",
 }
-# Decision records and plans may name what they removed.
+# Decision records and archived plans may name what they removed.
 AGENT_APP_EXEMPT = ("docs/adr/", "docs/redesign/", "tests/test_infra.py")
+ARCHIVED_HEALTH_MODEL = {"docs/healthmodel.old/plan.md", "docs/healthmodel.old/modelspec.md"}
 
 # What scripts/local-env.sh takes from the azd environment, in export order. It exports SESSIONS_CONTAINER_URL last and
 # never from azd: the session store has only a private endpoint, so a local run keeps Sessions in process memory.
@@ -122,39 +123,61 @@ LOCAL_AUTH_MODE = "local"
 APP_ROOT = "<model name>"
 
 APP_ENTITIES = {
-    # name: (display name, layer, x)
-    APP_ROOT: ("Health Pulse", "root", 560),
-    "flow-view-health-model": ("View Health Model", "flow", 80),
-    "flow-send-health-reports": ("Send Health Reports", "flow", 320),
-    "flow-run-agent-tasks": ("Run agent tasks", "flow", 740),
-    "system-app-hosting": ("App Hosting", "system", 200),
-    "system-agent-runtime": ("Agent Runtime", "system", 530),
-    "system-ai-inference": ("AI Inference", "system", 860),
-    "system-session-store": ("Session Store", "system", 1080),
-    "container-app": ("Web Container App", "resource", 200),
-    "hosted-agent": ("Foundry Hosted Agent", "resource", 420),
-    "mcp-server": ("Azure MCP Server", "resource", 640),
-    "foundry-account": ("Foundry Account", "resource", 860),
-    "session-storage": ("Session Storage", "resource", 1080),
-    "platform-context": ("Azure Platform Context", "context", 1300),
-    "discovered-app-topology": ("Discovered Application Topology", "context", 1520),
+    # name: (display name, layer, x); None means the display name uses live resource names.
+    APP_ROOT: ("CORE", "root", 1120),
+    "flow-view-health-model": ("View a health model", "flow", 120),
+    "flow-send-health-reports": ("Send a health report", "flow", 520),
+    "flow-run-agent-tasks": ("Run a Task", "flow", 1180),
+    "flow-apply-health-model-changes": ("Apply approved changes", "flow", 2120),
+    "system-app-hosting": ("Web and API for viewing", "system", 20),
+    "system-model-read": ("Model catalog and history", "system", 220),
+    "system-app-hosting-reports": ("Web and API for reports", "system", 420),
+    "system-report-ingest": ("Health report ingestion", "system", 620),
+    "system-app-hosting-tasks": ("Web and API for Tasks", "system", 820),
+    "system-session-store": ("Session and Task storage", "system", 1020),
+    "system-agent-runtime": ("Assistant execution", "system", 1220),
+    "system-ai-inference": ("Model inference", "system", 1420),
+    "system-app-hosting-apply": ("Web and API for Apply", "system", 2020),
+    "system-model-write": ("Model change writer", "system", 2220),
+    "system-apply-state": ("Apply result storage", "system", 2420),
+    "container-app": (None, "resource", 20),
+    "container-app-reports": (None, "resource", 420),
+    "container-app-tasks": (None, "resource", 820),
+    "container-app-apply": (None, "resource", 2020),
+    "session-storage": (None, "resource", 1020),
+    "hosted-agent": (None, "resource", 1220),
+    "mcp-server": (None, "resource", 1420),
+    "foundry-account": (None, "resource", 1620),
+    "session-storage-apply": (None, "resource", 2420),
+    "platform-context": ("Azure platform context", "context", 2620),
+    "discovered-app-topology": ("Discovered Application Topology", "context", 2820),
 }
 
-APP_LAYER_Y = {"root": 40, "flow": 190, "context": 190, "system": 340, "resource": 490}
+APP_LAYER_Y = {"root": 40, "flow": 190, "context": 190, "system": 340, "resource": 520}
 
 APP_IMPACT = {"platform-context": "Limited", "discovered-app-topology": "Suppressed"}
+APP_OBJECTIVES = {
+    APP_ROOT,
+    "flow-view-health-model",
+    "flow-send-health-reports",
+    "flow-run-agent-tasks",
+    "flow-apply-health-model-changes",
+}
 
-# Entities that aggregate their children; every other entity reads signals only.
 APP_ROLLUP = {
     APP_ROOT,
     "flow-view-health-model",
     "flow-send-health-reports",
     "flow-run-agent-tasks",
+    "flow-apply-health-model-changes",
     "system-app-hosting",
+    "system-app-hosting-reports",
+    "system-app-hosting-tasks",
+    "system-app-hosting-apply",
+    "system-session-store",
     "system-agent-runtime",
     "system-ai-inference",
-    "system-session-store",
-    "container-app",
+    "system-apply-state",
     "discovered-app-topology",
 }
 
@@ -162,19 +185,29 @@ APP_EDGES = {
     "r-root-view-health-model": (APP_ROOT, "flow-view-health-model"),
     "r-root-send-health-reports": (APP_ROOT, "flow-send-health-reports"),
     "r-root-run-agent-tasks": (APP_ROOT, "flow-run-agent-tasks"),
+    "r-root-apply-health-model-changes": (APP_ROOT, "flow-apply-health-model-changes"),
     "r-root-platform": (APP_ROOT, "platform-context"),
     "r-root-discovery": (APP_ROOT, "discovered-app-topology"),
     "r-view-health-model-app-hosting": ("flow-view-health-model", "system-app-hosting"),
-    "r-send-health-reports-app-hosting": ("flow-send-health-reports", "system-app-hosting"),
-    "r-run-agent-tasks-app-hosting": ("flow-run-agent-tasks", "system-app-hosting"),
+    "r-view-health-model-model-read": ("flow-view-health-model", "system-model-read"),
+    "r-app-hosting-container-app": ("system-app-hosting", "container-app"),
+    "r-send-health-reports-app-hosting-reports": ("flow-send-health-reports", "system-app-hosting-reports"),
+    "r-send-health-reports-ingest": ("flow-send-health-reports", "system-report-ingest"),
+    "r-report-app-hosting-container-app": ("system-app-hosting-reports", "container-app-reports"),
+    "r-run-agent-tasks-app-hosting-tasks": ("flow-run-agent-tasks", "system-app-hosting-tasks"),
     "r-run-agent-tasks-agent-runtime": ("flow-run-agent-tasks", "system-agent-runtime"),
     "r-run-agent-tasks-ai-inference": ("flow-run-agent-tasks", "system-ai-inference"),
     "r-run-agent-tasks-session-store": ("flow-run-agent-tasks", "system-session-store"),
-    "r-app-hosting-container-app": ("system-app-hosting", "container-app"),
+    "r-task-app-hosting-container-app": ("system-app-hosting-tasks", "container-app-tasks"),
     "r-agent-runtime-hosted-agent": ("system-agent-runtime", "hosted-agent"),
     "r-agent-runtime-mcp-server": ("system-agent-runtime", "mcp-server"),
     "r-ai-inference-foundry-account": ("system-ai-inference", "foundry-account"),
     "r-session-store-session-storage": ("system-session-store", "session-storage"),
+    "r-apply-app-hosting": ("flow-apply-health-model-changes", "system-app-hosting-apply"),
+    "r-apply-model-write": ("flow-apply-health-model-changes", "system-model-write"),
+    "r-apply-state": ("flow-apply-health-model-changes", "system-apply-state"),
+    "r-apply-app-hosting-container-app": ("system-app-hosting-apply", "container-app-apply"),
+    "r-apply-state-storage": ("system-apply-state", "session-storage-apply"),
 }
 
 REMOVED_ENTITIES = (
@@ -194,32 +227,62 @@ REMOVED_ENTITIES = (
 # with HTTP 422, so the web app is the one Azure resource that keeps it off with a metric signal group.
 APP_BINDINGS = {
     "container-app": ("containerApp", "ContainerApp", "Disabled"),
+    "container-app-reports": ("containerApp", "ContainerApp", "Disabled"),
+    "container-app-tasks": ("containerApp", "ContainerApp", "Disabled"),
+    "container-app-apply": ("containerApp", "ContainerApp", "Disabled"),
     "hosted-agent": ("foundryProject", "CognitiveServicesAccount", "Disabled"),
     "mcp-server": ("mcpApp", "ContainerApp", "Disabled"),
     "foundry-account": ("foundryAccount", "CognitiveServicesAccount", "Enabled"),
-    "session-storage": ("sessionsBlobService", "StorageAccount", "Disabled"),
+    "session-storage": ("sessionsStorageAccount", "StorageAccount", "Disabled"),
+    "session-storage-apply": ("sessionsStorageAccount", "StorageAccount", "Disabled"),
 }
 
 # entity: (metric signals, query signals)
 APP_SIGNALS = {
-    "container-app": (
-        ["cpu-percentage", "memory-percentage", "response-time"],
-        ["failed-requests", "exceptions", "availability-test"],
+    "system-app-hosting": ([], ["view-route-failures"]),
+    "system-model-read": ([], ["model-read-failures", "model-read-latency"]),
+    "system-app-hosting-reports": ([], ["report-route-failures"]),
+    "system-report-ingest": ([], ["report-ingest-failures"]),
+    "system-app-hosting-tasks": ([], ["task-route-failures"]),
+    "system-session-store": ([], ["session-store-failures", "session-store-latency"]),
+    "system-model-write": ([], ["apply-request-failures"]),
+    "system-apply-state": ([], ["apply-state-failures", "apply-state-latency"]),
+    "container-app": (["cpu-percentage", "memory-percentage", "response-time", "restart-count"], ["availability-test"]),
+    "container-app-reports": (
+        ["cpu-percentage", "memory-percentage", "response-time", "restart-count"],
+        ["availability-test"],
+    ),
+    "container-app-tasks": (
+        ["cpu-percentage", "memory-percentage", "response-time", "restart-count"],
+        ["availability-test"],
+    ),
+    "container-app-apply": (
+        ["cpu-percentage", "memory-percentage", "response-time", "restart-count"],
+        ["availability-test"],
     ),
     "hosted-agent": ([], ["agent-task-failures", "agent-task-latency"]),
-    "mcp-server": (["cpu-percentage", "memory-percentage", "response-time"], ["availability-test"]),
-    "foundry-account": (["client-errors", "server-errors", "throttled-requests"], []),
+    "mcp-server": (
+        ["cpu-percentage", "memory-percentage", "response-time", "restart-count"],
+        ["availability-test"],
+    ),
+    "foundry-account": (["client-errors", "server-errors"], []),
     "session-storage": (["availability", "end-to-end-latency"], []),
+    "session-storage-apply": (["availability", "end-to-end-latency"], []),
     "platform-context": ([], ["service-health", "failed-arm-operations", "platform-alerts"]),
 }
 
 # (entity, signal): (degraded rule, unhealthy rule). A missing rule is None.
 APP_RULES = {
+    ("system-app-hosting", "view-route-failures"): (("GreaterThan", 0), ("GreaterThan", 2)),
+    ("system-app-hosting-reports", "report-route-failures"): (("GreaterThan", 0), ("GreaterThan", 2)),
+    ("system-app-hosting-tasks", "task-route-failures"): (("GreaterThan", 0), ("GreaterThan", 2)),
+    ("system-model-write", "apply-request-failures"): (("GreaterThan", 0), ("GreaterThan", 2)),
     ("hosted-agent", "agent-task-failures"): (("GreaterThan", 0), ("GreaterThan", 2)),
     ("hosted-agent", "agent-task-latency"): (("GreaterThan", 450000), ("GreaterThan", 570000)),
-    ("foundry-account", "throttled-requests"): (("GreaterThan", 0), ("GreaterThan", 10)),
-    ("session-storage", "availability"): (None, ("LessThan", 99)),
-    ("session-storage", "end-to-end-latency"): (None, ("GreaterThan", 5000)),
+    ("foundry-account", "client-errors"): (("GreaterThan", 2), ("GreaterThan", 10)),
+    ("foundry-account", "server-errors"): (None, ("GreaterThan", 0)),
+    ("session-storage", "availability"): (("LessThan", 99.9), ("LessThan", 99)),
+    ("session-storage", "end-to-end-latency"): (("GreaterThan", 2000), ("GreaterThan", 5000)),
     ("container-app", "availability-test"): (("LessThan", 100), ("LessThan", 67)),
     ("mcp-server", "availability-test"): (("LessThan", 100), ("LessThan", 67)),
 }
@@ -229,12 +292,6 @@ APP_RULES = {
 APP_METRICS = {
     ("foundry-account", "client-errors"): ("Microsoft.CognitiveServices/accounts", "ClientErrors", "Total", None),
     ("foundry-account", "server-errors"): ("Microsoft.CognitiveServices/accounts", "ServerErrors", "Total", None),
-    ("foundry-account", "throttled-requests"): (
-        "Microsoft.CognitiveServices/accounts",
-        "ModelRequests",
-        "Total",
-        "StatusCode eq '429'",
-    ),
     ("session-storage", "availability"): (
         "Microsoft.Storage/storageAccounts/blobServices",
         "Availability",
@@ -247,7 +304,36 @@ APP_METRICS = {
         "Average",
         None,
     ),
+    ("session-storage-apply", "availability"): (
+        "Microsoft.Storage/storageAccounts/blobServices",
+        "Availability",
+        "Average",
+        None,
+    ),
+    ("session-storage-apply", "end-to-end-latency"): (
+        "Microsoft.Storage/storageAccounts/blobServices",
+        "SuccessE2ELatency",
+        "Average",
+        None,
+    ),
 }
+for entity in ("container-app", "container-app-reports", "container-app-tasks", "container-app-apply"):
+    APP_METRICS.update(
+        {
+            (entity, "cpu-percentage"): ("Microsoft.App/containerApps", "CpuPercentage", "Average", None),
+            (entity, "memory-percentage"): ("Microsoft.App/containerApps", "MemoryPercentage", "Average", None),
+            (entity, "response-time"): ("Microsoft.App/containerApps", "ResponseTime", "Average", None),
+            (entity, "restart-count"): ("Microsoft.App/containerApps", "RestartCount", "Total", None),
+        }
+    )
+APP_METRICS.update(
+    {
+        ("mcp-server", "cpu-percentage"): ("Microsoft.App/containerApps", "CpuPercentage", "Average", None),
+        ("mcp-server", "memory-percentage"): ("Microsoft.App/containerApps", "MemoryPercentage", "Average", None),
+        ("mcp-server", "response-time"): ("Microsoft.App/containerApps", "ResponseTime", "Average", None),
+        ("mcp-server", "restart-count"): ("Microsoft.App/containerApps", "RestartCount", "Total", None),
+    }
+)
 
 # (entity, signal): (timeGrain, refreshInterval) of a metric signal whose grain follows the data. ResponseTime reports
 # only for minutes with requests (29 of 55 at PT1M, 11 of 11 at PT5M); the synthetic probe sends some every 5 minutes.
@@ -260,15 +346,29 @@ APP_METRIC_GRAINS = {
     ("mcp-server", "cpu-percentage"): ("PT5M", "PT5M"),
     ("mcp-server", "memory-percentage"): ("PT5M", "PT5M"),
     ("mcp-server", "response-time"): ("PT5M", "PT5M"),
+    ("mcp-server", "restart-count"): ("PT5M", "PT5M"),
+    ("container-app-reports", "cpu-percentage"): ("PT5M", "PT5M"),
+    ("container-app-reports", "memory-percentage"): ("PT5M", "PT5M"),
+    ("container-app-reports", "response-time"): ("PT5M", "PT5M"),
+    ("container-app-reports", "restart-count"): ("PT5M", "PT5M"),
+    ("container-app-tasks", "cpu-percentage"): ("PT5M", "PT5M"),
+    ("container-app-tasks", "memory-percentage"): ("PT5M", "PT5M"),
+    ("container-app-tasks", "response-time"): ("PT5M", "PT5M"),
+    ("container-app-tasks", "restart-count"): ("PT5M", "PT5M"),
+    ("container-app-apply", "cpu-percentage"): ("PT5M", "PT5M"),
+    ("container-app-apply", "memory-percentage"): ("PT5M", "PT5M"),
+    ("container-app-apply", "response-time"): ("PT5M", "PT5M"),
+    ("container-app-apply", "restart-count"): ("PT5M", "PT5M"),
+    ("container-app", "restart-count"): ("PT5M", "PT5M"),
 }
 
 AGENT_QUERIES = {
     "agent-task-failures": (
-        'AppDependencies | where TimeGenerated > ago(15m) | where Name startswith "foundry.agent." '
+        'AppRoleName == "{0}" | where Name startswith "foundry.agent." '
         "| summarize Value = countif(Success == false)"
     ),
     "agent-task-latency": (
-        'AppDependencies | where TimeGenerated > ago(15m) | where Name startswith "foundry.agent." '
+        'AppRoleName == "{0}" | where Name startswith "foundry.agent." '
         "| summarize Value = percentile(DurationMs, 95) | where not(isnan(Value))"
     ),
 }
@@ -457,26 +557,40 @@ def app_edges():
     return edges
 
 
+def group_signals(entity, group):
+    definition = entity["properties"]["signalGroups"].get(group, {}).get("signals", [])
+    if isinstance(definition, list):
+        return definition
+    match = re.fullmatch(r"\[variables\('([^']+)'\)\]", definition)
+    if not match:
+        return definition
+    return templates()["health-model-entities"]["variables"][match[1]]
+
+
 def signals(entity):
-    groups = entity["properties"]["signalGroups"]
-    metric = [s["name"] for s in groups.get("azureResource", {}).get("signals", [])]
-    query = [s["name"] for s in groups.get("azureLogAnalytics", {}).get("signals", [])]
+    metric = [s["name"] for s in group_signals(entity, "azureResource")]
+    query = [s["name"] for s in group_signals(entity, "azureLogAnalytics")]
     return metric, query
 
 
 def signal(entity, name):
-    groups = entity["properties"]["signalGroups"]
     return next(
         s
         for group in ("azureResource", "azureLogAnalytics")
-        for s in groups.get(group, {}).get("signals", [])
+        for s in group_signals(entity, group)
         if s["name"] == name
     )
 
 
 def rule(signal_definition, key):
     found = signal_definition["evaluationRules"].get(key)
-    return (found["operator"], found["threshold"]) if found else None
+    if not found:
+        return None
+    threshold = found["threshold"]
+    match = re.fullmatch(r"\[json\('(.+)'\)\]", str(threshold))
+    if match:
+        threshold = json.loads(match[1])
+    return found["operator"], threshold
 
 
 def descendants(edges, start):
@@ -598,6 +712,8 @@ class SourceLayoutContractTests(unittest.TestCase):
                 "container-app.bicep",
                 "design-health-model.bicep",
                 "entra.bicep",
+                "event-hub-diagnostics.bicep",
+                "event-hub.bicep",
                 "foundation.bicep",
                 "foundry.bicep",
                 "health-model-access.bicep",
@@ -778,6 +894,7 @@ class InfrastructureContractTests(unittest.TestCase):
                 [
                     "foundation",
                     "storage",
+                    "event-hub",
                     "subscription-monitoring",
                     "foundry",
                     "entra",
@@ -791,6 +908,7 @@ class InfrastructureContractTests(unittest.TestCase):
                     "health-model-relationships",
                     "health-model-discovery",
                     "design-health-model",
+                    "event-hub-diagnostics",
                 ]
             ),
         )
@@ -816,6 +934,7 @@ class InfrastructureContractTests(unittest.TestCase):
         for module, parameter, expected in (
             ("foundation", "location", "[parameters('location')]"),
             ("storage", "location", "[parameters('location')]"),
+            ("event-hub", "location", "[parameters('location')]"),
             ("foundry", "location", "[parameters('location')]"),
             ("container-app-web", "location", "[parameters('location')]"),
             ("container-app-mcp", "location", "[parameters('location')]"),
@@ -845,6 +964,100 @@ class InfrastructureContractTests(unittest.TestCase):
             [e["properties"]["workloadProfiles"] for e in environments],
             [[{"name": "Consumption", "workloadProfileType": "Consumption"}]],
         )
+
+    def test_event_hub_diagnostics_cover_every_supported_project_resource(self):
+        event_hub = templates()["event-hub"]
+        namespace = of_type(event_hub, "Microsoft.EventHub/namespaces")[0]
+        hub = of_type(event_hub, "Microsoft.EventHub/namespaces/eventhubs")[0]
+        authorization = of_type(event_hub, "Microsoft.EventHub/namespaces/authorizationRules")[0]
+
+        self.assertEqual(namespace["sku"], {"capacity": 1, "name": "Standard", "tier": "Standard"})
+        self.assertEqual(
+            (
+                namespace["properties"]["minimumTlsVersion"],
+                namespace["properties"]["publicNetworkAccess"],
+                namespace["properties"]["isAutoInflateEnabled"],
+                namespace["properties"]["maximumThroughputUnits"],
+            ),
+            ("1.2", "Enabled", True, 4),
+        )
+        self.assertEqual(
+            (
+                hub["properties"]["messageRetentionInDays"],
+                hub["properties"]["partitionCount"],
+                hub["properties"]["status"],
+            ),
+            (1, 4, "Active"),
+        )
+        self.assertEqual(sorted(authorization["properties"]["rights"]), ["Listen", "Manage", "Send"])
+
+        diagnostics = templates()["event-hub-diagnostics"]
+        settings = of_type(diagnostics, "Microsoft.Insights/diagnosticSettings")
+        expected_scopes = {
+            "[resourceId('Microsoft.App/containerApps', parameters('webContainerAppName'))]",
+            "[resourceId('Microsoft.App/containerApps', parameters('mcpContainerAppName'))]",
+            "[resourceId('Microsoft.App/managedEnvironments', parameters('containerEnvironmentName'))]",
+            "[resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName'))]",
+            "[resourceId('Microsoft.CognitiveServices/accounts', parameters('foundryAccountName'))]",
+            "[resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('foundryAccountName'), parameters('foundryProjectName'))]",
+            "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+            "[resourceId('Microsoft.Storage/storageAccounts/blobServices', parameters('storageAccountName'), 'default')]",
+            "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]",
+            "[resourceId('Microsoft.Network/privateEndpoints', parameters('privateEndpointName'))]",
+            "[resourceId('Microsoft.Network/privateDnsZones', parameters('privateDnsZoneName'))]",
+            "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgNames')[copyIndex()])]",
+            "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspaceName'))]",
+            "[resourceId('Microsoft.Insights/components', parameters('applicationInsightsName'))]",
+            "[resourceId('Microsoft.CloudHealth/healthmodels', parameters('healthModelName'))]",
+            "[resourceId('Microsoft.CloudHealth/healthmodels', parameters('designHealthModelName'))]",
+        }
+
+        self.assertEqual({setting["scope"] for setting in settings}, expected_scopes)
+        # Fifteen fixed targets plus one setting for each distinct, attached group in this RG.
+        fixed = [setting for setting in settings if "copy" not in setting]
+        group, = [setting for setting in settings if "copy" in setting]
+        self.assertEqual(len(fixed), 15)
+        self.assertIn("Microsoft.Network/networkSecurityGroups", group["scope"])
+        self.assertEqual(group["copy"]["count"], "[length(variables('nsgNames'))]")
+        self.assertEqual(diagnostics["outputs"]["diagnosticSettingCount"]["value"], "[add(15, length(variables('nsgNames')))]")
+        bindings = templates()["foundation"]["outputs"]["subnetNetworkSecurityGroupIds"]["value"]
+        self.assertIn("Microsoft.Network/virtualNetworks", bindings)
+        self.assertIn(".subnets", bindings)
+        self.assertIn("'networkSecurityGroup'", bindings)
+        self.assertIn("foundation", module_parameter("event-hub-diagnostics", "subnetNetworkSecurityGroupIds"))
+        self.assertIn("startsWith", diagnostics["variables"]["localNsgIds"])
+        self.assertIn("resourceGroup().id", diagnostics["variables"]["localNsgPrefix"])
+        self.assertIn("union(", diagnostics["variables"]["nsgNames"])
+        for setting in settings:
+            with self.subTest(scope=setting["scope"]):
+                self.assertEqual(setting["properties"]["eventHubName"], "[parameters('eventHubName')]")
+                self.assertEqual(
+                    setting["properties"]["eventHubAuthorizationRuleId"],
+                    "[parameters('eventHubAuthorizationRuleId')]",
+                )
+        source_shapes = sorted(
+            (
+                bool(setting["properties"].get("logs")),
+                bool(setting["properties"].get("metrics")),
+            )
+            for setting in settings
+        )
+        self.assertEqual(
+            source_shapes,
+            sorted([(False, True)] * 5 + [(True, False)] + [(True, True)] * 10),
+        )
+        self.assertEqual(
+            diagnostics["variables"]["allLogs"],
+            [{"categoryGroup": "allLogs", "enabled": True}],
+        )
+        self.assertEqual(
+            diagnostics["variables"]["allMetrics"],
+            [{"category": "AllMetrics", "enabled": True}],
+        )
+
+        activity = of_type(templates()["subscription-monitoring"], "Microsoft.Insights/diagnosticSettings")[0]
+        self.assertIn("eventHub", activity["properties"]["eventHubName"])
+        self.assertIn("eventHub", activity["properties"]["eventHubAuthorizationRuleId"])
 
     def test_subscription_scope_modules_are_named_per_region(self):
         compiled, _ = compile_main()
@@ -2040,7 +2253,7 @@ class ApplicationHealthModelContractTests(unittest.TestCase):
             templates()["health-model-relationships"]["outputs"]["deterministicRelationshipCount"]["value"],
             len(APP_EDGES),
         )
-        self.assertEqual((len(APP_ENTITIES), len(APP_EDGES)), (15, 16))
+        self.assertEqual((len(APP_ENTITIES), len(APP_EDGES)), (27, 26))
         self.assertEqual(
             {name: compiled["outputs"][name]["type"] for name in ("HEALTH_MODEL_ENTITY_COUNT", "HEALTH_MODEL_RELATIONSHIP_COUNT")},
             {"HEALTH_MODEL_ENTITY_COUNT": "int", "HEALTH_MODEL_RELATIONSHIP_COUNT": "int"},
@@ -2057,14 +2270,26 @@ class ApplicationHealthModelContractTests(unittest.TestCase):
                 properties = entities[name]["properties"]
                 positions[name] = (properties["canvasPosition"]["x"], properties["canvasPosition"]["y"])
 
-                self.assertEqual(properties["displayName"], display_name)
+                if display_name is not None:
+                    self.assertEqual(properties["displayName"], display_name)
                 self.assertEqual(positions[name], (x, APP_LAYER_Y[layer]))
-                self.assertEqual(properties["healthObjective"], 99)
                 self.assertEqual(properties["impact"], APP_IMPACT.get(name, "Standard"))
+                if name in APP_OBJECTIVES:
+                    self.assertEqual(properties["healthObjective"], 99)
+                else:
+                    self.assertNotIn("healthObjective", properties)
+                icon = properties.get("icon", {}).get("iconName")
+                if layer == "flow":
+                    self.assertEqual(icon, "UserFlow")
+                elif layer == "system":
+                    self.assertEqual(icon, "SystemComponent")
+                else:
+                    self.assertNotIn("icon", properties)
                 if name in APP_ROLLUP:
+                    ignore_unknown = name == "discovered-app-topology"
                     self.assertEqual(
                         properties["signalGroups"]["dependencies"],
-                        {"aggregationType": "WorstOf", "ignoreUnknown": True},
+                        {"aggregationType": "WorstOf", "ignoreUnknown": ignore_unknown},
                     )
                 else:
                     self.assertNotIn("dependencies", properties["signalGroups"])
@@ -2100,11 +2325,8 @@ class ApplicationHealthModelContractTests(unittest.TestCase):
         for name in APP_ENTITIES:
             with self.subTest(entity=name):
                 self.assertNotIn(name, descendants(edges, name))
-        # The graph is a DAG: the one component shared by several flows is a single entity, never copied per flow.
-        self.assertEqual(
-            {child: sorted(p) for child, p in parents.items() if len(p) > 1},
-            {"system-app-hosting": ["flow-run-agent-tasks", "flow-send-health-reports", "flow-view-health-model"]},
-        )
+        self.assertEqual({child: p for child, p in parents.items() if len(p) > 1}, {})
+        self.assertTrue(all(len(p) == 1 for child, p in parents.items() if child != APP_ROOT))
 
     def test_resource_bindings_and_signals(self):
         entities = app_entities()
@@ -2152,14 +2374,15 @@ class ApplicationHealthModelContractTests(unittest.TestCase):
             with self.subTest(query=signal_name):
                 definition = signal(entities["hosted-agent"], signal_name)
 
-                self.assertEqual(definition["queryText"], query)
+                self.assertIn("parameters('appRoleName')", definition["queryText"])
+                self.assertIn(query, definition["queryText"])
                 self.assertEqual((definition["valueColumnName"], definition["timeGrain"]), ("Value", "PT15M"))
 
     def test_query_signals_evaluate_over_the_window_their_query_declares(self):
         # timeGrain is the signal's time range and is intersected with the query's own time filter, so an ago() longer
         # than the grain is dead text: a 15 minute query on PT5M answered 33% while its 15 minute run said 40%.
         for name, entity in app_entities().items():
-            for definition in entity["properties"]["signalGroups"].get("azureLogAnalytics", {}).get("signals", []):
+            for definition in group_signals(entity, "azureLogAnalytics"):
                 with self.subTest(signal=f"{name}/{definition['name']}"):
                     window = re.search(r"ago\((\d+)m\)", definition["queryText"])[1]
 
@@ -2183,37 +2406,49 @@ class ApplicationHealthModelContractTests(unittest.TestCase):
                 self.assertLess(threshold, timeout * 1000)
         self.assertLess(degraded, unhealthy)
 
-    def test_web_app_signals_read_all_workspace_telemetry_without_survey_or_database_filters(self):
-        queries = {
+    def test_web_app_signals_are_scoped_to_their_user_flow(self):
+        view_queries = {
             s["name"]: s["queryText"]
-            for s in app_entities()["container-app"]["properties"]["signalGroups"]["azureLogAnalytics"]["signals"]
+            for s in group_signals(app_entities()["system-app-hosting"], "azureLogAnalytics")
+        }
+        report_queries = {
+            s["name"]: s["queryText"]
+            for s in group_signals(app_entities()["system-app-hosting-reports"], "azureLogAnalytics")
+        }
+        task_queries = {
+            s["name"]: s["queryText"]
+            for s in group_signals(app_entities()["system-app-hosting-tasks"], "azureLogAnalytics")
+        }
+        apply_queries = {
+            s["name"]: s["queryText"]
+            for s in group_signals(app_entities()["system-model-write"], "azureLogAnalytics")
         }
 
-        # Auto-instrumentation marks every 4xx unsuccessful: scanner 404s and a HEAD 405 must not count as failures.
-        self.assertEqual(
-            queries["failed-requests"],
-            "AppRequests | where TimeGenerated > ago(5m) | summarize Value = countif(toint(ResultCode) >= 500)",
-        )
-        self.assertEqual(
-            queries["exceptions"],
-            "AppExceptions | where TimeGenerated > ago(5m) | summarize Value = count()",
-        )
-        self.assertIn("parameters('availabilityTestName')", queries["availability-test"])
-        self.assertIn("| where not(isnan(Value))", queries["availability-test"])
-        # The MCP server cannot export requests (no credential for Entra-only Application Insights), so the only
-        # evidence in the workspace is the availability probe of its /health route.
+        self.assertIn("GET /api/health-models", view_queries["view-route-failures"])
+        self.assertIn("toint(ResultCode) >= 500", view_queries["view-route-failures"])
+        self.assertIn("health-reports", report_queries["report-route-failures"])
+        self.assertIn("POST /api/sessions/{{sid}}/tasks", task_queries["task-route-failures"])
+        self.assertIn("/apply", apply_queries["apply-request-failures"])
+        for query in (view_queries, report_queries, task_queries, apply_queries):
+            self.assertIn("parameters('appRoleName')", " ".join(query.values()))
+        availability = {
+            s["name"]: s["queryText"]
+            for s in group_signals(app_entities()["container-app"], "azureLogAnalytics")
+        }
+        self.assertIn("parameters('availabilityTestName')", availability["availability-test"])
+        self.assertIn("| where not(isnan(Value))", availability["availability-test"])
         mcp_queries = {
             s["name"]: s["queryText"]
-            for s in app_entities()["mcp-server"]["properties"]["signalGroups"]["azureLogAnalytics"]["signals"]
+            for s in group_signals(app_entities()["mcp-server"], "azureLogAnalytics")
         }
         self.assertEqual(list(mcp_queries), ["availability-test"])
         self.assertIn("parameters('mcpAvailabilityTestName')", mcp_queries["availability-test"])
         self.assertIn("| where not(isnan(Value))", mcp_queries["availability-test"])
         self.assertNotIn("AppRequests", mcp_queries["availability-test"])
 
-    def test_discovery_and_platform_context_are_unchanged(self):
+    def test_discovery_and_platform_context_are_preserved(self):
         discovery = of_type(templates()["health-model-discovery"], "Microsoft.CloudHealth/healthmodels/discoveryrules")[0]
-        platform = app_entities()["platform-context"]["properties"]["signalGroups"]["azureLogAnalytics"]["signals"]
+        platform = group_signals(app_entities()["platform-context"], "azureLogAnalytics")
 
         self.assertEqual(discovery["name"], "[format('{0}/{1}', parameters('modelName'), 'discover-app-insights')]")
         self.assertEqual(
@@ -2228,7 +2463,7 @@ class ApplicationHealthModelContractTests(unittest.TestCase):
         self.assertEqual([s["name"] for s in platform], ["service-health", "failed-arm-operations", "platform-alerts"])
 
     def test_platform_context_counts_failed_operations_of_this_group_in_the_workspace_vocabulary(self):
-        platform = app_entities()["platform-context"]["properties"]["signalGroups"]["azureLogAnalytics"]["signals"]
+        platform = group_signals(app_entities()["platform-context"], "azureLogAnalytics")
         query = next(s["queryText"] for s in platform if s["name"] == "failed-arm-operations")
 
         # The workspace records a failed operation as "Failure" (docs say "Failed"), and the log spans the subscription.
@@ -2307,7 +2542,7 @@ class RepositoryHygieneTests(unittest.TestCase):
         for raw in tracked:
             name = raw.decode()
             path = ROOT / name
-            if not name or name.startswith(AGENT_APP_EXEMPT) or not path.is_file():
+            if not name or name.startswith(AGENT_APP_EXEMPT) or name in ARCHIVED_HEALTH_MODEL or not path.is_file():
                 continue
             try:
                 text = path.read_text(encoding="utf-8")
