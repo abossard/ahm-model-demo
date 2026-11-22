@@ -193,8 +193,11 @@ describe("Builder review and approval", () => {
     await click("Confirm creation in Azure");
     expect(client.create).toHaveBeenCalledTimes(1);
     expect(client.create).toHaveBeenCalledWith("topic", 2, "design-0");
+    expect(client.showModel).not.toHaveBeenCalled();
+    await click("Tour this model");
+    expect(client.showModel).toHaveBeenLastCalledWith("topic", 2, "created");
     await click("Open health model");
-    expect(client.showModel).toHaveBeenCalledWith("topic", 2);
+    expect(client.showModel).toHaveBeenLastCalledWith("topic", 2, undefined);
   });
   it.each(["resource", "signal"] as const)("opens the saved Task's %s evidence and returns focus to its sentence", async kind => {
     const resources = [rows[1]!, rows[0]!].map(row => ({id: row.resourceId, name: row.displayName, type: "Microsoft.Web/sites", location: "westus"}));
@@ -321,6 +324,12 @@ describe("Builder review and approval", () => {
       expect(host.textContent).toContain(target.name);
       expect(client.create).not.toHaveBeenCalled();
       expect(client.propose).not.toHaveBeenCalled();
+      if (status === "created") {
+        await click("Tour this model");
+        expect(client.showModel).toHaveBeenCalledWith("topic", 2, "created");
+      } else {
+        expect(host.textContent).not.toContain("Tour this model");
+      }
       if (status === "partial") {
         await click("Review and resume creation");
         expect(client.preview).toHaveBeenCalledWith("topic", 2, "design-0");

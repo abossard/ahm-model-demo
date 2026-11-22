@@ -1,7 +1,7 @@
 import type { HealthModel } from "../model/types";
 import type { ShowMeAction } from "../showMe";
 
-export type StopId = "overview" | "dependency" | "signal" | "entity" | "timeline" | "coverage" | "builder" | "history";
+export type StopId = "overview" | "dependency" | "signal" | "readings" | "entity" | "timeline" | "coverage" | "builder" | "history";
 
 export interface TourStop {
   readonly id: StopId;
@@ -14,7 +14,7 @@ export interface TourStop {
 }
 
 /** Bind the route to real objects once. Subsequent readings still come from the page's selected moment. */
-export function tourStops(model: HealthModel, selectedName: string | null): TourStop[] {
+export function tourStops(model: HealthModel, selectedName: string | null, created = false): TourStop[] {
   const byName = new Map(model.entities.map(entity => [entity.name, entity]));
   const selected = selectedName ? byName.get(selectedName) : undefined;
   const readable = model.entities.filter(entity => entity.healthState !== "Deleted");
@@ -71,6 +71,19 @@ export function tourStops(model: HealthModel, selectedName: string | null): Tour
     description: "History keeps the questions you’ve asked. Reopen a topic to see the assistant’s answer, follow its Show me buttons, or review its proposed changes.",
     action: { handle: "workspace", id: "history" }, next: ["overview", "timeline", "builder"],
   });
+  if (created) {
+    const overview = stops[0]!;
+    stops[0] = { ...overview, title: "Meet your new model",
+      description: `Here’s ${model.model.name}, the model you created in Azure. Let’s see which signals have checked in${edge ? ", then follow a dependency through the graph" : ""}.`,
+      next: ["readings", "dependency", "entity", "timeline"] };
+    const signals: TourStop = {
+      id: "readings", label: "Check signal readings", title: "First signal readings",
+      description: "Select a signal to find its lane on the timeline. As readings arrive, you can watch them here.",
+      action: { handle: "timeline", id: "overview" }, next: ["dependency", "entity", "overview", "coverage"],
+    };
+    return [stops[0]!, signals, ...stops.slice(1).filter(stop => stop.id !== "signal" && stop.id !== "builder" && stop.id !== "history")
+      .map(stop => ({ ...stop, next: ["readings" as const, ...stop.next] }))];
+  }
   return stops;
 }
 

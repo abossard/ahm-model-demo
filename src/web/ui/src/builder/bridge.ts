@@ -38,7 +38,7 @@ export function builderTools(app: App): BuilderTools {
       call("builder_create", { sessionId, proposalSeq, proposalId, confirmed: true }),
     grantMonitoring: (sessionId, proposalSeq) =>
       call("builder_grant_monitoring", { sessionId, proposalSeq, confirmed: true }),
-    showModel: (sessionId, proposalSeq) => call("builder_open_model", { sessionId, proposalSeq }),
+    showModel: (sessionId, proposalSeq, tour) => call("builder_open_model", { sessionId, proposalSeq, ...(tour && { tour }) }),
     download: async (name, text) => {
       const result = await app.downloadFile({
         contents: [{ type: "resource", resource: { uri: "file:///" + name, mimeType: "text/markdown", text } }],

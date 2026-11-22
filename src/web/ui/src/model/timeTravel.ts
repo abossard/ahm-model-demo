@@ -245,7 +245,10 @@ export function createModelAt(): (model: HealthModel, store: TimeStore, t: numbe
         from = Math.max(from, reading.from);
         to = Math.min(to, reading.to);
         const shown = reading.value && !reading.value.stale ? reading.value : null;
-        return { ...signal, value: shown?.value ?? null, healthState: stateName(shown?.state ?? 0), reportedAt: shown ? new Date(shown.t).toISOString() : null };
+        const historical = { ...signal, value: shown?.value ?? null, healthState: stateName(shown?.state ?? 0), reportedAt: shown ? new Date(shown.t).toISOString() : null };
+        // History holds readings, but the current Azure error has no historical time interval.
+        delete historical.evaluationError;
+        return historical;
       });
       const healthState = stateName(state.value ?? 0);
       if (entity === root) rootState = state.value ?? 0;

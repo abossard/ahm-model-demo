@@ -252,11 +252,15 @@ class Builder:
         await builder_apply.create_model(self.store, self.user, self.owner, sessionId, task, proposalId, preview["diff"]["changes"])
         return await self.state(sessionId)
 
-    async def open_model(self, sessionId, proposalSeq):
+    async def open_model(self, sessionId, proposalSeq, tour=None):
         state = await self.state(sessionId)
-        if state.get("proposal", {}).get("seq") != proposalSeq or state.get("creation", {}).get("status") != "created":
+        creation = state.get("creation", {})
+        if state.get("proposal", {}).get("seq") != proposalSeq or creation.get("status") != "created":
             raise BuilderInput("Finish creating the model before opening it.")
-        return {"target": state["target"]}
+        result = {"target": creation.get("target") or state["target"]}
+        if tour == "created":
+            result["tour"] = tour
+        return result
 
     async def grant_monitoring(self, sessionId, proposalSeq, confirmed):
         state = await self.state(sessionId)

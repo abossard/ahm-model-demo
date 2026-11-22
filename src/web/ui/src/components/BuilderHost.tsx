@@ -81,7 +81,9 @@ export default function BuilderHost() {
           }
           if (params.name === "builder_open_model") {
             const target = state.target as {name:string; resourceGroup:string; subscriptionId:string};
-            window.location.assign(workspaceLink("/" + searchFromSelection(target)));
+            const search = new URLSearchParams(searchFromSelection(target));
+            if (state.tour === "created") search.set("tour", "created");
+            window.location.assign(workspaceLink("/?" + search));
           }
         }
         return result;

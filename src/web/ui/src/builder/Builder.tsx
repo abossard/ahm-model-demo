@@ -116,6 +116,12 @@ export function Builder({ initial, tools }: { initial: BuilderState; tools: Buil
     const sessionId = state.sessionId;
     void act("Checking the saved builder…", async () => accept(await tools.open(sessionId)));
   }
+  function openModel(tour?: "created") {
+    const { sessionId } = state;
+    if (!sessionId || !proposal) return;
+    void act(tour ? "Opening the model tour…" : "Opening model…",
+      () => tools.showModel(sessionId, proposal.seq, tour));
+  }
   const busy = Boolean(operation);
   return (
     <main className="builder">
@@ -291,12 +297,19 @@ export function Builder({ initial, tools }: { initial: BuilderState; tools: Buil
                     ? "Creation needs attention"
                     : "Creating the health model"}
               </h2>
-              <p className="lead">{state.target?.name ?? state.creation.target?.name}</p>
+              <p className="lead">{state.creation.target?.name ?? state.target?.name}</p>
               {created && (
-                <p>
-                  The model and its Designer layout are saved in{" "}
-                  {state.target?.resourceGroup ?? state.creation.target?.resourceGroup}.
-                </p>
+                <>
+                  <p>
+                    The model and its Designer layout are saved in{" "}{state.creation.target?.resourceGroup ?? state.target?.resourceGroup}.
+                    {" "}Take a tour to see which signals have readings, which are still waiting, and where Azure reports an error.
+                  </p>
+                  <div className="actions">
+                    <button disabled={busy} onClick={loadPreview}>View plan and modelspec</button>
+                    <button disabled={busy} onClick={() => openModel()}>Open health model</button>
+                    <button className="primary" disabled={busy} onClick={() => openModel("created")}>Tour this model</button>
+                  </div>
+                </>
               )}
               {state.creation.error && (
                 <p role="alert" className="error">
@@ -341,25 +354,7 @@ export function Builder({ initial, tools }: { initial: BuilderState; tools: Buil
                   </ul>
                 </details>
               )}
-              {created ? (
-                <div className="actions">
-                  <button disabled={busy} onClick={loadPreview}>
-                    View plan and modelspec
-                  </button>
-                  <button
-                    className="primary"
-                    disabled={busy}
-                    onClick={() => {
-                      if (state.sessionId && proposal) {
-                        const id = state.sessionId;
-                        void act("Opening model…", async () => tools.showModel(id, proposal.seq));
-                      }
-                    }}
-                  >
-                    Open health model
-                  </button>
-                </div>
-              ) : (
+              {!created && (
                 <div className="actions">
                   <button disabled={busy} onClick={refresh}>
                     Check creation status

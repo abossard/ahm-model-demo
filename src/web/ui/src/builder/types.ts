@@ -138,7 +138,7 @@ export interface BuilderTools {
   preview(sessionId: string, proposalSeq: number, proposalId: string): Promise<Preview>;
   create(sessionId: string, proposalSeq: number, proposalId: string): Promise<BuilderState>;
   grantMonitoring(sessionId: string, proposalSeq: number): Promise<BuilderState>;
-  showModel(sessionId: string, proposalSeq: number): Promise<void>;
+  showModel(sessionId: string, proposalSeq: number, tour?: "created"): Promise<void>;
   download(name: "plan.md" | "modelspec.md", markdown: string): Promise<void>;
 }
 

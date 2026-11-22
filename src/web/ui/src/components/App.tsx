@@ -16,7 +16,7 @@ import {
   type Theme,
 } from "@fluentui/react-components";
 import { healthVariables } from "../model/palette";
-import { searchFromLocation } from "../model/selection";
+import { createdTourTarget, sameModel, searchFromLocation } from "../model/selection";
 import { timelineParams } from "../model/timelineUrl";
 import { applyTheme, persistTheme, watchSystemTheme, type ThemeName } from "../model/theme";
 import { actions, useStore } from "../store/store";
@@ -123,6 +123,8 @@ export function App(): JSX.Element {
   const model = useStore((state) => state.model);
   const catalog = useStore((state) => state.catalog);
   const selected = useStore((state) => state.selected);
+  const [tourTarget, setTourTarget] = useState(() => createdTourTarget(window.location.search));
+  const touringCreated = useStore(state => state.tourReturn !== null && state.tourKind === "created");
   const theme = useStore((state) => state.theme);
   const themeExplicit = useStore((state) => state.themeExplicit);
   const sessionId = useStore((state) => state.sessionId);
@@ -143,13 +145,24 @@ export function App(): JSX.Element {
     void actions.restoreWorkspace(window.location.search);
   }, []);
 
+  // The tenant, catalog and model can arrive at different times after sign-in.
+  useEffect(() => {
+    if (!tourTarget || !selected) return;
+    if (sameModel(tourTarget, selected)) {
+      if (model.kind !== "success") return;
+      actions.startTour("created");
+    }
+    setTourTarget(null);
+  }, [tourTarget, selected, model.kind]);
+
   // The address names the model, view, Session and Task on screen, and the moment the page shows, so a link opens all of it.
   useEffect(() => {
     if (selected) {
       const timeline = timelineParams(timelineOpen, timelineView, timelineFollow || (moment !== null && timelineFollowPaused), timelineFullscreen, moment);
-      window.history.replaceState(null, "", workspaceLink("/" + searchFromLocation(selected, { session: sessionId, task: taskSeq }, view, timeline)));
+      const query = touringCreated || (tourTarget && sameModel(tourTarget, selected)) ? { ...timeline, tour: "created" } : timeline;
+      window.history.replaceState(null, "", workspaceLink("/" + searchFromLocation(selected, { session: sessionId, task: taskSeq }, view, query)));
     }
-  }, [selected, sessionId, taskSeq, view, timelineOpen, timelineView, timelineFollow, timelineFollowPaused, timelineFullscreen, moment]);
+  }, [selected, sessionId, taskSeq, view, timelineOpen, timelineView, timelineFollow, timelineFollowPaused, timelineFullscreen, moment, touringCreated, tourTarget]);
 
   useEffect(() => {
     applyTheme(theme, document, themeExplicit);
@@ -174,7 +187,7 @@ export function App(): JSX.Element {
                   <GraphView />
                   {timelineOpen ? <TimelinePanel /> : null}
                 </>
-              ) : catalog.kind === "success" && catalog.value.models.length === 0 ? (
+              ) : !selected && catalog.kind === "success" && catalog.value.models.length === 0 ? (
                 <NoModels />
               ) : (
                 <TopologyPlaceholder loading={model.kind !== "failure"} />

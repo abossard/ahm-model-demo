@@ -275,3 +275,19 @@ class BuilderAccessTests(StoreCase):
         self.assertEqual((await builder.open_model(sid, 2))["target"], creation["target"])
         with self.assertRaises(BuilderInput):
             await builder.grant_monitoring(sid, 2, True)
+
+    async def test_completed_model_tour_uses_the_creation_receipt(self):
+        store = self.make_stores()[0]["memory"]
+        builder, sid, design, _ = await self.prepared(store)
+        with self.assertRaises(BuilderInput):
+            await builder.open_model(sid, 2, "created")
+        receipt = (await builder.create(sid, 2, design, True))["creation"]
+        proposal = await store.get_task(builder.owner, sid, 2)
+        proposal["target"] = {**proposal["target"], "name": "a-different-model"}
+        await store.save_task(builder.owner, sid, proposal)
+        restored = Builder(builder.caller, store, builder.runner, builder.user)
+        with self.assertRaises(BuilderInput):
+            await restored.open_model(sid, 1, "created")
+        for tour, extra in [(None, {}), ("created", {"tour": "created"})]:
+            with self.subTest(tour=tour):
+                self.assertEqual(await restored.open_model(sid, 2, tour), {"target": receipt["target"], **extra})

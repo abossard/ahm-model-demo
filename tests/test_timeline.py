@@ -326,6 +326,39 @@ class RowTests(unittest.TestCase):
             ],
         )
 
+    def test_model_signals_preserve_readings_and_explicit_status_errors(self):
+        at = "2026-11-22T12:00:00Z"
+        for status, state, value, stamp, error in [
+            (None, "Unknown", None, None, None),
+            ({"healthState": "Unknown", "reportedAt": at}, "Unknown", None, at, None),
+            ({"healthState": "Unknown", "reportedAt": at, "error": "Log query returned no rows"},
+             "Unknown", None, at, "Log query returned no rows"),
+            ({"healthState": "Healthy", "value": 0, "reportedAt": at, "error": "  "}, "Healthy", 0, at, None),
+            ({"healthState": "Unhealthy", "value": 99, "reportedAt": at}, "Unhealthy", 99, at, None),
+        ]:
+            with self.subTest(status=status):
+                item = entity("api", ["errors"])
+                item["properties"]["signalGroups"]["azureResource"]["signals"][0]["status"] = status
+                signal = timeline.graph_dto([item], [], "api")["entities"][0]["signals"][0]
+                self.assertEqual((signal["healthState"], signal["value"], signal["reportedAt"]), (state, value, stamp))
+                self.assertEqual(signal.get("evaluationError"), error)
+
+    def test_the_graph_and_timeline_use_azures_resource_health_signal_name(self):
+        status = {"healthState": "Unknown", "error": "Resource Health status unavailable"}
+        for setting, name, expected in [("Enabled", "rh-id", ["cpu", "rh-id"]), ("Disabled", "rh-id", ["cpu"]),
+                                        ("Enabled", None, ["cpu"])]:
+            with self.subTest(setting=setting, name=name):
+                item = entity("api", ["cpu"])
+                item["properties"]["signalGroups"]["azureResource"]["resourceHealth"] = {
+                    "enabled": setting, "signalName": name, "status": status,
+                }
+                signals = timeline.graph_dto([item], [], "api")["entities"][0]["signals"]
+                self.assertEqual([s["name"] for s in signals], expected)
+                self.assertEqual([s["name"] for s in timeline.signal_catalog(item)], expected)
+                if "rh-id" in expected:
+                    self.assertEqual(signals[-1]["evaluationError"], status["error"])
+                    self.assertEqual(signals[-1]["displayName"], "Resource Health availability")
+
     def test_a_dynamic_threshold_is_flagged_without_numbers(self):
         raw = entity("api", ["errors"])
         raw["properties"]["signalGroups"]["azureResource"]["signals"][0]["evaluationRules"] = {"dynamicDetectionRule": {"modelType": "AnomalyDetection"}}

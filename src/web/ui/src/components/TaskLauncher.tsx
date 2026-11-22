@@ -95,7 +95,7 @@ export function TaskMenu(): JSX.Element {
       </MenuTrigger>
       <MenuPopover>
         <MenuList>
-          <MenuItem icon={<Map20Regular />} disabled={!canTour} onClick={actions.startTour} data-testid="menu-tour">
+          <MenuItem icon={<Map20Regular />} disabled={!canTour} onClick={() => actions.startTour()} data-testid="menu-tour">
             Take a tour
           </MenuItem>
           <MenuItem

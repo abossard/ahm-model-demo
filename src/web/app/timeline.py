@@ -33,7 +33,7 @@ from config import (
     TIMELINE_STATE_PAGES,
     TIMELINE_STRUCTURE_CACHE_SECONDS,
 )
-from dto import context_fields, field, graph_dto, history_items, scalar, signal_group_values
+from dto import context_fields, field, graph_dto, history_items, scalar, signal_instances
 from healthmodels import MISSING, TtlCache, cached
 import history_store
 
@@ -192,25 +192,23 @@ def rule_dto(rule):
 
 
 def signal_catalog(entity):
-    groups = field(field(entity, "properties"), "signal_groups", "signalGroups")
     catalog = []
-    for group in signal_group_values(groups):
-        for signal in field(group, "signals", default=[]) or []:
-            rules = field(signal, "evaluation_rules", "evaluationRules")
-            catalog.append(
-                {
-                    "name": field(signal, "name"),
-                    "displayName": field(signal, "display_name", "displayName") or field(signal, "name"),
-                    "kind": scalar(field(signal, "signal_kind", "signalKind")),
-                    "unit": scalar(field(signal, "data_unit", "dataUnit")),
-                    "refreshInterval": field(signal, "refresh_interval", "refreshInterval"),
-                    "rules": {
-                        "degraded": rule_dto(field(rules, "degraded_rule", "degradedRule")),
-                        "unhealthy": rule_dto(field(rules, "unhealthy_rule", "unhealthyRule")),
-                        "dynamic": field(rules, "dynamic_detection_rule", "dynamicDetectionRule") is not None,
-                    },
-                }
-            )
+    for signal in signal_instances(entity):
+        rules = field(signal, "evaluation_rules", "evaluationRules")
+        catalog.append(
+            {
+                "name": field(signal, "name"),
+                "displayName": field(signal, "display_name", "displayName") or field(signal, "name"),
+                "kind": scalar(field(signal, "signal_kind", "signalKind")),
+                "unit": scalar(field(signal, "data_unit", "dataUnit")),
+                "refreshInterval": field(signal, "refresh_interval", "refreshInterval"),
+                "rules": {
+                    "degraded": rule_dto(field(rules, "degraded_rule", "degradedRule")),
+                    "unhealthy": rule_dto(field(rules, "unhealthy_rule", "unhealthyRule")),
+                    "dynamic": field(rules, "dynamic_detection_rule", "dynamicDetectionRule") is not None,
+                },
+            }
+        )
     return catalog
 
 

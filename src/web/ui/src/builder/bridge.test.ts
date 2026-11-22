@@ -3,6 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 import { builderTools } from "./bridge";
 
 describe("builder MCP turn descriptors", () => {
+  it.each([undefined, "created"] as const)("opens the saved model with tour=%s", async tour => {
+    const callServerTool = vi.fn().mockResolvedValue({structuredContent: {target: {}}});
+    const client = builderTools({callServerTool} as unknown as App);
+    await client.showModel("topic", 2, tour);
+    expect(callServerTool.mock.calls[0]![0]).toEqual({
+      name: "builder_open_model", arguments: tour ? {sessionId: "topic", proposalSeq: 2, tour} : {sessionId: "topic", proposalSeq: 2},
+    });
+  });
   it.each(["analyze", "revise", "propose"] as const)("sends the current %s destination vocabulary", async phase => {
     const callServerTool = vi.fn().mockResolvedValue({structuredContent: {sessionId: "session"}});
     const client = builderTools({callServerTool} as unknown as App);

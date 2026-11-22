@@ -616,6 +616,7 @@ test("a builder session reviews signal evidence, creates the workload plan and g
   await builder.getByRole("button", { name: "Create health model", exact: true }).click();
   await builder.getByRole("button", { name: "Confirm creation in Azure" }).click();
   await expect(builder.getByRole("heading", { name: "Health model created" })).toBeVisible();
+  await expect(builder.getByRole("button", { name: "Tour this model" })).toBeEnabled();
   const access = builder.getByRole("region", { name: "Signal access" });
   await expect(access).toContainText("orders-api");
   await expect(access).not.toContainText("orders-store");
@@ -624,8 +625,22 @@ test("a builder session reviews signal evidence, creates the workload plan and g
   await page.goto(sessionUrl);
   await expect(access).toContainText("Monitoring Reader confirmed");
   await expect(builder.getByRole("heading", { name: "Health model created" })).toBeVisible();
+  await builder.getByRole("button", { name: "Tour this model" }).click();
+  const tour = page.getByTestId("assistant-tour");
+  await expect(page.getByTestId("model-picker-selected")).toContainText(name);
+  await expect(tour.getByTestId("tour-stop-title")).toHaveText("Meet your new model");
+  await expect(tour).toContainText(name);
+  await tour.getByRole("button", { name: "Check signal readings" }).click();
+  await expect(tour.getByTestId("tour-stop-title")).toHaveText("First signal readings");
+  await expect(tour.locator('[data-signal-status="waiting"]').first()).toBeVisible();
+  await tour.getByRole("button", { name: "End tour" }).click();
+  await expect(page).not.toHaveURL(/tour=created/);
+  await expect(page.getByTestId("model-picker-selected")).toContainText(name);
+
+  await page.goto(sessionUrl);
   await builder.getByRole("button", { name: "Open health model" }).click();
   await expect(page.getByTestId("model-picker-selected")).toContainText(name);
+  await expect(tour).toHaveCount(0);
   const data = await request.get("/api/health-model" + new URL(page.url()).search);
   expect(data.ok()).toBe(true);
   const model = await data.json();

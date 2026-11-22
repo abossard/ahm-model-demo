@@ -14,22 +14,33 @@ export function sameModel(left: ModelSelection, right: ModelSelection): boolean 
   );
 }
 
+function requestedModel(params: URLSearchParams): ModelSelection | null {
+  const name = params.get("model");
+  const resourceGroup = params.get("resourceGroup");
+  const subscriptionId = params.get("subscription");
+  return name && resourceGroup && subscriptionId ? { name, resourceGroup, subscriptionId } : null;
+}
+
+export function createdTourTarget(search: string): ModelSelection | null {
+  const params = new URLSearchParams(search);
+  return params.get("tour") === "created" ? requestedModel(params) : null;
+}
+
 export function selectionFromSearch(
   search: string,
   catalog: ModelCatalog,
 ): SelectionResolution {
   const params = new URLSearchParams(search);
-  const name = params.get("model");
-  const resourceGroup = params.get("resourceGroup");
-  const subscriptionId = params.get("subscription");
-  const requested: ModelSelection | null =
-    name !== null && resourceGroup !== null && subscriptionId !== null
-      ? { name, resourceGroup, subscriptionId }
-      : null;
+  const requested = requestedModel(params);
   const found = requested
     ? catalog.models.find((item) => sameModel(item, requested))
     : undefined;
   if (found) return { selected: found, unavailable: null };
+  // Azure Resource Graph may still be indexing the model the builder just read back.
+  // The model endpoint checks the caller's access and reads this exact ARM resource.
+  if (requested && params.get("tour") === "created") {
+    return { selected: { ...requested, id: null, location: null, provisioningState: null }, unavailable: null };
+  }
   const selected =
     (catalog.default ? catalog.models.find((item) => sameModel(item, catalog.default!)) : undefined) ??
     catalog.models[0] ??

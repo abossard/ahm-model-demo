@@ -22,6 +22,8 @@ export interface EntitySignal extends ReportContext {
   readonly healthState: HealthState;
   readonly value: SignalValue;
   readonly reportedAt: string | null;
+  /** Azure's diagnostic when it could not retrieve this signal's current status. */
+  readonly evaluationError?: string;
   readonly writable: boolean;
 }
 

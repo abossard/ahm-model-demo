@@ -58,7 +58,7 @@ export function WorkspaceHeader({
       <Text as="h2" size={back ? 300 : 400} className={styles.title} title={title} data-testid={titleTestId}>
         {title}
       </Text>
-      {canTour ? <Button appearance="subtle" size="small" icon={<Map20Regular />} onClick={actions.startTour} data-testid="workspace-tour">
+      {canTour ? <Button appearance="subtle" size="small" icon={<Map20Regular />} onClick={() => actions.startTour()} data-testid="workspace-tour">
         Tour
       </Button> : null}
       {target ? (

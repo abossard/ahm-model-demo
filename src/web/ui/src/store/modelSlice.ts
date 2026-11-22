@@ -1,5 +1,6 @@
 import type { StateCreator } from "zustand";
 import type { ApiError, AsyncState, HealthModel } from "../model/types";
+import { sameModel } from "../model/selection";
 import * as api from "./api";
 import { IDLE, LOADING, settle } from "./asyncState";
 import type { Store } from "./store";
@@ -41,7 +42,18 @@ export const modelSlice: StateCreator<Store, [], [], ModelState & ModelActions> 
       set({ refreshing: false, refreshError: model.error });
       return;
     }
+    const { catalog } = get();
+    // A newly created model can be readable before it appears in the catalog.
+    // Once ARM confirms it, make it available in the picker as well.
+    let knownCatalog = catalog;
+    if (selected && model.kind === "success" && catalog.kind === "success" &&
+        !catalog.value.models.some(item => sameModel(item, selected))) {
+      const { id, location, provisioningState } = model.value.model;
+      const item = { ...selected, id, location, provisioningState };
+      knownCatalog = { kind: "success", value: { ...catalog.value, models: [...catalog.value.models, item] } };
+    }
     set({
+      catalog: knownCatalog,
       model,
       refreshing: false,
       refreshError: null,

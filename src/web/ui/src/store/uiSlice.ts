@@ -41,6 +41,7 @@ export interface UiState {
   readonly workspaceOpen: boolean;
   /** Where End tour takes the reader. The open topic and question stay in the workspace underneath. */
   readonly tourReturn: "workspace" | "page" | null;
+  readonly tourKind: "workspace" | "created";
   readonly workspaceTarget: "graph" | "timeline" | null;
   readonly workspaceWidth: number;
   readonly workspaceTab: WorkspaceTab;
@@ -76,7 +77,7 @@ export interface UiActions {
   readonly setChain: (names: readonly string[]) => void;
   readonly setWorkspaceTarget: (target: UiState["workspaceTarget"]) => void;
   readonly setWorkspaceOpen: (open: boolean) => void;
-  readonly startTour: () => void;
+  readonly startTour: (kind?: UiState["tourKind"]) => void;
   readonly endTour: () => void;
   readonly toggleWorkspace: () => void;
   readonly setWorkspaceWidth: (width: number) => void;
@@ -118,6 +119,7 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
   chainNames: [],
   workspaceOpen: false,
   tourReturn: null,
+  tourKind: "workspace",
   workspaceTarget: null,
   workspaceWidth: WORKSPACE_DEFAULT_WIDTH,
   workspaceTab: "tasks",
@@ -195,10 +197,10 @@ export const uiSlice: StateCreator<Store, [], [], UiState & UiActions> = (set, g
   setChain: (chainNames) => set({ chainNames: [...chainNames] }),
   setWorkspaceTarget: (workspaceTarget) => set({ workspaceTarget }),
   setWorkspaceOpen: (workspaceOpen) => set({ workspaceOpen, tourReturn: null }),
-  startTour: () => {
+  startTour: (kind = "workspace") => {
     const state = get();
     if (state.tourReturn || !state.selected || state.model.kind !== "success") return;
-    set({ workspaceOpen: true, tourReturn: state.workspaceOpen ? "workspace" : "page", workspaceTarget: null });
+    set({ workspaceOpen: true, tourReturn: state.workspaceOpen ? "workspace" : "page", tourKind: kind, workspaceTarget: null });
   },
   endTour: () => {
     const { tourReturn } = get();

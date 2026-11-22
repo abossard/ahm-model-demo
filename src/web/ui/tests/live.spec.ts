@@ -15,6 +15,38 @@ const SHOTS = process.env.TIMELINE_SHOTS ?? "";
 const NOW = Math.floor(Date.now() / 60_000) * 60_000;
 const MODEL = `model=hm-demo&resourceGroup=rg-demo&subscription=${SUBSCRIPTION_A}`;
 
+test("the created-model tour follows a signal from its first evaluation through an error and recovery", async ({ page }) => {
+  const target = "newly-created-checkout";
+  const source = healthModel.entities.find(entity => entity.name === "svc-a")!;
+  const signal = { ...source.signals[0]!, kind: "AzureResourceMetric", reportedAt: null, value: null, healthState: "Unknown" as const };
+  const pending = { ...source, children: [], signals: [signal] };
+  const model = { ...healthModel, model: { ...healthModel.model, name: target }, entities: [pending], relationships: [] };
+  await installStubs(page, { healthModelFails: false, modelsByName: { [target]: model } });
+  await installTimeline(page, stubbedHistory(NOW));
+  const stream = await installStream(page, { first: snapshot(model) });
+  await page.goto(`/?model=${target}&resourceGroup=rg-new&subscription=${SUBSCRIPTION_A}&tour=created`);
+  const tour = page.getByTestId("assistant-tour");
+  await expect(tour).toContainText(target);
+  await tour.getByRole("button", { name: "Check signal readings" }).click();
+  await expect(tour.locator('[data-signal-status="waiting"]')).toHaveCount(1);
+
+  const failure = "The model identity cannot read the configured metric.";
+  stream.push(delta({ entities: { upsert: [{ ...pending, signals: [{ ...signal, evaluationError: failure }] }] } }, 1));
+  await expect(tour.locator('[data-signal-status="error"]')).toContainText(failure);
+  await tour.locator('[data-tour-entity="svc-a"][data-tour-signal="cpu"]').click();
+  await expect(page.locator('[data-testid="tl-label-signal"][data-row="svc-a"][data-signal="cpu"]')).toHaveAttribute("data-show-me-highlight", /.+/);
+
+  const reading = { ...signal, healthState: "Healthy" as const, value: 0, reportedAt: new Date().toISOString() };
+  stream.push(delta({ entities: { upsert: [{ ...pending, signals: [reading] }] } }, 2));
+  await expect(tour).not.toContainText(failure);
+  await expect(tour.locator('[data-signal-status="reported"]')).toContainText("Reported · Healthy · 0");
+  await expect(page.getByTestId("model-picker-selected")).toContainText(target);
+  await tour.getByRole("button", { name: "End tour" }).click();
+  await expect(page).not.toHaveURL(/tour=created/);
+  await page.reload();
+  await expect(tour).toHaveCount(0);
+});
+
 const node = (page: Page, name: string) => page.locator(`.react-flow__node[data-id="${name}"]`);
 const status = (page: Page) => page.getByTestId("live-status");
 

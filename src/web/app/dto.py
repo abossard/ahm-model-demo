@@ -2,6 +2,7 @@ import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
 
+from activity import safe_message
 from config import CANONICAL_SIGNAL_NAME
 
 
@@ -75,38 +76,35 @@ def context_fields(additional_context):
     }
 
 
-def entity_signals(current_entity):
-    properties = field(current_entity, "properties")
-    groups = field(properties, "signal_groups", "signalGroups")
-    result = []
+def signal_instances(entity):
+    """Enumerate the same named Azure signals in the graph and in its timeline."""
+    groups = field(field(entity, "properties"), "signal_groups", "signalGroups")
     for group in signal_group_values(groups):
-        for current_signal in field(group, "signals", default=[]) or []:
-            status = field(current_signal, "status")
-            additional_context = field(
-                status, "additional_context", "additionalContext"
-            )
-            result.append(
-                {
-                    "name": field(current_signal, "name"),
-                    "displayName": field(
-                        current_signal, "display_name", "displayName"
-                    ),
-                    "kind": scalar(
-                        field(current_signal, "signal_kind", "signalKind")
-                    ),
-                    "healthState": scalar(
-                        field(status, "health_state", "healthState")
-                    ),
-                    "value": field(status, "value"),
-                    "reportedAt": iso(
-                        field(status, "reported_at", "reportedAt")
-                    ),
-                    "writable": (
-                        field(current_signal, "name") == CANONICAL_SIGNAL_NAME
-                    ),
-                    **context_fields(additional_context),
-                }
-            )
+        yield from field(group, "signals", default=[]) or []
+        availability = field(group, "resource_health", "resourceHealth")
+        name = field(availability, "signal_name", "signalName")
+        if name and scalar(field(availability, "enabled")) != "Disabled":
+            yield {"name": name, "displayName": "Resource Health availability",
+                   "signalKind": "AzureResourceHealth", "status": field(availability, "status")}
+
+
+def entity_signals(current_entity):
+    result = []
+    for signal in signal_instances(current_entity):
+        name = field(signal, "name")
+        status = field(signal, "status")
+        error = field(status, "error")
+        result.append({
+            "name": name,
+            "displayName": field(signal, "display_name", "displayName"),
+            "kind": scalar(field(signal, "signal_kind", "signalKind")),
+            "healthState": scalar(field(status, "health_state", "healthState")) or "Unknown",
+            "value": field(status, "value"),
+            "reportedAt": iso(field(status, "reported_at", "reportedAt")),
+            "writable": name == CANONICAL_SIGNAL_NAME,
+            **({"evaluationError": safe_message(error.strip())} if isinstance(error, str) and error.strip() else {}),
+            **context_fields(field(status, "additional_context", "additionalContext")),
+        })
     return result
 
 

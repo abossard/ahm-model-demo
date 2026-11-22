@@ -33,4 +33,14 @@ describe("the assistant's tour", () => {
     expect(stops.find(stop => stop.id === "dependency")?.action.id).toBe(connection);
     expect(stops.find(stop => stop.id === "signal")?.action.id).toBe(signal);
   });
+
+  it.each([healthModel, standalone, empty])("starts a created model at its own graph with a path to readings", model => {
+    const stops = tourStops(model, null, true);
+    const start = stops[0]!;
+    expect(start.title).toBe("Meet your new model");
+    expect(start.description).toContain(model.model.name);
+    expect(start.action).toEqual({ handle: "graph", id: "view/zoom" });
+    expect(nextStops(start, stops)[0]).toMatchObject({ id: "readings", action: { handle: "timeline", id: "overview" } });
+    for (const stop of stops) expect(nextStops(stop, stops).length).toBeGreaterThanOrEqual(2);
+  });
 });

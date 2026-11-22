@@ -101,6 +101,24 @@ describe("loadModelCatalog", () => {
     expect(useStore.getState().catalog).toEqual({ kind: "failure", error: expected });
     expect(api.fetchHealthModel).not.toHaveBeenCalled();
   });
+
+  it.each([true, false])("reads the exact builder target ahead of indexing (access granted: %s)", async allowed => {
+    const search = "?model=just-created&resourceGroup=rg-new&subscription=sub-b&tour=created";
+    const target = { name: "just-created", resourceGroup: "rg-new", subscriptionId: "sub-b" };
+    vi.mocked(api.fetchModelCatalog).mockResolvedValue(CATALOG);
+    if (allowed) vi.mocked(api.fetchHealthModel).mockResolvedValue({
+      ...HEALTH_MODEL, model: { ...target, id: "/new", location: "northeurope", provisioningState: "Succeeded", healthState: "Unknown" },
+    });
+    else vi.mocked(api.fetchHealthModel).mockRejectedValue(API_ERROR);
+
+    await actions.loadModelCatalog(search);
+    await flush();
+    const { catalog, selected, model } = useStore.getState();
+    expect(selected).toMatchObject(target);
+    expect(vi.mocked(api.fetchHealthModel).mock.calls).toEqual([[expect.objectContaining(target)]]);
+    expect(model.kind).toBe(allowed ? "success" : "failure");
+    expect(catalog.kind === "success" && catalog.value.models.some(item => item.id === "/new")).toBe(allowed);
+  });
 });
 
 describe("chooseModel", () => {

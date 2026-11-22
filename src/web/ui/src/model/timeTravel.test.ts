@@ -154,6 +154,14 @@ describe("modelAt", () => {
     expect(at.entities[1]?.signals[0]).toMatchObject({ value: null, healthState: "Unknown", reportedAt: null });
   });
 
+  it.each([null, 5500])("only shows the live signal error at the live moment (%s)", t => {
+    const fault = "Log query returned no rows";
+    const live = { ...model, entities: model.entities.map(e => ({
+      ...e, signals: e.signals.map(s => ({ ...s, evaluationError: fault })),
+    })) };
+    expect(createModelAt()(live, store, t).entities[1]?.signals[0]?.evaluationError).toBe(t === null ? fault : undefined);
+  });
+
   it("an entity whose history does not say reads as Unknown", () => {
     const at = createModelAt()(model, { ...store, states: {} }, 5500);
 
