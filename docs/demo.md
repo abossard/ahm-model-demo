@@ -83,7 +83,7 @@ Creating a model requires permission to write Azure Monitor health models in the
 
 Click **Show me** beside a finding to inspect the object it describes. A graph button can frame a node or trace a particular connection. A timeline button can expand an entity and highlight one signal across its label and plot. A panel button can open entity details, a proposed change, or the model comparison. The answer stays visible, including on a phone. Reopening a question from History restores its buttons and a historical Explain can take you back to the moment it describes.
 
-In the builder, **Show me** opens a resource, its signal evidence, or a design preview beside the passage you clicked. You can inspect another proposal while keeping the current design selection. [Show me handles and local playground](../src/web/ui/src/showMe/README.md)
+In the builder, **Show me** opens a resource, its signal evidence, or a design preview beside the passage you clicked. You can inspect another proposal while keeping the current design selection. [Follow a Show me button](show-me.md)
 
 ## Check a model
 
