@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="712" height="394" viewBox="0 0 712 394"
+     role="img" aria-labelledby="title desc" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <title id="title">How Blob Storage affects the CORE health model</title>
+  <desc id="desc">Blob availability degrades below 99.9 percent and is unhealthy below 99 percent.
+    Blob end-to-end latency degrades above two seconds and is unhealthy above five seconds.
+    Both rules use one-minute averages. Health rolls up from Blob Storage through
+    Session and Task storage and Run a Task to CORE.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"
+            markerUnits="userSpaceOnUse">
+      <path d="M1 1 6 4 1 7" fill="none" stroke="#395e77" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="710" height="392" rx="16" fill="#f6f9fc" stroke="#cbd8e2"/>
+
+  <g fill="none" stroke="#395e77" stroke-width="2.5" marker-end="url(#arrow)">
+    <path d="M66 117V92"/>
+    <path d="M66 212V187"/>
+    <path d="M66 307V282"/>
+    <path d="M351 340H318"/>
+  </g>
+
+  <g fill="#ffffff" stroke="#b6c9d7" stroke-width="1.5">
+    <rect x="24" y="22" width="288" height="66" rx="10"/>
+    <rect x="24" y="117" width="288" height="66" rx="10"/>
+    <rect x="24" y="212" width="288" height="66" rx="10"/>
+    <rect x="24" y="307" width="288" height="66" rx="10" fill="#e8f3fc" stroke="#4383aa"/>
+  </g>
+  <g fill="#415a6a" font-size="15" font-weight="600" letter-spacing=".6">
+    <text x="44" y="45">MODEL ROOT</text>
+    <text x="44" y="140">USER FLOW</text>
+    <text x="44" y="235">SYSTEM COMPONENT</text>
+    <text x="44" y="330">AZURE RESOURCE</text>
+  </g>
+  <g fill="#183346" font-size="25" font-weight="650">
+    <text x="44" y="73">CORE</text>
+    <text x="44" y="168">Run a Task</text>
+    <text x="44" y="263" font-size="21">Session and Task storage</text>
+    <text x="44" y="358">Blob Storage</text>
+  </g>
+
+  <rect x="351" y="22" width="337" height="351" rx="12" fill="#fff" stroke="#b6c9d7" stroke-width="1.5"/>
+  <path d="M376 106h287M376 235h287" stroke="#d7e0e8" stroke-width="1.5"/>
+  <g fill="#183346">
+    <text x="376" y="61" font-size="25" font-weight="650">Signal thresholds</text>
+    <text x="376" y="89" font-size="19" fill="#415a6a">One-minute averages</text>
+    <g font-size="23" font-weight="650">
+      <text x="376" y="145">Blob availability</text>
+      <text x="376" y="274">Blob end-to-end latency</text>
+    </g>
+  </g>
+  <g font-size="20">
+    <text x="376" y="177" fill="#855200">Degraded below 99.9%</text>
+    <text x="376" y="207" fill="#963648">Unhealthy below 99%</text>
+    <text x="376" y="306" fill="#855200">Degraded above 2 seconds</text>
+    <text x="376" y="336" fill="#963648">Unhealthy above 5 seconds</text>
+  </g>
+</svg>
