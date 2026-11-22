@@ -8,6 +8,14 @@ const pending = { ...signal("requests", "Failed requests", null, "Unknown"), rep
 const owner = entity({ name: "checkout", displayName: "Checkout service", healthState: "Healthy" });
 const failing = { ...pending, evaluationError: "Log query returned no rows" };
 const entities = (...signals: EntitySignal[]) => [{ ...owner, signals }];
+// The web app can clip the scope after the ARM operation name.
+const metricAccess = "Metrics query failed: The client 'app-id' with object id 'object-id' does not have authorization to perform action 'Microsoft.Insights/metrics/read' over scope '/subscriptions/...";
+
+function renderError(message: string) {
+  const html = renderToStaticMarkup(<SignalReadings entities={entities({ ...pending, evaluationError: message })}
+    stop="readings" historical={false} onInspect={() => {}} />);
+  return new DOMParser().parseFromString(html, "text/html").querySelector('[data-signal-status="error"]')!;
+}
 
 describe("signal readings on a created model", () => {
   it.each([
@@ -37,5 +45,30 @@ describe("signal readings on a created model", () => {
     expect(doc.body.textContent).toContain(expected);
     expect(Boolean(doc.querySelector('[data-tour-entity="checkout"][data-tour-signal="cpu"]'))).toBe(!historical);
     expect(doc.body.textContent?.includes("Log query returned no rows")).toBe(!historical);
+  });
+
+  it.each([metricAccess, metricAccess.replace("Microsoft.Insights", "Microsoft.Insights".toUpperCase())])(
+    "explains a denied metric read and lets the reader expand the Azure message", message => {
+      const row = renderError(message);
+      const visible = row.querySelector(".tour-reading-error")!.textContent;
+      expect(visible).toContain("Monitoring Reader");
+      expect(visible).not.toContain("object-id");
+      const details = row.querySelector("details")!;
+      expect(details.open).toBe(false);
+      const toggle = details.querySelector("summary")!;
+      expect(toggle.textContent).toBe("Azure error details");
+      toggle.click();
+      expect(details.open).toBe(true);
+      expect(details.querySelector("p")!.textContent).toBe(message);
+      toggle.click();
+      expect(details.open).toBe(false);
+    },
+  );
+
+  it.each([failing.evaluationError, metricAccess.replace("metrics/read", "diagnosticSettings/write"),
+    "No samples returned by Microsoft.Insights/metrics/read."])("shows the original reason for %s", message => {
+    const row = renderError(message);
+    expect(row.querySelector(".tour-reading-error")!.textContent).toContain(message);
+    expect(row.querySelector("details")).toBeNull();
   });
 });

@@ -328,11 +328,14 @@ class RowTests(unittest.TestCase):
 
     def test_model_signals_preserve_readings_and_explicit_status_errors(self):
         at = "2026-11-22T12:00:00Z"
+        access_error = "The model identity cannot read metrics at " + "/resourceGroups/example" * 20
         for status, state, value, stamp, error in [
             (None, "Unknown", None, None, None),
             ({"healthState": "Unknown", "reportedAt": at}, "Unknown", None, at, None),
             ({"healthState": "Unknown", "reportedAt": at, "error": "Log query returned no rows"},
              "Unknown", None, at, "Log query returned no rows"),
+            ({"error": access_error}, "Unknown", None, None, access_error),
+            ({"error": "x" * 1300}, "Unknown", None, None, "x" * 1197 + "..."),
             ({"healthState": "Healthy", "value": 0, "reportedAt": at, "error": "  "}, "Healthy", 0, at, None),
             ({"healthState": "Unhealthy", "value": 99, "reportedAt": at}, "Unhealthy", 99, at, None),
         ]:

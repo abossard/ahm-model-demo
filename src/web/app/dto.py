@@ -3,7 +3,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from activity import safe_message
-from config import CANONICAL_SIGNAL_NAME
+from config import CANONICAL_SIGNAL_NAME, SIGNAL_ERROR_CHARS
 
 
 def field(value, *names, default=None):
@@ -102,7 +102,7 @@ def entity_signals(current_entity):
             "value": field(status, "value"),
             "reportedAt": iso(field(status, "reported_at", "reportedAt")),
             "writable": name == CANONICAL_SIGNAL_NAME,
-            **({"evaluationError": safe_message(error.strip())} if isinstance(error, str) and error.strip() else {}),
+            **({"evaluationError": safe_message(error.strip(), SIGNAL_ERROR_CHARS)} if isinstance(error, str) and error.strip() else {}),
             **context_fields(field(status, "additional_context", "additionalContext")),
         })
     return result

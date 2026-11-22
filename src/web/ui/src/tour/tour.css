@@ -93,6 +93,8 @@
 .tour-reading span, .tour-readings li > p { font-size: var(--fontSizeBase200); }
 .tour-reading-error { display: flex; gap: 4px; align-items: flex-start; color: var(--colorStatusDangerForeground1); }
 .tour-reading-error svg { flex-shrink: 0; width: 16px; height: 16px; }
+.tour-reading-details { margin-top: 4px; font-size: var(--fontSizeBase200); }
+.tour-reading-details[open] > p { margin-top: 4px; }
 .tour-readings summary { cursor: pointer; }
 .tour-readings-refresh { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 7px; }
 

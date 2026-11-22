@@ -16,6 +16,7 @@ const NOW = Math.floor(Date.now() / 60_000) * 60_000;
 const MODEL = `model=hm-demo&resourceGroup=rg-demo&subscription=${SUBSCRIPTION_A}`;
 
 test("the created-model tour follows a signal from its first evaluation through an error and recovery", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   const target = "newly-created-checkout";
   const source = healthModel.entities.find(entity => entity.name === "svc-a")!;
   const signal = { ...source.signals[0]!, kind: "AzureResourceMetric", reportedAt: null, value: null, healthState: "Unknown" as const };
@@ -30,9 +31,12 @@ test("the created-model tour follows a signal from its first evaluation through 
   await tour.getByRole("button", { name: "Check signal readings" }).click();
   await expect(tour.locator('[data-signal-status="waiting"]')).toHaveCount(1);
 
-  const failure = "The model identity cannot read the configured metric.";
+  const failure = "Metrics query failed: The client 'model identity' does not have authorization to perform action 'Microsoft.Insights/metrics/read' over scope 'checkout'.";
   stream.push(delta({ entities: { upsert: [{ ...pending, signals: [{ ...signal, evaluationError: failure }] }] } }, 1));
-  await expect(tour.locator('[data-signal-status="error"]')).toContainText(failure);
+  const errorRow = tour.locator('[data-signal-status="error"]');
+  await expect(errorRow).toContainText("Monitoring Reader");
+  await errorRow.getByText("Azure error details", { exact: true }).click();
+  await expect(errorRow.getByText(failure, { exact: true })).toBeVisible();
   await tour.locator('[data-tour-entity="svc-a"][data-tour-signal="cpu"]').click();
   await expect(page.locator('[data-testid="tl-label-signal"][data-row="svc-a"][data-signal="cpu"]')).toHaveAttribute("data-show-me-highlight", /.+/);
 

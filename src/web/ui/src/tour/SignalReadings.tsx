@@ -39,6 +39,21 @@ function summary(rows: readonly TourReading[]) {
   ].filter(Boolean).join(" ") || "Azure hasn’t listed any monitored signals for this model yet.";
 }
 
+function EvaluationError({ message }: { message: string }) {
+  const metricAccess = /does not have authorization to perform action ['"]Microsoft\.Insights\/metrics\/read['"]/i.test(message);
+  return <>
+    <p className="tour-reading-error"><Warning20Regular aria-hidden="true" />
+      <span><strong>Evaluation error</strong> · {metricAccess
+        ? "Azure couldn’t read this metric. Check that the signal points to the right resource and that the model identity has Monitoring Reader access there."
+        : message}</span>
+    </p>
+    {metricAccess && <details className="tour-reading-details">
+      <summary>Azure error details</summary>
+      <p>{message}</p>
+    </details>}
+  </>;
+}
+
 function ReadingRow({ row, onInspect }: { row: TourReading; onInspect: (row: TourReading) => void }) {
   const { entity, signal, status } = row;
   const name = signal.displayName || signal.name;
@@ -50,9 +65,7 @@ function ReadingRow({ row, onInspect }: { row: TourReading; onInspect: (row: Tou
       <strong>{name}</strong>
       <span>{owner} <span aria-hidden="true">↗</span></span>
     </button>
-    {status === "error" ? <p className="tour-reading-error">
-      <Warning20Regular aria-hidden="true" /><span><strong>Evaluation error</strong> · {signal.evaluationError}</span>
-    </p> : <p>{status === "waiting" ? "Waiting for first reading" :
+    {signal.evaluationError ? <EvaluationError message={signal.evaluationError} /> : <p>{status === "waiting" ? "Waiting for first reading" :
       `Reported · ${tokensFor(signal.healthState).word}${value ? ` · ${value}` : ""}`}</p>}
   </li>;
 }
