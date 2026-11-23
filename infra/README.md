@@ -188,6 +188,56 @@ deployed every service. azd exports the environment values to it. Run it alone w
 - Bicep uses API version `2026-05-01-preview`. The GA `2026-11-01` is registered for all CloudHealth types, but
   Bicep 0.46 has no types for it and warns on every resource. Switch all of them once `az bicep` is 0.49 or later.
 
+### IoT factory load-test model
+
+The separate `hm-<env>-iot-factory` model is opt-in. It contains 8,000 entities across 20 levels, 8,799
+relationships, and 10 reusable Azure-backed signal definitions. Each entity binds a signal from the same
+environment's web app, MCP app, or Foundry account.
+
+```bash
+azd env set AZURE_IOT_FACTORY_LOAD_TEST true
+azd env set AZURE_IOT_FACTORY_BATCH_SIZE 400 # Optional, 22 through 400; default is 400.
+azd provision
+```
+
+For read-only verification, set the subscription, resource group, and environment name to the values for the
+provisioned azd environment. The loop follows every `nextLink` and reports the total resources in each collection.
+Also check that every entity and its Azure-backed signals report `Healthy`, with none `Unknown`.
+
+```bash
+SUBSCRIPTION_ID="<subscription-id>"
+RESOURCE_GROUP="<resource-group>"
+ENV="<environment-name>"
+BASE="https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.CloudHealth/healthmodels"
+MODEL="$BASE/hm-$ENV-iot-factory"
+az rest --subscription "$SUBSCRIPTION_ID" --method get --url "$MODEL?api-version=2026-05-01-preview" \
+  | jq '.properties | {provisioningState, healthState}'
+for collection in entities relationships signaldefinitions; do
+  url="$MODEL/$collection?api-version=2026-05-01-preview"
+  count=0
+  while [ -n "$url" ]; do
+    page=$(az rest --subscription "$SUBSCRIPTION_ID" --method get --url "$url")
+    count=$((count + $(jq '.value | length' <<< "$page")))
+    if [ "$collection" = entities ]; then
+      jq -r '.value[] | select(.properties.healthState != "Healthy") | [.name, .properties.healthState] | @tsv' <<< "$page"
+    fi
+    url=$(jq -r '.nextLink // empty' <<< "$page")
+  done
+  printf '%s=%s\n' "$collection" "$count"
+done
+```
+
+Expected counts are `entities=8000`, `relationships=8799`, and `signaldefinitions=10`. The health-state query
+prints entities that are not Healthy; inspect each entity's Azure-backed signal statuses as well.
+
+Setting `AZURE_IOT_FACTORY_LOAD_TEST` to `false` and provisioning again prevents creating the load-test model,
+but does not delete an existing model. Retiring it requires a separate approval that names the exact model resource
+ID. After that approval, delete only that resource:
+
+```bash
+az rest --subscription "$SUBSCRIPTION_ID" --method delete --url "$MODEL?api-version=2026-05-01-preview"
+```
+
 ## Sign-in and on-behalf-of
 
 Users sign in with Entra ID, and the web app and the agent reach Azure as that user, in that user's directory (ADR 0006,

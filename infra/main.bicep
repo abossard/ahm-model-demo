@@ -12,6 +12,14 @@ param location string
 @description('Object ID of the principal running the deployment. Becomes Foundry Project Manager on the project.')
 param principalId string
 
+@description('Deploy the opt-in IoT factory load-test health model separately from the production models.')
+param iotFactoryLoadTest bool = false
+
+@minValue(22)
+@maxValue(400)
+@description('Resource count in each IoT factory load-test batch. Keep between 22 and 400 for ARM template limits.')
+param iotFactoryBatchSize int = 400
+
 @description('Region hosting the Azure Health Models.')
 param healthModelLocation string = location
 
@@ -48,6 +56,7 @@ var webAppName = 'ca-${namePrefix}-web'
 var mcpAppName = 'ca-${namePrefix}-mcp'
 var healthModelName = 'hm-${namePrefix}'
 var designHealthModelName = 'hm-${namePrefix}-design'
+var iotFactoryHealthModelName = 'hm-${environmentName}-iot-factory'
 var foundryAgentName = 'health-model-agent'
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-11-01' = {
@@ -361,6 +370,18 @@ module healthModelAccess 'modules/health-model-access.bicep' = {
       logAnalyticsWorkspace: foundation.outputs.workspaceId
       applicationInsights: foundation.outputs.applicationInsightsId
     }
+  }
+}
+
+module iotFactoryHealthModel 'loadtest/iot-factory-health-model.bicep' = if (iotFactoryLoadTest) {
+  scope: rg
+  name: 'iot-factory-health-model'
+  params: {
+    modelName: iotFactoryHealthModelName
+    healthModelLocation: healthModelLocation
+    tags: tags
+    monitoredResources: healthModelAccess.outputs.monitoredResources
+    batchSize: iotFactoryBatchSize
   }
 }
 

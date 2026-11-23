@@ -35,6 +35,27 @@ Choose a **new environment** (1–20 characters), your subscription and **Sweden
 
 When you finish with this deployment, `azd down` removes its resource group. [Teardown details](infra/README.md#deploying)
 
+### Deploy the IoT factory load-test model
+
+The load-test model is opt-in and disabled by default. From an already provisioned, selectable `azd` environment:
+
+```bash
+azd env select <environment-name>
+azd env set AZURE_IOT_FACTORY_LOAD_TEST true
+azd env set AZURE_IOT_FACTORY_BATCH_SIZE 400
+azd provision
+```
+
+The batch-size setting is optional (22 through 400; default 400). Provisioning creates a separate
+`hm-<env>-iot-factory` model with 8,000 entities across 20 levels, 8,799 relationships, and 10 reusable
+Azure-backed signal definitions. It binds same-environment demo Container Apps and Foundry resource metrics to all
+entities. Expected read-back counts are `entities=8000`, `relationships=8799`, and `signaldefinitions=10`; see the
+[read-only verification and first-evaluation checks](infra/README.md#iot-factory-load-test-model).
+
+Setting `AZURE_IOT_FACTORY_LOAD_TEST` to `false` and provisioning again stops new creation and management but does not
+delete an existing model. Deletion requires separate exact approval and the
+[documented exact-resource deletion procedure](infra/README.md#iot-factory-load-test-model).
+
 ## Trace a signal through the deployed model
 
 The default model, `hm-<env>`, monitors the demo itself. Its root, **CORE**, tracks whether people can view a model, send a report, run a Task and apply changes. The **Run a Task** flow depends on Blob Storage to save questions and answers. [Full CORE model](docs/healthmodel/plan.md)

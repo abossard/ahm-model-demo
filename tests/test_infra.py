@@ -888,6 +888,7 @@ class InfrastructureContractTests(unittest.TestCase):
             for name, template in templates().items()
         }
 
+        # C8: keep the opt-in load-test module and parameters in the exhaustive inventories.
         self.assertEqual(
             sorted(deployments()),
             sorted(
@@ -906,6 +907,7 @@ class InfrastructureContractTests(unittest.TestCase):
                     "health-model-access",
                     "health-model-entities",
                     "health-model-relationships",
+                    "iot-factory-health-model",
                     "health-model-discovery",
                     "design-health-model",
                     "event-hub-diagnostics",
@@ -920,6 +922,8 @@ class InfrastructureContractTests(unittest.TestCase):
                     "location",
                     "principalId",
                     "healthModelLocation",
+                    "iotFactoryLoadTest",
+                    "iotFactoryBatchSize",
                     "modelDeploymentCapacity",
                     "webImage",
                     "mcpImage",
@@ -1086,6 +1090,8 @@ class InfrastructureContractTests(unittest.TestCase):
                 "entraAllowedTenants",
                 "environmentName",
                 "foundryAgentPrincipalId",
+                "iotFactoryBatchSize",
+                "iotFactoryLoadTest",
                 "location",
                 "mcpImage",
                 "modelDeploymentCapacity",
@@ -1099,6 +1105,8 @@ class InfrastructureContractTests(unittest.TestCase):
             ("environmentName", "${AZURE_ENV_NAME}"),
             ("location", "${AZURE_LOCATION}"),
             ("principalId", "${AZURE_PRINCIPAL_ID}"),
+            ("iotFactoryLoadTest", "${AZURE_IOT_FACTORY_LOAD_TEST:-false}"),
+            ("iotFactoryBatchSize", "${AZURE_IOT_FACTORY_BATCH_SIZE:-400}"),
             ("modelDeploymentCapacity", "${AZURE_MODEL_CAPACITY:-500}"),
             ("webImage", "${SERVICE_WEB_IMAGE_NAME}"),
             ("mcpImage", "${SERVICE_MCP_IMAGE_NAME}"),

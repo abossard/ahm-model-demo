@@ -11,6 +11,12 @@
     "principalId": {
       "value": "${AZURE_PRINCIPAL_ID}"
     },
+    "iotFactoryLoadTest": {
+      "value": "${AZURE_IOT_FACTORY_LOAD_TEST:-false}"
+    },
+    "iotFactoryBatchSize": {
+      "value": "${AZURE_IOT_FACTORY_BATCH_SIZE:-400}"
+    },
     "modelDeploymentCapacity": {
       "value": "${AZURE_MODEL_CAPACITY:-500}"
     },
