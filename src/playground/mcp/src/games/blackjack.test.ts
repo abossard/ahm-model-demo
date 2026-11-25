@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { BLACKJACK_LIMITS, CARDS } from "@playground/contracts";
 import type { Player } from "@playground/contracts";
 import type { BlackjackAction, DealerOutput, DealerRequest } from "../ports";
-import { blackjack, handTotal } from "./blackjack";
+import { blackjack, handTotal, mixed } from "./blackjack";
 import { fakeDealer } from "./fakeDealer";
 
 const L = BLACKJACK_LIMITS;
@@ -420,6 +420,20 @@ describe("validate", () => {
     ["a stand after five hits", decideRequest(5), output({ cards: [], action: "stand" }), []],
   ])("%s", (_name, request, reply, problems) => {
     expect(blackjack.validate(request, reply)).toEqual(problems);
+  });
+});
+
+describe("mixed", () => {
+  const full = Object.fromEntries(CARDS.map((card) => [card, 6]));
+
+  it.each<[number]>([[1], [2], [42], [0xdeadbeef]])("keeps every copy and leaves the aces off the front for seed %i", (seed) => {
+    const order = mixed(full, seed);
+    expect(order).toEqual(full);
+    expect(Object.keys(order).slice(0, 4)).not.toEqual(["AS", "AH", "AD", "AC"]);
+  });
+
+  it.each<[number, number]>([[1, 2], [7, 8], [100, 101]])("gives seeds %i and %i different orders", (a, b) => {
+    expect(Object.keys(mixed(full, a))).not.toEqual(Object.keys(mixed(full, b)));
   });
 });
 

@@ -1,6 +1,7 @@
 import { BLACKJACK_LIMITS, CARDS, HIDDEN_CARD } from "@playground/contracts";
 import type { BlackjackView, DealerLogEntry, Notice, NoticeCode, SeatView } from "@playground/contracts";
 import { DEALER_LIMITS } from "../ports";
+import { hash, mulberry32 } from "./rng";
 import type {
   BlackjackAction, BlackjackRules, DealerFailure, DealerOutput, DealerReply, DealerRequest, PlayerEvent, Step,
 } from "../ports";
@@ -39,6 +40,8 @@ interface BlackjackState {
   turn: number | null;
   // When `tick` next changes something. Null while the table waits for a first bet.
   deadline: number | null;
+  // The table's only randomness. Orders the list of cards that the dealer sees, so it does not copy a sorted shoe.
+  seed: number;
   // Copies of each card still in the shoe and not yet in the ordered slice.
   remaining: Cards;
   slice: string[];
@@ -120,12 +123,24 @@ function ask(run: Run, phase: Phase, build: (id: string) => DealerRequest, resum
   s.deadline = run.now + s.ms.dealer;
 }
 
+// The same copies in a seeded order. A model copies the front of a sorted list, so every shoe would open with aces.
+export function mixed(cards: Cards, seed: number): Cards {
+  const random = mulberry32(seed);
+  const keys = Object.keys(cards);
+  for (let i = keys.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [keys[i], keys[j]] = [keys[j]!, keys[i]!];
+  }
+  return Object.fromEntries(keys.map((key) => [key, cards[key]!]));
+}
+
 function requestShuffle(run: Run, wanted: number, resume: Resume) {
   const { s } = run;
   if (!hasBudget(run)) return misdeal(run);
   if (count(s.remaining) < 1) renewShoe(s);
   const n = Math.min(wanted, count(s.remaining));
-  ask(run, "shuffling", (id) => ({ id, kind: "shuffle", count: n, remaining: { ...s.remaining }, previous: [...s.previous] }), resume);
+  const remaining = mixed(s.remaining, hash(s.seed ?? 0, s.round, s.seq));
+  ask(run, "shuffling", (id) => ({ id, kind: "shuffle", count: n, remaining, previous: [...s.previous] }), resume);
 }
 
 function requestDecide(run: Run) {
@@ -457,7 +472,7 @@ export const blackjack: BlackjackRules<BlackjackState> = {
   game: "blackjack",
   seats: L.seats,
 
-  create(by, options, now, _seed) {
+  create(by, options, now, seed) {
     const fast = options["fast"] === true;
     const title = typeof options["title"] === "string" ? options["title"].trim() : "";
     const state: BlackjackState = {
@@ -467,6 +482,7 @@ export const blackjack: BlackjackRules<BlackjackState> = {
       seats: Array.from({ length: L.seats }, () => null),
       turn: null,
       deadline: null,
+      seed,
       remaining: { ...FULL },
       slice: [],
       previous: [],
