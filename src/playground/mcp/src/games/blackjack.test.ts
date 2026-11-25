@@ -402,8 +402,8 @@ describe("validate", () => {
     id: "1", kind: "shuffle", count: 3, previous: [],
     remaining: Object.fromEntries(CARDS.map((card) => [card, 4])), ...patch,
   });
-  const decideRequest = (hits: number): Request<"decide"> =>
-    ({ id: "2", kind: "decide", hand: ["TS", "6S"], total: 16, soft: false, players: [18], hits });
+  const decideRequest = (hits: number, total = 16, soft = false): Request<"decide"> =>
+    ({ id: "2", kind: "decide", hand: ["TS", "6S"], total, soft, players: [18], hits });
   const output = (patch: Partial<DealerOutput>): DealerOutput => ({ cards: ["AS", "2S", "3S"], action: "stand", say: "", ...patch });
 
   it.each<[string, DealerRequest, DealerOutput, string[]]>([
@@ -418,6 +418,10 @@ describe("validate", () => {
     ["a hit after four hits", decideRequest(4), output({ cards: [], action: "hit" }), []],
     ["a hit after five hits", decideRequest(5), output({ cards: [], action: "hit" }), ["the dealer must stand after five hits"]],
     ["a stand after five hits", decideRequest(5), output({ cards: [], action: "stand" }), []],
+    ["a stand on 16", decideRequest(0), output({ cards: [], action: "stand" }), ["the house rule is to hit on 16"]],
+    ["a hit on 17", decideRequest(0, 17), output({ cards: [], action: "hit" }), ["the house rule is to stand on 17"]],
+    ["a hit on soft 17", decideRequest(1, 17, true), output({ cards: [], action: "hit" }), ["the house rule is to stand on 17"]],
+    ["a stand on 17", decideRequest(0, 17), output({ cards: [], action: "stand" }), []],
   ])("%s", (_name, request, reply, problems) => {
     expect(blackjack.validate(request, reply)).toEqual(problems);
   });
@@ -442,14 +446,14 @@ describe("prompt", () => {
     const shuffleText = blackjack.prompt({
       id: "1", kind: "shuffle", count: 15, previous: ["AS"], remaining: { AS: 3, KS: 0 },
     });
-    expect(shuffleText.system).toMatch(/draws to 16 and stands on 17/);
+    expect(shuffleText.system).toMatch(/hits on 16 or less and stands on 17 or more/);
     expect(shuffleText.user).toContain("15 cards");
     expect(shuffleText.user).toContain("AS 3");
     expect(shuffleText.user).not.toContain("KS 0");
     const decideText = blackjack.prompt({ id: "2", kind: "decide", hand: ["AS", "6S"], total: 17, soft: true, players: [18, 20], hits: 1 });
     expect(decideText.user).toContain("AS 6S");
     expect(decideText.user).toContain("17, soft");
-    expect(decideText.user).toContain("18, 20");
+    expect(decideText.user).not.toContain("18, 20");
   });
 });
 

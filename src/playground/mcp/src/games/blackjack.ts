@@ -388,7 +388,12 @@ function validate(request: DealerRequest, output: DealerOutput): string[] {
   const problems = new Set<string>();
   if (request.kind === "decide") {
     if (output.cards.length > 0) problems.add("a decision carries no cards");
-    if (request.hits >= L.maxDealerHits && output.action !== "stand") problems.add("the dealer must stand after five hits");
+    if (request.hits >= L.maxDealerHits) {
+      if (output.action !== "stand") problems.add("the dealer must stand after five hits");
+    } else {
+      const rule = request.total <= 16 ? "hit" : "stand";
+      if (output.action !== rule) problems.add(`the house rule is to ${rule} on ${request.total}`);
+    }
     return [...problems];
   }
   if (output.cards.length !== request.count) problems.add(`expected ${request.count} cards, got ${output.cards.length}`);
@@ -404,14 +409,14 @@ function validate(request: DealerRequest, output: DealerOutput): string[] {
 function prompt(request: DealerRequest): { system: string; user: string } {
   const system = [
     "You are the dealer at a blackjack table.",
-    "House custom: the dealer draws to 16 and stands on 17, but the choice is yours.",
+    "House rule: the dealer hits on 16 or less and stands on 17 or more, soft 17 included. Follow it exactly.",
     "Answer with JSON: cards, action and say. say is one short line of table talk, at most 120 characters.",
   ].join(" ");
   if (request.kind === "decide") {
     const hand = `${request.hand.join(" ")} (total ${request.total}${request.soft ? ", soft" : ""})`;
     return {
       system,
-      user: `Your hand: ${hand}. Hands still in play: ${request.players.join(", ") || "none"}. You have hit ${request.hits} times and may hit at most ${L.maxDealerHits}. Set action to hit or stand and cards to an empty list.`,
+      user: `Your hand: ${hand}. You have hit ${request.hits} times and may hit at most ${L.maxDealerHits}. Set action to hit or stand by the house rule and cards to an empty list.`,
     };
   }
   const left = Object.entries(request.remaining).filter(([, n]) => n > 0).map(([card, n]) => `${card} ${n}`).join(", ");
