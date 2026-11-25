@@ -206,7 +206,7 @@ describe("blackjack over HTTP", () => {
     const player = { id: "p-jack-00001", handle: "Black Jack" };
     const created = await call(a, "blackjack_create", { player, title: "High Table" });
     const id: string = created.out["snapshot"].tableId;
-    expect(created.out["snapshot"].view).toMatchObject({ phase: "waiting", title: "High Table" });
+    expect(created.out["snapshot"].view).toMatchObject({ phase: "betting", title: "High Table" });
 
     await call(a, "blackjack_bet", { player, tableId: id, amount: 50 });
     const phase = async (want: string[]) => {

@@ -42,7 +42,7 @@ test("a new visitor earns every layer, from the briefing to a won hand", async (
   await expect(table.getByTestId("chips")).toBeVisible({ timeout: VIEW_READY_MS });
   // The fake dealer is known, but a round can still be a push or a loss: play rounds until one is won.
   for (let round = 0; round < 6 && !(await page.getByText(/every layer/i).first().isVisible()); round += 1) {
-    await expect(table.getByTestId("phase")).toHaveAttribute("data-phase", "waiting", { timeout: 30_000 });
+    await expect(table.getByTestId("phase")).toHaveAttribute("data-phase", "betting", { timeout: 30_000 });
     await table.getByTestId("bet-50").click();
     await expect.poll(async () => {
       const stand = table.getByTestId("act-stand");
