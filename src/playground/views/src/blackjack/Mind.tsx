@@ -21,7 +21,7 @@ export function Mind({ view }: { view: BlackjackView }) {
             <span>{live}</span>
           </li>
         )}
-        {lines.length === 0 && !live && <li className="mind-empty muted">No calls yet. The first bet wakes the dealer.</li>}
+        {lines.length === 0 && !live && <li className="mind-empty muted">No calls yet. The dealer is called when the first bet is placed.</li>}
         {rows.map(({ line: row, count }) => (
           <li key={row.key} className="mind-row" data-tone={row.tone}>
             <span className="mind-head">

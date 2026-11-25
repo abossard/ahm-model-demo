@@ -127,7 +127,7 @@ export function rankScores(scores: readonly TraderScore[], pilot: string): Ranke
 
 export function verdict(view: Pick<TraderView, "netWorth" | "profitableSales">): string {
   const start = 1000;
-  if (view.netWorth >= start * 3) return "A run the ports will talk about.";
+  if (view.netWorth >= start * 3) return "A run that people at the ports will talk about.";
   if (view.netWorth > start) return "The ledger closes in the black.";
   if (view.netWorth === start) return "Even. The fuel was the only profit.";
   return "The ledger closes in the red.";

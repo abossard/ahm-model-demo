@@ -36,7 +36,7 @@ describe("phaseLine", () => {
     ["your turn", playing, "Your turn."],
     ["another seat's turn", { ...playing, turn: 0 }, "Neon Rook is deciding."],
     ["shuffling", { ...betting, phase: "shuffling" as const }, "The dealer is shuffling. That is a language model putting cards in order."],
-    ["misdeal", misdeal, "Misdeal. The dealer's reply did not survive the check. All bets returned."],
+    ["misdeal", misdeal, "Misdeal. The dealer's reply failed the check. All bets are returned."],
   ])("%s", (_name, view, text) => {
     expect(phaseLine(view)).toBe(text);
   });

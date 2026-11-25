@@ -12,7 +12,7 @@ export interface ExhibitDef {
 export const GROUPS: readonly { id: Group; title: string; line: string }[] = [
   { id: "server", title: "Ask the server", line: "The View calls a tool. The host carries the call both ways." },
   { id: "host", title: "Ask the host", line: "Requests the host may grant, refuse or ignore." },
-  { id: "both", title: "Listen and offer", line: "The host speaks first, or asks the View for something." },
+  { id: "both", title: "Listen and offer", line: "The host sends the first message, or asks the View for something." },
 ];
 
 export const EXHIBITS: readonly ExhibitDef[] = [

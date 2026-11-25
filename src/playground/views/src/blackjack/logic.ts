@@ -36,7 +36,7 @@ export const PHASE_NAME: Record<Phase, string> = {
 };
 
 export function phaseLine(view: BlackjackView): string {
-  if (view.misdeal) return "Misdeal. The dealer's reply did not survive the check. All bets returned.";
+  if (view.misdeal) return "Misdeal. The dealer's reply failed the check. All bets are returned.";
   if (view.phase === "players") {
     const mine = view.you !== null && view.you === view.turn;
     if (mine) return "Your turn.";

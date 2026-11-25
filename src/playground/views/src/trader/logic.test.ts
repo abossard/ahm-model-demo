@@ -120,7 +120,7 @@ describe("rankScores", () => {
 });
 
 describe("verdict", () => {
-  it.each([[3500, "A run the ports will talk about."], [1500, "The ledger closes in the black."], [1000, "Even. The fuel was the only profit."], [400, "The ledger closes in the red."]])(
+  it.each([[3500, "A run that people at the ports will talk about."], [1500, "The ledger closes in the black."], [1000, "Even. The fuel was the only profit."], [400, "The ledger closes in the red."]])(
     "net worth %i", (netWorth, text) => {
       expect(verdict({ netWorth, profitableSales: 0 })).toBe(text);
     },

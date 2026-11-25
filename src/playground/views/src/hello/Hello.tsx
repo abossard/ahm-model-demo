@@ -33,7 +33,7 @@ export function Hello({ app, player, first }: ViewContext) {
       <section className="hello-lead">
         <p className="hello-greeting" data-testid="hello-greeting">{hello.greeting}</p>
         <p className="hello-sub">
-          This rectangle is a web page the server sent. It cannot reach the network. It can only talk to this page.
+          This rectangle is a web page that the server sent. It cannot reach the network. It can only talk to this page.
         </p>
       </section>
 
