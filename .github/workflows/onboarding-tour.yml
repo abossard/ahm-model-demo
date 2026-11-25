@@ -14,8 +14,17 @@ permissions:
 
 jobs:
   capture:
+    name: Record ${{ matrix.target }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: onboarding-tour
+            guide: tour
+          - target: core-walkthrough
+            guide: core
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,9 +45,9 @@ jobs:
           npm ci --no-audit --no-fund
           npx --no-install playwright install-deps chromium
       - name: Record the local walkthrough
-        run: make onboarding-tour
+        run: make ${{ matrix.target }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: onboarding-tour
-          path: docs/onboarding/tour/
+          name: ${{ matrix.target }}
+          path: docs/onboarding/${{ matrix.guide }}/
           if-no-files-found: error

@@ -7,11 +7,15 @@ import { renderGuide } from "./guide";
 
 /** Record the browser and collect the words a reader can see at each checkpoint. */
 export class Capture {
-  private readonly excerpts: Record<string, string> = {};
-  private readonly media = new Set<string>();
   private recording = false;
 
-  constructor(private readonly page: Page, private readonly staging: string) {}
+  constructor(private readonly page: Page, private readonly staging: string,
+    private readonly excerpts: Record<string, string> = {}, private readonly media = new Set<string>()) {}
+
+  /** Each chapter opens its own page. The published guide collects evidence from every chapter. */
+  forPage(page: Page) {
+    return new Capture(page, this.staging, this.excerpts, this.media);
+  }
 
   async step(id: string, quote: Locator, options: { shot?: Locator } = {}) {
     await expect(quote).toBeVisible();
@@ -27,8 +31,8 @@ export class Capture {
     if (this.recording) await hold(1500);
   }
 
-  async clip(id: string, actions: () => Promise<void>) {
-    const filename = `${id}.gif`;
+  async clip(id: string, actions: () => Promise<void>, format: "gif" | "apng" = "gif") {
+    const filename = `${id}.${format}`;
     if (this.recording || this.media.has(filename)) throw new Error(`Overlapping or duplicate clip: ${id}`);
     const video = path.join(this.staging, "..", `${id}.webm`);
     await this.page.screencast.start({ path: video, size: this.page.viewportSize()!, quality: 95 });
@@ -41,17 +45,18 @@ export class Capture {
       this.recording = false;
       await this.page.screencast.stop();
     }
-    const filter = "fps=8,scale=1088:-2:flags=lanczos,split[a][b];" +
-      "[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle";
-    execFileSync("ffmpeg", ["-loglevel", "error", "-nostdin", "-y", "-i", video, "-filter_complex", filter,
-      "-loop", "0", path.join(this.staging, "media", filename)]);
+    const encoding = format === "gif" ? ["-filter_complex",
+      "fps=8,scale=1088:-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle",
+      "-loop", "0"] : ["-vf", "fps=5,scale=960:-2:flags=lanczos,format=rgb24", "-plays", "0", "-f", "apng"];
+    execFileSync("ffmpeg", ["-loglevel", "error", "-nostdin", "-y", "-i", video, ...encoding,
+      path.join(this.staging, "media", filename)]);
     this.media.add(filename);
   }
 
-  async finish() {
-    const guide = renderGuide(this.excerpts);
+  async finish(render = renderGuide) {
+    const guide = render(this.excerpts);
     const linked = new Set(Array.from(guide.matchAll(/!\[[^\]]*\]\(media\/([^\s)]+)\)/g), match => match[1]!));
-    expect([...linked].sort(), "every captured image or GIF belongs in the guide").toEqual([...this.media].sort());
+    expect([...linked].sort(), "every capture belongs in the guide").toEqual([...this.media].sort());
     for (const file of linked) expect((await stat(path.join(this.staging, "media", file))).size).toBeGreaterThan(0);
     await writeFile(path.join(this.staging, "README.md"), guide);
   }

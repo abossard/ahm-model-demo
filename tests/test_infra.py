@@ -847,12 +847,13 @@ class SourceLayoutContractTests(unittest.TestCase):
         for term in ("agent-web", "agent-app", "AGENT_", "survey", "HEALTH_COPILOT", "AZURE_OPENAI"):
             with self.subTest(absent=term):
                 self.assertNotIn(term, text)
-        for target in ("make dev", "make ui", "make env", "make onboarding-tour"):
+        for target in ("make dev", "make ui", "make env", "make onboarding-tour", "make core-walkthrough"):
             with self.subTest(help=target):
                 self.assertIn(target, help_text)
         self.assertEqual(dev.count("uvicorn"), 1)
         self.assertIn("--app-dir src/web/app", dev)
-        self.assertEqual(re.findall(r"^\.PHONY: (.+)$", text, re.MULTILINE), ["help env deps ui dev gate onboarding-tour"])
+        self.assertEqual(re.findall(r"^\.PHONY: (.+)$", text, re.MULTILINE),
+                         ["help env deps ui dev gate capture-deps onboarding-tour core-walkthrough"])
 
     def test_deployment_sources_mention_no_removed_feature(self):
         paths = [
