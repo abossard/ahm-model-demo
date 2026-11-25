@@ -65,10 +65,10 @@ describe("handTotal", () => {
 });
 
 describe("the table", () => {
-  it("opens waiting with the creator seated and 1,000 chips", () => {
+  it("opens betting with the creator seated and 1,000 chips", () => {
     const state = table();
     expect(view(state)).toMatchObject({
-      phase: "waiting", round: 0, you: 0, turn: null, deadline: null, misdeal: false, dealerLog: [],
+      phase: "betting", round: 0, you: 0, turn: null, deadline: NOW + 15 * SECOND, misdeal: false, dealerLog: [],
       limits: { minBet: 10, maxBet: 500, betStep: 10 },
     });
     expect(view(state).seats[0]).toMatchObject({ handle: "Ann", chips: 1000, bet: 0, cards: [], state: "idle", outcome: null });
@@ -179,16 +179,16 @@ describe("the phases", () => {
     expect(view(shuffle(closed, SAFE_HEAD)).seats[1]!.cards).toEqual([]);
   });
 
-  it("betting: a seat is unseated after two rounds in a row without a bet", () => {
+  it("betting: a seat is unseated after three rounds in a row without a bet", () => {
     let state = table(2);
-    for (let round = 1; round <= 2; round++) {
+    for (let round = 1; round <= 3; round++) {
       const at = NOW + round * 100 * SECOND;
       state = act(state, { type: "bet", amount: 100 }, ann, at).state;
       state = blackjack.tick(state, at + 15 * SECOND).state;
-      expect(view(state).seats[1]).toEqual(round === 1 ? expect.objectContaining({ handle: "Bob" }) : null);
+      expect(view(state).seats[1]).toEqual(round < 3 ? expect.objectContaining({ handle: "Bob" }) : null);
       state = blackjack.tick(fail(state, "unavailable", at + 16 * SECOND), at + 100 * SECOND - 1).state;
     }
-    expect(view(state)).toMatchObject({ phase: "waiting", round: 2 });
+    expect(view(state)).toMatchObject({ phase: "betting", round: 3 });
   });
 
   it("betting: a bet resets the missed count", () => {
@@ -199,11 +199,16 @@ describe("the phases", () => {
     expect(state.seats[1]!.missed).toBe(0);
   });
 
-  it("betting: the last bettor leaving returns the table to waiting at the deadline", () => {
-    const state = act(act(table(2), { type: "bet", amount: 100 }, ann).state, { type: "leave" }, ann).state;
+  it("betting: a seat that never bets is unseated after three empty rounds, then the table waits", () => {
+    let state = act(act(table(2), { type: "bet", amount: 100 }, ann).state, { type: "leave" }, ann).state;
     expect(view(state, bob).seats[0]).toBeNull();
-    const later = blackjack.tick(state, NOW + 15 * SECOND).state;
-    expect(view(later, bob)).toMatchObject({ phase: "waiting", deadline: null });
+    for (let round = 1; round <= 2; round++) {
+      state = blackjack.tick(state, NOW + round * 15 * SECOND).state;
+      expect(view(state, bob)).toMatchObject({ phase: "betting", deadline: NOW + (round + 1) * 15 * SECOND });
+    }
+    state = blackjack.tick(state, NOW + 45 * SECOND).state;
+    expect(view(state, bob).seats[1]).toBeNull();
+    expect(view(state, bob)).toMatchObject({ phase: "waiting", deadline: null });
   });
 
   it.each<[number]>([[1], [2], [6]])("shuffling: %i bettors are dealt seat by seat, then the dealer, twice", (seats) => {
@@ -266,7 +271,7 @@ describe("the phases", () => {
     expect(view(state).deadline).toBe(NOW + 6 * SECOND);
     expect(blackjack.tick(state, NOW + 6 * SECOND - 1).state).toBe(state);
     const cleared = blackjack.tick(state, NOW + 6 * SECOND).state;
-    expect(view(cleared)).toMatchObject({ phase: "waiting", round: 1, misdeal: false, deadline: null });
+    expect(view(cleared)).toMatchObject({ phase: "betting", round: 1, misdeal: false, deadline: NOW + 21 * SECOND });
     expect(view(cleared).seats[0]).toMatchObject({ chips: 1000, bet: 0, cards: [], state: "idle", outcome: null, delta: 0 });
     expect(view(cleared).dealer).toEqual({ cards: [], total: 0, say: null });
   });
@@ -612,8 +617,18 @@ describe("the clock", () => {
     expect(blackjack.tick(state, NOW + 1).state).toBe(state);
   });
 
+  it.each<[string, Record<string, unknown>, number]>([
+    ["a normal table", {}, 15],
+    ["a fast table", { fast: true }, 2],
+  ])("%s gives an empty window the full 15 seconds and %i seconds after the first bet", (_name, options, afterBet) => {
+    const state = table(2, options);
+    expect(blackjack.nextDeadline(state)).toBe(NOW + 15 * SECOND);
+    const bet = act(state, { type: "bet", amount: 100 }, ann, NOW + 5 * SECOND).state;
+    expect(blackjack.nextDeadline(bet)).toBe(NOW + (5 + afterBet) * SECOND);
+  });
+
   it("reports the deadline of each phase", () => {
-    expect(blackjack.nextDeadline(table())).toBeNull();
+    expect(blackjack.nextDeadline(table())).toBe(NOW + 15 * SECOND);
     expect(blackjack.nextDeadline(betAll(table(), 100))).toBe(NOW + 25 * SECOND);
     expect(blackjack.nextDeadline(dealt(SAFE_HEAD))).toBe(NOW + 20 * SECOND);
   });

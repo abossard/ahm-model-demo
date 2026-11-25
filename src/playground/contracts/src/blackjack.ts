@@ -12,7 +12,7 @@ export const HIDDEN_CARD = "??";
 export const BLACKJACK_LIMITS = {
   seats: 6, decks: 4, reshuffleBelow: 60, startChips: 1000, minBet: 10, maxBet: 500, betStep: 10,
   bettingSeconds: 15, turnSeconds: 20, settledSeconds: 6, dealerSeconds: 25, maxDealerHits: 5,
-  idleRoundsBeforeUnseat: 2,
+  idleRoundsBeforeUnseat: 3,
 } as const;
 
 export const SeatView = z.object({

@@ -200,14 +200,13 @@ function clearRound(run: Run) {
     };
   });
   s.round++;
-  s.phase = "waiting";
   s.dealer = [];
   s.say = null;
   s.hits = 0;
   s.misdeal = false;
   s.calls = 0;
   s.turn = null;
-  s.deadline = null;
+  openBetting(run);
 }
 
 function closeBets(run: Run) {
@@ -218,8 +217,7 @@ function closeBets(run: Run) {
   });
   const players = bettors(s).length;
   if (players === 0) {
-    s.phase = "waiting";
-    s.deadline = null;
+    openBetting(run);
     return;
   }
   s.calls = 0;
@@ -318,6 +316,7 @@ function sit(state: BlackjackState, id: string, handle: string, now: number): St
   run.s.seats[free] = {
     id, handle, chips: L.startChips, bet: 0, cards: [], state: "idle", outcome: null, delta: 0, missed: 0, leaving: false,
   };
+  if (run.s.phase === "waiting") openBetting(run);
   return finished(run);
 }
 
@@ -337,6 +336,15 @@ function leave(state: BlackjackState, at: number, now: number): Step<BlackjackSt
   return finished(run);
 }
 
+// Betting runs while anyone is seated, so a seat that never bets misses rounds and is unseated.
+// A window without bets lasts the full betting time, also at a fast table. The first bet restarts it at the table's pace.
+function openBetting(run: Run) {
+  const { s } = run;
+  const anyone = seated(s).length > 0;
+  s.phase = anyone ? "betting" : "waiting";
+  s.deadline = anyone ? run.now + L.bettingSeconds * 1000 : null;
+}
+
 function closeWhenAllBet(run: Run) {
   const people = seated(run.s);
   if (people.every(({ seat }) => seat.bet > 0) || people.length === 0) closeBets(run);
@@ -351,12 +359,13 @@ function placeBet(state: BlackjackState, at: number, amount: number, now: number
   const bet = Math.min(Math.floor(clamped / L.betStep) * L.betStep, Math.floor((seat.chips + seat.bet) / L.betStep) * L.betStep);
   if (bet < L.minBet) return unchanged(state, notice("insufficient_funds", "Not enough chips for the minimum bet."));
   const run = open(state, now);
+  const first = bettors(run.s).length === 0;
   const mine = run.s.seats[at]!;
   mine.chips += mine.bet - bet;
   mine.bet = bet;
   mine.state = "bet";
   mine.missed = 0;
-  if (run.s.phase === "waiting") {
+  if (first) {
     run.s.phase = "betting";
     run.s.deadline = now + run.s.ms.bet;
   }
