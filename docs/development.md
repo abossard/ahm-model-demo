@@ -138,6 +138,20 @@ npm --prefix src/web/ui run e2e -- --config playwright.live.config.ts
   a sign-in; without it every live test skips and says why. A deployment without sign-in needs neither.
 - The default config ignores `tests/live-experience.spec.ts` and `tests/real-backend.spec.ts`.
 
+## Playground
+
+The [MCP App Playground](playground/architecture.md) is a Node 24 workspace in `src/playground`. It needs no Azure to run.
+
+| Command | Purpose |
+|---------|---------|
+| `npm ci --prefix src/playground` | Install from the lockfile. |
+| `npm run dev --prefix src/playground` | MCP server on 8091, host server on 8090, vite on 5273. Memory store, fake dealer. |
+| `npm run typecheck --prefix src/playground`, `npm test --prefix src/playground` | Checks of every package. |
+| `make playground-up` | Docker Compose: both images and the Cosmos DB emulator, as they run in Azure. Needs Docker. |
+
+- Host server logs are JSON lines. Every wire message is one line with `msg: "wire"`, its `trace` and its `sid`.
+- `curl -N 'http://localhost:8090/debug/stream?sid=<tab id>'` follows the events the drawer shows.
+
 ## Local limits
 
 - `make dev` has no auto-reload. Restart it after a change; it rebuilds the UI on start.

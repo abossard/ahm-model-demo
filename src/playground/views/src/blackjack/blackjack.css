@@ -1,0 +1,163 @@
+/* Blackjack. A felt table from above, seats on the near edge, the dealer opposite. Brass is this layer's accent. */
+.bj {
+  --felt-deep: #134a33;
+  --felt-edge: #0c3223;
+  --card: #f2ede2;
+  --card-red: #c42f3a;
+  --cw: 40px;
+  display: grid; gap: var(--s4); min-width: 0;
+}
+.bj h2 { margin: 0; font: 800 1.125rem/1 var(--font-display); text-transform: uppercase; letter-spacing: 0.01em; }
+.bj p { margin: 0; }
+.bj .muted { color: var(--fg-2); }
+.bj .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.bj .of { color: var(--fg-2); font-size: 0.8em; }
+
+/* Top strip: phase and clock on the left, your stack on the right */
+.bj-top { display: flex; justify-content: space-between; align-items: end; gap: var(--s4); flex-wrap: wrap; }
+.phase { display: grid; gap: 6px; min-width: 200px; }
+.phase-row { display: flex; align-items: baseline; gap: var(--s3); }
+.phase-name { font: 900 2rem/0.9 var(--font-display); text-transform: uppercase; color: var(--accent); }
+.phase-name[data-phase="settled"] { color: var(--fg); }
+.phase-clock { font: 600 1.25rem/1 var(--font-mono); color: var(--live); min-width: 2ch; }
+.phase-bar { height: 4px; background: var(--rule); }
+.phase-bar i { display: block; height: 100%; background: var(--live); transform-origin: left; transition: transform 1s linear; }
+.round { font-size: 0.8125rem; color: var(--fg-2); }
+.stack { display: grid; justify-items: end; gap: 2px; }
+.stack dt { font-size: 0.8125rem; color: var(--fg-2); }
+.stack dd { margin: 0; font: 600 2rem/1 var(--font-mono); }
+.stack dd.up { animation: tick-up 600ms var(--ease); }
+@keyframes tick-up { from { color: var(--live); } to { color: var(--fg); } }
+
+.bj-main { display: grid; grid-template-columns: minmax(0, 1fr) 17.5rem; gap: var(--s4); align-items: start; }
+
+/* The table */
+.felt {
+  position: relative; display: grid; grid-template-rows: auto 1fr auto; gap: var(--s3);
+  background: var(--felt-deep); border: 2px solid var(--brass);
+  border-radius: 50% 50% 20px 20px / 36% 36% 20px 20px;
+  padding: var(--s5) var(--s3) var(--s4); min-height: 0; color: var(--card);
+}
+.felt::before { content: ""; position: absolute; inset: 8px; border: 1px solid var(--felt); opacity: 0.45; border-radius: inherit; pointer-events: none; }
+.dealer { display: grid; justify-items: center; gap: 6px; position: relative; }
+.dealer-label { font: 800 0.875rem/1 var(--font-display); text-transform: uppercase; letter-spacing: 0.08em; color: var(--brass); }
+.dealer .hand { min-height: calc(var(--cw) * 1.4 * 1.3); }
+.dealer-read { display: flex; gap: var(--s3); align-items: baseline; min-height: 1.5rem; }
+.dealer-total { font: 600 1.125rem/1 var(--font-mono); }
+.say { font-style: italic; color: var(--card); max-width: 34ch; text-align: center; min-height: 1.4em; }
+.centre { display: grid; place-items: center; text-align: center; gap: var(--s2); padding: 0 var(--s3); }
+.line { font-size: 1.0625rem; max-width: 40ch; text-wrap: balance; }
+.misdeal { border: 2px solid var(--bad); background: var(--felt-edge); color: var(--card); padding: var(--s2) var(--s3); font-weight: 600; max-width: 40ch; }
+
+/* Seats on the near edge, dipping towards the middle */
+.seats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--s2); align-items: start; padding-bottom: var(--s4); }
+.seat:nth-child(1), .seat:nth-child(6) { transform: translateY(0); }
+.seat:nth-child(2), .seat:nth-child(5) { transform: translateY(10px); }
+.seat:nth-child(3), .seat:nth-child(4) { transform: translateY(16px); }
+.seat {
+  position: relative; display: grid; gap: 6px; align-content: start; padding: var(--s2);
+  background: var(--felt-edge); border: 2px solid transparent; border-radius: var(--radius); min-height: 168px; min-width: 0;
+  transition: border-color 140ms var(--ease);
+}
+.seat[data-you="true"] { border-color: var(--brass); }
+.seat[data-turn="true"] { border-color: var(--live); }
+.seat[data-state="bust"] .seat-hand { opacity: 0.55; }
+.seat-empty { background: transparent; border: 2px dashed var(--felt); opacity: 0.6; place-items: center; align-content: center; }
+.seat-ghost { font-size: 0.8125rem; color: var(--card); }
+.seat-hand { display: grid; justify-items: center; gap: 4px; min-height: calc(var(--cw) * 1.4 + 22px); }
+.total { font-size: 0.875rem; font-weight: 600; }
+.seat-bet { display: flex; align-items: end; justify-content: center; gap: 6px; min-height: 28px; font-size: 0.8125rem; }
+.bet-none { color: var(--card); opacity: 0.55; }
+.bet-amount { font-weight: 600; }
+.seat-name { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 0.8125rem; font-weight: 600; min-width: 0; }
+.seat-name .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.you { position: absolute; top: -9px; left: 8px; z-index: 1; font: 800 0.6875rem/1 var(--font-display); text-transform: uppercase; letter-spacing: 0.06em; background: var(--brass); color: var(--ink); padding: 3px 5px; }
+.seat-foot { display: grid; justify-items: center; gap: 4px; font-size: 0.8125rem; }
+.clock { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--live); transform-origin: left; transition: transform 1s linear; }
+
+.badge { display: inline-block; font: 600 0.75rem/1 var(--font-text); padding: 3px 6px; border: 1px solid currentColor; white-space: nowrap; }
+.badge-good { color: #8ff0b8; }
+.badge-bad { color: #ff8a90; }
+.badge-live { color: var(--live); }
+.badge-neutral { color: var(--card); opacity: 0.85; }
+.mind .badge-good { color: var(--felt); }
+.mind .badge-bad { color: var(--bad); }
+
+/* Cards */
+.hand { display: inline-flex; align-items: flex-start; }
+.hand .card + .card { margin-left: -12px; }
+.hand[data-count="3"] .card + .card, .hand[data-count="4"] .card + .card { margin-left: -18px; }
+.hand[data-count="5"] .card + .card, .hand[data-count="6"] .card + .card { margin-left: -22px; }
+.hand-dealer { --cw: 52px; }
+.hand-dealer .card + .card { margin-left: -6px; }
+.card {
+  position: relative; display: inline-block; width: var(--cw); aspect-ratio: 5 / 7; flex: none;
+  background: var(--card); color: var(--ink); border: 1px solid var(--ink); border-radius: 3px;
+  font-size: calc(var(--cw) * 0.34); line-height: 1;
+}
+.card-red { color: var(--card-red); }
+.card-corner { position: absolute; top: 8%; left: 10%; display: grid; justify-items: center; gap: 2px; }
+.card-corner b { font: 600 1em/1 var(--font-mono); }
+.card-corner svg { width: 0.9em; height: 0.9em; }
+.card-pip { position: absolute; inset: 0; display: grid; place-items: center; padding-top: 28%; }
+.card-pip svg { width: 52%; height: auto; }
+.card-back { background: var(--felt-edge); border-color: var(--brass); color: var(--brass);
+  background-image: repeating-linear-gradient(45deg, transparent 0 4px, rgb(217 180 91 / 0.55) 4px 5px); }
+.card-back::after { content: ""; position: absolute; inset: 4px; border: 1px solid var(--brass); }
+
+/* Chips */
+.chips-stack { display: inline-flex; align-items: flex-end; gap: 2px; }
+.pile { position: relative; display: inline-block; width: 22px; height: 24px; }
+.disc { position: absolute; left: 0; width: 22px; height: 12px; border-radius: 50%; border: 2px solid var(--ink); background: var(--card); box-shadow: inset 0 0 0 2px var(--chip-ring, var(--ink)); }
+.disc-10 { background: var(--card); --chip-ring: var(--ink); }
+.disc-50 { background: var(--red); --chip-ring: var(--card); }
+.disc-100 { background: var(--ink); --chip-ring: var(--card); border-color: var(--card); }
+.disc-250 { background: var(--brass); --chip-ring: var(--ink); }
+.disc-500 { background: var(--felt); --chip-ring: var(--card); }
+.disc-flat { position: static; display: inline-block; width: 22px; height: 22px; flex: none; }
+
+/* Controls */
+.controls { display: grid; justify-items: center; gap: var(--s3); }
+.felt .muted { color: var(--card); opacity: 0.8; }
+.felt .btn-quiet { border-color: var(--card); color: var(--card); opacity: 0.85; }
+.felt .btn { border-color: var(--card); }
+.felt .btn-primary { border-color: var(--accent); }
+.act-row { display: flex; gap: var(--s3); flex-wrap: wrap; justify-content: center; }
+.btn-big { min-height: 52px; padding: 0 var(--s5); font-size: 1.125rem; }
+.btn-big kbd { font-size: 0.75rem; opacity: 0.7; border: 1px solid currentColor; padding: 1px 5px; border-radius: 2px; }
+.btn-small { min-height: 32px; padding: 0 var(--s3); font-size: 0.8125rem; }
+.bet-row { display: flex; gap: var(--s3); align-items: center; justify-content: center; flex-wrap: wrap; }
+.bet-chips { display: flex; gap: var(--s2); flex-wrap: wrap; justify-content: center; }
+.chip-btn { padding: 0 var(--s3); }
+.chip-btn[aria-pressed="true"] { border-color: var(--brass); background: var(--bg-raised); }
+.stepper { display: inline-flex; align-items: center; gap: var(--s2); }
+.bet-now { min-width: 4ch; text-align: center; font-size: 1.25rem; font-weight: 600; }
+
+/* The dealer's mind */
+.mind { display: grid; gap: var(--s3); align-content: start; border-top: 2px solid var(--rule); padding-top: var(--s3); font-size: 0.875rem; }
+.mind-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; max-height: 360px; overflow: auto; }
+.mind-row { display: grid; gap: 3px; padding: var(--s2) 0; border-bottom: 1px solid var(--rule); }
+.mind-head { display: flex; justify-content: space-between; align-items: center; gap: var(--s2); }
+.mind-title { font-weight: 600; }
+.mind-meta { font-size: 0.75rem; color: var(--fg-2); }
+.mind-note { font-size: 0.8125rem; }
+.mind-live { display: flex; align-items: center; gap: var(--s2); color: var(--live); }
+.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--live); animation: blink 900ms steps(2, jump-none) infinite; }
+.mind-empty { padding: var(--s2) 0; }
+
+.lobby-wrap { display: grid; gap: var(--s4); }
+
+@media (max-width: 860px) {
+  .bj-main { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .felt { border-radius: 40% 40% 16px 16px / 14% 14% 16px 16px; padding-inline: var(--s2); min-height: 0; }
+  .seats { grid-template-columns: repeat(3, minmax(0, 1fr)); padding-bottom: 0; }
+  .seat:nth-child(n) { transform: none; }
+  .phase-name { font-size: 1.625rem; }
+  .stack dd { font-size: 1.5rem; }
+  .bj { --cw: 36px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .phase-bar i, .clock { transition: none; }
+}

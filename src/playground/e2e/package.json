@@ -1,0 +1,16 @@
+{
+  "name": "@playground/e2e",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "e2e": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@playground/contracts": "*"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1"
+  }
+}

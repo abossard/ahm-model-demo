@@ -1,0 +1,38 @@
+# The playground as it runs in Azure, with the Cosmos DB emulator and the fake dealer. `make playground-up`.
+services:
+  cosmos:
+    image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-latest
+    ports:
+      - "8081:8081"
+      - "18080:8080"
+    environment:
+      GATEWAY_PUBLIC_ENDPOINT: cosmos
+      ENABLE_EXPLORER: "false"
+
+  mcp:
+    build:
+      context: .
+      dockerfile: mcp/Dockerfile
+    depends_on:
+      - cosmos
+    ports:
+      - "8091:8080"
+    environment:
+      NODE_ENV: production
+      PLAYGROUND_STORE: emulator
+      COSMOS_ENDPOINT: http://cosmos:8081
+      PLAYGROUND_LLM: fake
+      LOG_LEVEL: debug
+
+  host:
+    build:
+      context: .
+      dockerfile: host/Dockerfile
+    depends_on:
+      - mcp
+    ports:
+      - "8090:8080"
+    environment:
+      NODE_ENV: production
+      MCP_URL: http://mcp:8080
+      LOG_LEVEL: debug

@@ -42,6 +42,12 @@ param entraAllowedTenants string = ''
 @description('Image published by "azd deploy mcp". Empty until the first deploy.')
 param mcpImage string = ''
 
+@description('Image of the playground host, published by "azd deploy playground". Empty until the first deploy.')
+param playgroundImage string = ''
+
+@description('Image of the playground MCP server, published by "azd deploy playground-mcp". Empty until the first deploy.')
+param playgroundMcpImage string = ''
+
 @description('Object ID of the hosted agent identity. Empty until the agent exists: the agent deploy script sets it as an azd environment value, and the web app uses it to recognise the agent\'s token requests.')
 param foundryAgentPrincipalId string = ''
 
@@ -332,6 +338,26 @@ module mcp 'modules/container-app.bicep' = {
   }
 }
 
+// The MCP App Playground: two public apps and a Cosmos DB account (ADR 0012).
+module playground 'modules/playground.bicep' = {
+  scope: rg
+  name: 'playground'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    resourceToken: resourceToken
+    tags: tags
+    environmentId: foundation.outputs.environmentId
+    registryName: foundation.outputs.registryName
+    foundryAccountName: foundry.outputs.accountName
+    vnetId: foundation.outputs.vnetId
+    privateEndpointSubnetId: foundation.outputs.privateEndpointSubnetId
+    playgroundImage: playgroundImage
+    playgroundMcpImage: playgroundMcpImage
+    placeholderImage: placeholderImage
+  }
+}
+
 module availabilityTests 'modules/availability-tests.bicep' = {
   scope: rg
   name: 'availability-tests'
@@ -476,6 +502,10 @@ output HEALTH_MODEL_DISCOVERY_RULE_ID string = healthModelDiscovery.outputs.disc
 output SERVICE_WEB_FQDN string = web.outputs.fqdn
 output SERVICE_WEB_NAME string = web.outputs.containerAppName
 output SERVICE_MCP_FQDN string = mcp.outputs.fqdn
+output PLAYGROUND_URL string = 'https://${playground.outputs.hostFqdn}/'
+output PLAYGROUND_MCP_URL string = 'https://${playground.outputs.mcpFqdn}/'
+output SERVICE_PLAYGROUND_NAME string = playground.outputs.hostAppName
+output SERVICE_PLAYGROUND_MCP_NAME string = playground.outputs.mcpAppName
 output ENTRA_TENANT_ID string = entra.outputs.tenantId
 output ENTRA_CLIENT_ID string = entra.outputs.webClientId
 output ENTRA_API_SCOPE string = entra.outputs.webApiScope

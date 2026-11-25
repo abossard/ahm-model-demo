@@ -1,0 +1,13 @@
+.logbar { display: flex; flex-wrap: wrap; gap: var(--s1); align-items: center; }
+.logchip, .logfind {
+  font: 500 0.75rem var(--font-text); min-height: 28px; padding: 0 var(--s2); color: var(--fg-2); background: transparent;
+  border: 1px solid var(--rule); border-radius: var(--radius, 0);
+}
+.logchip { cursor: pointer; text-transform: capitalize; }
+.logchip[aria-pressed="true"] { color: var(--fg); border-color: var(--fg-2); }
+.logchip[aria-pressed="false"] { text-decoration: line-through; opacity: 0.7; }
+.logfind { flex: 1 1 80px; min-width: 0; color: var(--fg); }
+.logfind::placeholder { color: var(--fg-2); }
+.logchip:focus-visible, .logfind:focus-visible { outline: 2px solid var(--live); outline-offset: 1px; }
+.logcount { color: var(--live); font-size: 0.75rem; white-space: nowrap; }
+@media (pointer: coarse) { .logchip, .logfind { min-height: 44px; } }

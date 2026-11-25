@@ -26,6 +26,24 @@ services:
       path: ./Dockerfile
       remoteBuild: true
 
+  playground:
+    project: ./src/playground/host
+    language: docker
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: ..
+      remoteBuild: true
+
+  playground-mcp:
+    project: ./src/playground/mcp
+    language: docker
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: ..
+      remoteBuild: true
+
 hooks:
   postprovision:
     shell: sh

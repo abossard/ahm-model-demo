@@ -1,0 +1,86 @@
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--paper);
+  font: 400 16px/1.55 var(--font-text);
+  font-optical-sizing: auto;
+  overflow: hidden;
+}
+h1, h2, h3, p, dl, dd, ol, ul { margin: 0; padding: 0; }
+ol, ul { list-style: none; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+code { font: 500 0.875em var(--font-mono); color: var(--paper); background: var(--raised); padding: 1px 5px; border-radius: var(--radius); }
+kbd { font: 500 12px var(--font-mono); border: 1px solid var(--line); border-radius: var(--radius); padding: 0 5px; color: var(--paper-2); }
+
+.display { font-family: var(--font-display); font-weight: 800; text-transform: uppercase; letter-spacing: 0.01em; line-height: 0.95; }
+.mono { font-family: var(--font-mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
+::selection { background: var(--sodium); color: var(--ink); }
+
+.skip { position: fixed; left: 8px; top: -64px; z-index: 100; background: var(--sodium); color: var(--ink); padding: 8px 14px; font-weight: 600; }
+.skip:focus { top: 8px; }
+
+/* ---- shell ---- */
+.shell { display: grid; grid-template-columns: minmax(0, 1fr) auto; height: 100dvh; --drawer-w: 0px; }
+.shell[data-drawer="true"] { --drawer-w: min(580px, 44vw); }
+.page { overflow-y: auto; overflow-x: hidden; min-width: 0; scroll-behavior: auto; }
+main:focus { outline: none; }
+
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 24px; height: 56px; border-bottom: 2px solid var(--line); position: sticky; top: 0; background: var(--ink); z-index: 10; }
+.brand { white-space: nowrap; background: none; border: 0; padding: 0; color: var(--paper); font-size: 26px; letter-spacing: 0.03em; }
+.brand:hover { color: var(--sodium); }
+.top-progress { color: var(--paper-2); font-size: 14px; display: flex; gap: 12px; align-items: center; font-variant-numeric: tabular-nums; }
+.top-fixture { border: 1px solid var(--sodium); color: var(--sodium); padding: 0 8px; font-size: 12.5px; font-weight: 600; }
+
+.banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 24px; background: var(--raised); border-bottom: 2px solid var(--red); }
+
+/* ---- buttons and fields ---- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 36px; padding: 6px 14px; border: 2px solid var(--line); border-radius: var(--radius);
+  background: var(--raised); color: var(--paper); font-size: 14px; font-weight: 600; line-height: 1.2;
+  transition: background-color 140ms var(--ease), border-color 140ms var(--ease), transform 80ms var(--ease);
+}
+.btn:hover:not(:disabled) { border-color: var(--paper-2); }
+.btn:active:not(:disabled) { transform: scale(0.97); transition-duration: 60ms; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn[aria-pressed="true"] { border-color: var(--sodium); color: var(--sodium); }
+.btn-primary { background: var(--sodium); border-color: var(--sodium); color: var(--ink); }
+.btn-primary:hover:not(:disabled) { background: #ffad47; border-color: #ffad47; }
+.btn-quiet { background: transparent; border-color: transparent; color: var(--paper-2); }
+.btn-quiet:hover:not(:disabled) { color: var(--paper); border-color: var(--line); }
+.link { background: none; border: 0; padding: 0; color: var(--sodium); text-decoration: underline; text-underline-offset: 3px; font-size: inherit; }
+
+input[type="search"], input[type="text"], select, textarea {
+  width: 100%; min-height: 36px; padding: 6px 10px; background: var(--ink); border: 2px solid var(--line);
+  border-radius: var(--radius); font-size: 14px;
+}
+input::placeholder { color: var(--paper-2); opacity: 0.8; }
+select { width: auto; }
+.check { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--paper-2); cursor: pointer; min-height: 32px; }
+.check input { width: 16px; height: 16px; accent-color: var(--sodium); }
+
+.section-title { font: 600 16px var(--font-text); color: var(--paper); margin-bottom: 8px; }
+
+@media (pointer: coarse) {
+  .btn, input[type="search"], select { min-height: 44px; }
+  .check { min-height: 44px; }
+}
+
+/* ---- narrow: the wire becomes a bottom sheet ---- */
+@media (max-width: 899px) {
+  .shell, .shell[data-drawer="true"] { grid-template-columns: minmax(0, 1fr); --drawer-w: 0px; }
+  .shell[data-drawer="true"] .page { padding-bottom: 70dvh; }
+  .top { padding: 0 16px; }
+  .brand { font-size: 21px; }
+  .top-progress { font-size: 13px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto !important; }
+}

@@ -1,0 +1,1373 @@
+[
+ {
+  "id": "s-1",
+  "seq": 1,
+  "at": 1764000000005,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "host",
+  "to": "server",
+  "kind": "request",
+  "method": "initialize",
+  "rpcId": 1,
+  "tool": null,
+  "view": null,
+  "trace": null,
+  "bytes": 163,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "application/json",
+   "streamed": false
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 1,
+   "method": "initialize",
+   "params": {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {},
+    "clientInfo": {
+     "name": "MCP App Playground",
+     "version": "1"
+    }
+   }
+  }
+ },
+ {
+  "id": "s-2",
+  "seq": 2,
+  "at": 1764000000027,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "server",
+  "to": "host",
+  "kind": "response",
+  "method": "initialize",
+  "rpcId": 1,
+  "tool": null,
+  "view": null,
+  "trace": null,
+  "bytes": 166,
+  "durationMs": 22,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "text/event-stream",
+   "streamed": true
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 1,
+   "result": {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {
+     "tools": {},
+     "resources": {}
+    },
+    "serverInfo": {
+     "name": "playground-mcp",
+     "version": "1.0.0"
+    }
+   }
+  }
+ },
+ {
+  "id": "s-3",
+  "seq": 3,
+  "at": 1764000000031,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "host",
+  "to": "server",
+  "kind": "notification",
+  "method": "notifications/initialized",
+  "rpcId": null,
+  "tool": null,
+  "view": null,
+  "trace": null,
+  "bytes": 66,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "application/json",
+   "streamed": false
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "notifications/initialized",
+   "params": {}
+  }
+ },
+ {
+  "id": "s-4",
+  "seq": 4,
+  "at": 1764000000037,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "server",
+  "to": "host",
+  "kind": "http",
+  "method": null,
+  "rpcId": null,
+  "tool": null,
+  "view": null,
+  "trace": null,
+  "bytes": 0,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 202,
+   "contentType": null,
+   "streamed": false
+  },
+  "truncated": false,
+  "payload": null
+ },
+ {
+  "id": "s-5",
+  "seq": 5,
+  "at": 1764000000077,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "server",
+  "to": "host",
+  "kind": "http",
+  "method": null,
+  "rpcId": null,
+  "tool": null,
+  "view": null,
+  "trace": null,
+  "bytes": 78,
+  "durationMs": null,
+  "http": {
+   "method": "GET",
+   "path": "/mcp",
+   "status": 405,
+   "contentType": "application/json",
+   "streamed": false
+  },
+  "truncated": false,
+  "payload": null
+ },
+ {
+  "id": "s-6",
+  "seq": 6,
+  "at": 1764000000083,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "host",
+  "to": "server",
+  "kind": "request",
+  "method": "tools/list",
+  "rpcId": 2,
+  "tool": null,
+  "view": null,
+  "trace": null,
+  "bytes": 58,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "application/json",
+   "streamed": false
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 2,
+   "method": "tools/list",
+   "params": {}
+  }
+ },
+ {
+  "id": "s-7",
+  "seq": 7,
+  "at": 1764000000114,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "server",
+  "to": "host",
+  "kind": "response",
+  "method": "tools/list",
+  "rpcId": 2,
+  "tool": null,
+  "view": null,
+  "trace": null,
+  "bytes": 300,
+  "durationMs": 31,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "text/event-stream",
+   "streamed": true
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 2,
+   "result": {
+    "tools": [
+     {
+      "name": "hello_show",
+      "title": "Say hello",
+      "inputSchema": {
+       "type": "object"
+      },
+      "_meta": {
+       "ui": {
+        "resourceUri": "ui://playground/hello.html",
+        "visibility": [
+         "model",
+         "app"
+        ]
+       }
+      }
+     },
+     {
+      "name": "hello_ping",
+      "inputSchema": {
+       "type": "object"
+      },
+      "_meta": {
+       "ui": {
+        "visibility": [
+         "app"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": "s-8",
+  "seq": 8,
+  "at": 1764000000134,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "host",
+  "to": "server",
+  "kind": "request",
+  "method": "tools/call",
+  "rpcId": 3,
+  "tool": "career_get",
+  "view": null,
+  "trace": "tr-boot",
+  "bytes": 187,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "application/json",
+   "streamed": false
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 3,
+   "method": "tools/call",
+   "params": {
+    "name": "career_get",
+    "arguments": {
+     "player": {
+      "id": "p-9f3a1c2e44d0",
+      "handle": "Velvet Pilot"
+     }
+    },
+    "_meta": {
+     "playground/trace": "tr-boot"
+    }
+   }
+  }
+ },
+ {
+  "id": "s-9",
+  "seq": 9,
+  "at": 1764000000152,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "server",
+  "to": "host",
+  "kind": "response",
+  "method": "tools/call",
+  "rpcId": 3,
+  "tool": "career_get",
+  "view": null,
+  "trace": "tr-boot",
+  "bytes": 147,
+  "durationMs": 18,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "text/event-stream",
+   "streamed": true
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 3,
+   "result": {
+    "structuredContent": {
+     "career": {
+      "unlocked": 1,
+      "lab": [],
+      "completed": false
+     }
+    },
+    "_meta": {
+     "playground/trace": "tr-boot"
+    }
+   }
+  }
+ },
+ {
+  "id": "s-10",
+  "seq": 10,
+  "at": 1764000000532,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "host",
+  "to": "server",
+  "kind": "request",
+  "method": "resources/read",
+  "rpcId": 4,
+  "tool": null,
+  "view": null,
+  "trace": null,
+  "bytes": 96,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "application/json",
+   "streamed": false
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 4,
+   "method": "resources/read",
+   "params": {
+    "uri": "ui://playground/hello.html"
+   }
+  }
+ },
+ {
+  "id": "s-11",
+  "seq": 11,
+  "at": 1764000000578,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "server",
+  "to": "host",
+  "kind": "response",
+  "method": "resources/read",
+  "rpcId": 4,
+  "tool": null,
+  "view": null,
+  "trace": null,
+  "bytes": 5264,
+  "durationMs": 46,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "text/event-stream",
+   "streamed": true
+  },
+  "truncated": true,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 4,
+   "result": {
+    "contents": [
+     {
+      "uri": "ui://playground/hello.html",
+      "mimeType": "text/html;profile=mcp-app",
+      "text": "<!doctype html><html><div class=x><div class=x><div class=x><div class=x><div class=x><div class=x><div class=x><div class=x><div class=x><div class=x><div class=x><div class=x><div class=x><div class… (5228 chars)"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": "v-1",
+  "seq": 1,
+  "at": 1764000000788,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "view",
+  "to": "host",
+  "kind": "request",
+  "method": "ui/initialize",
+  "rpcId": 1,
+  "tool": null,
+  "view": "hello-1",
+  "trace": null,
+  "bytes": 153,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 1,
+   "method": "ui/initialize",
+   "params": {
+    "appInfo": {
+     "name": "hello",
+     "version": "1"
+    },
+    "appCapabilities": {},
+    "protocolVersion": "2026-01-26"
+   }
+  }
+ },
+ {
+  "id": "v-2",
+  "seq": 2,
+  "at": 1764000000794,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "host",
+  "to": "view",
+  "kind": "response",
+  "method": "ui/initialize",
+  "rpcId": 1,
+  "tool": null,
+  "view": "hello-1",
+  "trace": null,
+  "bytes": 228,
+  "durationMs": 6,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 1,
+   "result": {
+    "protocolVersion": "2026-01-26",
+    "hostInfo": {
+     "name": "MCP App Playground",
+     "version": "1"
+    },
+    "hostCapabilities": {
+     "serverTools": {},
+     "openLinks": {}
+    },
+    "hostContext": {
+     "theme": "dark",
+     "displayMode": "inline"
+    }
+   }
+  }
+ },
+ {
+  "id": "v-3",
+  "seq": 3,
+  "at": 1764000000803,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "view",
+  "to": "host",
+  "kind": "notification",
+  "method": "ui/notifications/initialized",
+  "rpcId": null,
+  "tool": null,
+  "view": "hello-1",
+  "trace": null,
+  "bytes": 69,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "ui/notifications/initialized",
+   "params": {}
+  }
+ },
+ {
+  "id": "v-4",
+  "seq": 4,
+  "at": 1764000000806,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "host",
+  "to": "view",
+  "kind": "notification",
+  "method": "ui/notifications/tool-input",
+  "rpcId": null,
+  "tool": null,
+  "view": "hello-1",
+  "trace": null,
+  "bytes": 138,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "ui/notifications/tool-input",
+   "params": {
+    "arguments": {
+     "player": {
+      "id": "p-9f3a1c2e44d0",
+      "handle": "Velvet Pilot"
+     }
+    }
+   }
+  }
+ },
+ {
+  "id": "s-12",
+  "seq": 12,
+  "at": 1764000000810,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "host",
+  "to": "server",
+  "kind": "request",
+  "method": "tools/call",
+  "rpcId": 5,
+  "tool": "hello_show",
+  "view": null,
+  "trace": "tr-show",
+  "bytes": 187,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "application/json",
+   "streamed": false
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 5,
+   "method": "tools/call",
+   "params": {
+    "name": "hello_show",
+    "arguments": {
+     "player": {
+      "id": "p-9f3a1c2e44d0",
+      "handle": "Velvet Pilot"
+     }
+    },
+    "_meta": {
+     "playground/trace": "tr-show"
+    }
+   }
+  }
+ },
+ {
+  "id": "s-13",
+  "seq": 13,
+  "at": 1764000000837,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "server",
+  "to": "host",
+  "kind": "response",
+  "method": "tools/call",
+  "rpcId": 5,
+  "tool": "hello_show",
+  "view": null,
+  "trace": "tr-show",
+  "bytes": 128,
+  "durationMs": 27,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "text/event-stream",
+   "streamed": true
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 5,
+   "result": {
+    "structuredContent": {
+     "greeting": "Hello, Velvet Pilot.",
+     "serverTime": 1764000000900,
+     "pings": 0
+    }
+   }
+  }
+ },
+ {
+  "id": "s-14",
+  "seq": 14,
+  "at": 1764000000842,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "host",
+  "to": "server",
+  "kind": "request",
+  "method": "tools/call",
+  "rpcId": 6,
+  "tool": "wait_for_change",
+  "view": null,
+  "trace": null,
+  "bytes": 193,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "application/json",
+   "streamed": false
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 6,
+   "method": "tools/call",
+   "params": {
+    "name": "wait_for_change",
+    "arguments": {
+     "player": {
+      "id": "p-9f3a1c2e44d0",
+      "handle": "Velvet Pilot"
+     },
+     "tableId": "tbl-abc123",
+     "sinceVersion": 4
+    }
+   }
+  }
+ },
+ {
+  "id": "v-5",
+  "seq": 5,
+  "at": 1764000000845,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "host",
+  "to": "view",
+  "kind": "notification",
+  "method": "ui/notifications/tool-result",
+  "rpcId": null,
+  "tool": null,
+  "view": "hello-1",
+  "trace": "tr-show",
+  "bytes": 173,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "ui/notifications/tool-result",
+   "params": {
+    "structuredContent": {
+     "greeting": "Hello, Velvet Pilot.",
+     "pings": 0
+    },
+    "_meta": {
+     "playground/trace": "tr-show"
+    }
+   }
+  }
+ },
+ {
+  "id": "v-6",
+  "seq": 6,
+  "at": 1764000000875,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "view",
+  "to": "host",
+  "kind": "notification",
+  "method": "ui/notifications/size-changed",
+  "rpcId": null,
+  "tool": null,
+  "view": "hello-1",
+  "trace": null,
+  "bytes": 94,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "ui/notifications/size-changed",
+   "params": {
+    "width": 640,
+    "height": 320
+   }
+  }
+ },
+ {
+  "id": "v-7",
+  "seq": 7,
+  "at": 1764000003275,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "view",
+  "to": "host",
+  "kind": "request",
+  "method": "tools/call",
+  "rpcId": 2,
+  "tool": "hello_ping",
+  "view": "hello-1",
+  "trace": "tr-ping-1",
+  "bytes": 189,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 2,
+   "method": "tools/call",
+   "params": {
+    "name": "hello_ping",
+    "arguments": {
+     "player": {
+      "id": "p-9f3a1c2e44d0",
+      "handle": "Velvet Pilot"
+     }
+    },
+    "_meta": {
+     "playground/trace": "tr-ping-1"
+    }
+   }
+  }
+ },
+ {
+  "id": "s-15",
+  "seq": 15,
+  "at": 1764000003278,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "host",
+  "to": "server",
+  "kind": "request",
+  "method": "tools/call",
+  "rpcId": 7,
+  "tool": "hello_ping",
+  "view": null,
+  "trace": "tr-ping-1",
+  "bytes": 189,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "application/json",
+   "streamed": false
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 7,
+   "method": "tools/call",
+   "params": {
+    "name": "hello_ping",
+    "arguments": {
+     "player": {
+      "id": "p-9f3a1c2e44d0",
+      "handle": "Velvet Pilot"
+     }
+    },
+    "_meta": {
+     "playground/trace": "tr-ping-1"
+    }
+   }
+  }
+ },
+ {
+  "id": "s-16",
+  "seq": 16,
+  "at": 1764000003314,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "server",
+  "to": "host",
+  "kind": "response",
+  "method": "tools/call",
+  "rpcId": 7,
+  "tool": "hello_ping",
+  "view": null,
+  "trace": "tr-ping-1",
+  "bytes": 197,
+  "durationMs": 36,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "text/event-stream",
+   "streamed": true
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 7,
+   "result": {
+    "structuredContent": {
+     "pings": 1,
+     "serverTime": 1764000003500
+    },
+    "_meta": {
+     "playground/trace": "tr-ping-1",
+     "playground/career": {
+      "unlocked": 2,
+      "lab": [],
+      "completed": false
+     }
+    }
+   }
+  }
+ },
+ {
+  "id": "v-8",
+  "seq": 8,
+  "at": 1764000003318,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "host",
+  "to": "view",
+  "kind": "response",
+  "method": "tools/call",
+  "rpcId": 2,
+  "tool": "hello_ping",
+  "view": "hello-1",
+  "trace": "tr-ping-1",
+  "bytes": 166,
+  "durationMs": 43,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 2,
+   "result": {
+    "structuredContent": {
+     "pings": 1,
+     "serverTime": 1764000003500
+    },
+    "_meta": {
+     "playground/career": {
+      "unlocked": 2,
+      "lab": [],
+      "completed": false
+     }
+    }
+   }
+  }
+ },
+ {
+  "id": "v-9",
+  "seq": 9,
+  "at": 1764000007518,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "view",
+  "to": "host",
+  "kind": "request",
+  "method": "ui/initialize",
+  "rpcId": 1,
+  "tool": null,
+  "view": "lab-1",
+  "trace": null,
+  "bytes": 161,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 1,
+   "method": "ui/initialize",
+   "params": {
+    "appInfo": {
+     "name": "lab",
+     "version": "1"
+    },
+    "appCapabilities": {
+     "tools": {}
+    },
+    "protocolVersion": "2026-01-26"
+   }
+  }
+ },
+ {
+  "id": "v-10",
+  "seq": 10,
+  "at": 1764000007523,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "host",
+  "to": "view",
+  "kind": "response",
+  "method": "ui/initialize",
+  "rpcId": 1,
+  "tool": null,
+  "view": "lab-1",
+  "trace": null,
+  "bytes": 174,
+  "durationMs": 5,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 1,
+   "result": {
+    "protocolVersion": "2026-01-26",
+    "hostInfo": {
+     "name": "MCP App Playground",
+     "version": "1"
+    },
+    "hostCapabilities": {},
+    "hostContext": {
+     "theme": "dark"
+    }
+   }
+  }
+ },
+ {
+  "id": "v-11",
+  "seq": 11,
+  "at": 1764000008423,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "view",
+  "to": "host",
+  "kind": "request",
+  "method": "tools/call",
+  "rpcId": 2,
+  "tool": "lab_countdown",
+  "view": "lab-1",
+  "trace": "tr-count-1",
+  "bytes": 202,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 2,
+   "method": "tools/call",
+   "params": {
+    "name": "lab_countdown",
+    "arguments": {
+     "player": {
+      "id": "p-9f3a1c2e44d0",
+      "handle": "Velvet Pilot"
+     },
+     "from": 3
+    },
+    "_meta": {
+     "playground/trace": "tr-count-1"
+    }
+   }
+  }
+ },
+ {
+  "id": "s-17",
+  "seq": 17,
+  "at": 1764000008426,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "host",
+  "to": "server",
+  "kind": "request",
+  "method": "tools/call",
+  "rpcId": 8,
+  "tool": "lab_countdown",
+  "view": null,
+  "trace": "tr-count-1",
+  "bytes": 202,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "application/json",
+   "streamed": false
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 8,
+   "method": "tools/call",
+   "params": {
+    "name": "lab_countdown",
+    "arguments": {
+     "player": {
+      "id": "p-9f3a1c2e44d0",
+      "handle": "Velvet Pilot"
+     },
+     "from": 3
+    },
+    "_meta": {
+     "playground/trace": "tr-count-1"
+    }
+   }
+  }
+ },
+ {
+  "id": "s-18",
+  "seq": 18,
+  "at": 1764000008756,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "server",
+  "to": "host",
+  "kind": "notification",
+  "method": "notifications/progress",
+  "rpcId": null,
+  "tool": null,
+  "view": null,
+  "trace": "tr-count-1",
+  "bytes": 108,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "text/event-stream",
+   "streamed": true
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "notifications/progress",
+   "params": {
+    "progressToken": "pg-2",
+    "progress": 1,
+    "total": 3
+   }
+  }
+ },
+ {
+  "id": "v-12",
+  "seq": 12,
+  "at": 1764000008757,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "host",
+  "to": "view",
+  "kind": "notification",
+  "method": "notifications/progress",
+  "rpcId": null,
+  "tool": null,
+  "view": "lab-1",
+  "trace": "tr-count-1",
+  "bytes": 108,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "notifications/progress",
+   "params": {
+    "progressToken": "pg-1",
+    "progress": 1,
+    "total": 3
+   }
+  }
+ },
+ {
+  "id": "s-19",
+  "seq": 19,
+  "at": 1764000009087,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "server",
+  "to": "host",
+  "kind": "notification",
+  "method": "notifications/progress",
+  "rpcId": null,
+  "tool": null,
+  "view": null,
+  "trace": "tr-count-1",
+  "bytes": 108,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "text/event-stream",
+   "streamed": true
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "notifications/progress",
+   "params": {
+    "progressToken": "pg-2",
+    "progress": 2,
+    "total": 3
+   }
+  }
+ },
+ {
+  "id": "v-13",
+  "seq": 13,
+  "at": 1764000009088,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "host",
+  "to": "view",
+  "kind": "notification",
+  "method": "notifications/progress",
+  "rpcId": null,
+  "tool": null,
+  "view": "lab-1",
+  "trace": "tr-count-1",
+  "bytes": 108,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "notifications/progress",
+   "params": {
+    "progressToken": "pg-1",
+    "progress": 2,
+    "total": 3
+   }
+  }
+ },
+ {
+  "id": "s-20",
+  "seq": 20,
+  "at": 1764000009418,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "server",
+  "to": "host",
+  "kind": "notification",
+  "method": "notifications/progress",
+  "rpcId": null,
+  "tool": null,
+  "view": null,
+  "trace": "tr-count-1",
+  "bytes": 108,
+  "durationMs": null,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "text/event-stream",
+   "streamed": true
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "notifications/progress",
+   "params": {
+    "progressToken": "pg-2",
+    "progress": 3,
+    "total": 3
+   }
+  }
+ },
+ {
+  "id": "v-14",
+  "seq": 14,
+  "at": 1764000009419,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "host",
+  "to": "view",
+  "kind": "notification",
+  "method": "notifications/progress",
+  "rpcId": null,
+  "tool": null,
+  "view": "lab-1",
+  "trace": "tr-count-1",
+  "bytes": 108,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "notifications/progress",
+   "params": {
+    "progressToken": "pg-1",
+    "progress": 3,
+    "total": 3
+   }
+  }
+ },
+ {
+  "id": "s-21",
+  "seq": 21,
+  "at": 1764000009439,
+  "sid": "sid-fixture-01",
+  "hop": "host-server",
+  "from": "server",
+  "to": "host",
+  "kind": "response",
+  "method": "tools/call",
+  "rpcId": 8,
+  "tool": "lab_countdown",
+  "view": null,
+  "trace": "tr-count-1",
+  "bytes": 67,
+  "durationMs": 1013,
+  "http": {
+   "method": "POST",
+   "path": "/mcp",
+   "status": 200,
+   "contentType": "text/event-stream",
+   "streamed": true
+  },
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 8,
+   "result": {
+    "structuredContent": {
+     "ticks": 3
+    }
+   }
+  }
+ },
+ {
+  "id": "v-15",
+  "seq": 15,
+  "at": 1764000009441,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "host",
+  "to": "view",
+  "kind": "response",
+  "method": "tools/call",
+  "rpcId": 2,
+  "tool": "lab_countdown",
+  "view": "lab-1",
+  "trace": "tr-count-1",
+  "bytes": 67,
+  "durationMs": 1018,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 2,
+   "result": {
+    "structuredContent": {
+     "ticks": 3
+    }
+   }
+  }
+ },
+ {
+  "id": "v-16",
+  "seq": 16,
+  "at": 1764000010941,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "view",
+  "to": "host",
+  "kind": "request",
+  "method": "ui/open-link",
+  "rpcId": 3,
+  "tool": null,
+  "view": "lab-1",
+  "trace": null,
+  "bytes": 86,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 3,
+   "method": "ui/open-link",
+   "params": {
+    "url": "http://example.com"
+   }
+  }
+ },
+ {
+  "id": "v-17",
+  "seq": 17,
+  "at": 1764000010944,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "host",
+  "to": "view",
+  "kind": "error",
+  "method": "ui/open-link",
+  "rpcId": 3,
+  "tool": null,
+  "view": "lab-1",
+  "trace": null,
+  "bytes": 83,
+  "durationMs": 3,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "id": 3,
+   "error": {
+    "code": -32602,
+    "message": "Only https links open."
+   }
+  }
+ },
+ {
+  "id": "v-18",
+  "seq": 18,
+  "at": 1764000011744,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "view",
+  "to": "host",
+  "kind": "notification",
+  "method": "notifications/message",
+  "rpcId": null,
+  "tool": null,
+  "view": "lab-1",
+  "trace": null,
+  "bytes": 114,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "notifications/message",
+   "params": {
+    "level": "info",
+    "data": "exhibit log reached the host"
+   }
+  }
+ },
+ {
+  "id": "v-19",
+  "seq": 19,
+  "at": 1764000012344,
+  "sid": "sid-fixture-01",
+  "hop": "view-host",
+  "from": "view",
+  "to": "host",
+  "kind": "notification",
+  "method": "ui/notifications/size-changed",
+  "rpcId": null,
+  "tool": null,
+  "view": "lab-1",
+  "trace": null,
+  "bytes": 94,
+  "durationMs": null,
+  "http": null,
+  "truncated": false,
+  "payload": {
+   "jsonrpc": "2.0",
+   "method": "ui/notifications/size-changed",
+   "params": {
+    "width": 640,
+    "height": 412
+   }
+  }
+ }
+]
