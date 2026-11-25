@@ -350,7 +350,7 @@ Six seats, a four-deck shoe, bets 10 to 500 in steps of 10, 1,000 chips on sitti
 What the model does, and what code does:
 
 - The model orders the shoe (`shuffle`): it gets how many copies of each card are left and returns `count` cards in order. It does not know who gets which card.
-- The model plays the dealer's hand (`decide`): it gets its own cards and the totals still in play, and returns `hit` or `stand`. It does not know the next card. The prompt names the house custom (draw to 16, stand on 17) and says the choice is the dealer's.
+- The model plays the dealer's hand (`decide`): it gets its own cards and the totals still in play, and returns `hit` or `stand`. It does not know the next card. The prompt states the house rule (hit on 16 or less, stand on 17 or more, soft 17 included), and `validate` rejects a reply that breaks it.
 - Code deals from the ordered slice, adds up hands, and pays. It never picks a card and never decides for the dealer.
 - `validate`: a shuffle must have exactly `count` cards, each a card code, together not more copies than `remaining`. A decide must have no cards, and must be `stand` once the dealer has hit five times. `say` is cut to 120 characters, never a reason to reject.
 
