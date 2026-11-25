@@ -36,7 +36,7 @@ export interface TablesDeps {
 }
 
 const GONE: Notice = { code: "table_gone", message: "That table is gone." };
-const STALE: Notice = { code: "stale", message: "The table moved on. Here is the current state." };
+const STALE: Notice = { code: "stale", message: "The table has changed. Here is the current state." };
 const CITY_FULL: Notice = { code: "city_full", message: "The city is full of tables. Try again in a while." };
 
 const WAKE_MARGIN_MS = 50;

@@ -27,7 +27,7 @@ Rules of the ladder:
 - The server decides: `advanceCareer` in `src/playground/contracts/src/career.ts` runs in the MCP server when a tool call is the job. The career is stored per player and returned in the tool result's `_meta["playground/career"]`.
 - The browser keeps a copy in `localStorage` (`playground.career`) so the ladder paints at once. `career_get` corrects it on load. The higher of the two wins on screen, the server copy wins on the next call.
 - Cheat code, in the spirit of the genre: type `opencity` anywhere on the page. It calls `career_cheat` and opens all five layers. The Briefing says so in its last line: "In a hurry? Type OPENCITY."
-- A locked layer shows its name, its lock and the job that opens it. A deep link to a locked layer lands on the ladder with that rung highlighted.
+- A locked layer shows its name, its lock and the job that opens it. A deep link to a locked layer lands on the ladder, and that rung is highlighted.
 
 ## The offer
 
@@ -48,7 +48,7 @@ Night city, seen from the dispatcher's desk. The reference is the genre's loadin
 
 - Home is a collage of five panels with thick ink gutters, uneven sizes, the top-left the largest. Locked panels are duotone with a lock and the job. Open panels are in colour.
 - A layer page has three zones: the ladder (a narrow rail on the left, five numbered plates), the stage (the View in a frame), the wire (a drawer on the right).
-- The frame around a View is honest chrome: it names the `ui://` resource, the tool that opened it, and the sandbox it runs in (`origin null`, `connect-src 'none'`). It is a rectangle with a 2 px ink border, not a card with a shadow.
+- The frame around a View is honest chrome: it names the `ui://` resource, the tool that opened it, and the sandbox it runs in (`origin null`, `connect-src 'none'`). It is a rectangle with a 2 px border in ink, not a card with a shadow.
 - Under 900 px the ladder becomes a top strip and the wire a bottom sheet.
 
 **Type**
@@ -63,7 +63,7 @@ Night city, seen from the dispatcher's desk. The reference is the genre's loadin
 - Ground `#0D0F14` (ink), raised `#161A22`, lines `#2A3040`.
 - Paper `#F2EDE2` for text, `#A9A294` for secondary text. Both pass 4.5:1 on the ground.
 - One signal colour for anything live or newly open: sodium `#FF9A1F`.
-- One hue per layer, used for its panel, its plate and its View accents only: mint `#5FE3B0`, cyan `#58C7F3`, signal red `#F2545B`, violet `#9A8CFF`, felt `#2FA36B` with brass `#D9B45B`.
+- Each layer has one hue, used only for its panel, its plate and its View accents: mint `#5FE3B0`, cyan `#58C7F3`, signal red `#F2545B`, violet `#9A8CFF`, felt `#2FA36B` with brass `#D9B45B`.
 - Wire colours carry meaning and nothing else uses them: view→host cyan, host→view violet, host→server sodium, server→host mint, errors signal red.
 - Dark only for the shell. The Lab's theme exhibit flips the hello and lab Views to light to show `host-context-changed`.
 - No gradients on surfaces, no glass, no glow. Depth comes from borders and overlap.
@@ -71,8 +71,8 @@ Night city, seen from the dispatcher's desk. The reference is the genre's loadin
 **Motion**
 
 - One big moment: the unlock band. Everything else is small and fast: 120 to 200 ms, ease-out, opacity and transform only.
-- A new wire row slides in 8 px and its lane arrow draws in 150 ms. While the drawer is paused nothing moves.
-- Cards deal along a short arc, 220 ms each, staggered 70 ms. A checkers piece slides, a captured piece drops out.
+- A new row of the wire slides in 8 px and the arrow in its lane draws in 150 ms. While the drawer is paused nothing moves.
+- Cards deal along a short arc, 220 ms each, staggered 70 ms. A piece in checkers slides, a captured piece drops out.
 - `prefers-reduced-motion` turns every one of these into a fade.
 
 **The wire drawer**

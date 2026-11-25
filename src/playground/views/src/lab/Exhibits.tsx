@@ -225,7 +225,7 @@ export function AppTool({ app, finish }: ExhibitProps) {
           offered.current = null;
           setOn(false);
           await app.sendToolListChanged();
-          return "Withdrawn. The host re-lists the tools.";
+          return "Withdrawn. The host lists the tools again.";
         }
         offered.current = app.registerTool("lab_clock", {
           title: "Lab clock",

@@ -8,7 +8,7 @@ launch("blackjack", "Blackjack", ({ app, player, first }) => <Table app={app} pl
 ```
 
 `launch` imports the fonts, tokens and kit styles, sets `data-view` (the layer hue) and `data-theme`, connects, and renders your component with a `ViewContext`:
-`{ app, args, first, theme, player }`. `first` is the entry tool's result: `outputOf<"blackjack_open">(first)` types it.
+`{ app, args, first, theme, player }`. `first` is the entry tool's result: `outputOf<"blackjack_open">(first)` gives it a type.
 
 ## API (import from `../kit`)
 
@@ -39,5 +39,5 @@ launch("blackjack", "Blackjack", ({ app, player, first }) => <Table app={app} pl
 - `tokens.css`: ink ground, paper text, sodium for anything live, one hue per View through `var(--accent)`. `[data-theme="light"]` flips them.
 - Display face for names and big numbers (`var(--font-display)`, upper case), text face for reading, `var(--font-mono)` for data. Numbers are tabular by default.
 - Buttons: `variant` `primary` (accent fill), `plain`, `quiet`, `danger`. `busy` shows the sweep and disables the button.
-- Lobby test ids: `lobby-create`, `lobby-create-bot` (your `actions[].testid`), `lobby-row`.
+- Test ids of the lobby: `lobby-create`, `lobby-create-bot` (your `actions[].testid`), `lobby-row`.
 - Do not use `vh` for height: the frame resizes to its content.

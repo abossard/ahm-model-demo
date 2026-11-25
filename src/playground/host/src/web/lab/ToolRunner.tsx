@@ -98,7 +98,7 @@ export function ToolRunner() {
         <div className="runner-lists">
           <ToolList title="Visible to the model" note="A model would see these and could call them." tools={model} selected={source?.kind === "server" ? source.name : null}
             onPick={(name) => pick({ kind: "server", name }, tools.find((tool) => tool.name === name))} />
-          <ToolList title="App only" note="Hidden from the model. Only a View, through the host, is meant to call them." tools={appOnly} selected={source?.kind === "server" ? source.name : null}
+          <ToolList title="App only" note="Hidden from the model. Only a View is meant to call them, through the host." tools={appOnly} selected={source?.kind === "server" ? source.name : null}
             onPick={(name) => pick({ kind: "server", name }, tools.find((tool) => tool.name === name))} />
           <div className="runner-group">
             <h3 className="runner-group-title">Offered by the View</h3>

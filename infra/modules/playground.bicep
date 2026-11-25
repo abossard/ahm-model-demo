@@ -1,6 +1,6 @@
 targetScope = 'resourceGroup'
 
-// The MCP App Playground: a public host web app, its MCP server, and the Cosmos DB account that holds the tables.
+// The MCP App Playground: a public host app, its MCP server, and the Cosmos DB account that holds the tables.
 // It takes only names and ids of existing resources. ADR 0012 has the reasons.
 
 @description('Primary Azure region for the demo workload.')
@@ -18,7 +18,7 @@ param tags object
 @description('Managed environment hosting both Container Apps.')
 param environmentId string
 
-@description('Container registry both identities pull from.')
+@description('Container registry that both identities pull from.')
 param registryName string
 
 @description('Foundry account whose model deployment plays the blackjack dealer.')
@@ -30,10 +30,10 @@ param modelDeploymentName string = 'gpt-54-mini'
 @description('Virtual network whose resources resolve the Cosmos DB endpoint privately.')
 param vnetId string
 
-@description('Subnet hosting the private endpoint NIC. The endpoint takes two addresses: the account and its region.')
+@description('Subnet that hosts the NIC of the private endpoint. The endpoint takes two addresses: the account and its region.')
 param privateEndpointSubnetId string
 
-@description('Image of the host web app. Empty until the first deploy.')
+@description('Image of the host app. Empty until the first deploy.')
 param playgroundImage string = ''
 
 @description('Image of the MCP server. Empty until the first deploy.')

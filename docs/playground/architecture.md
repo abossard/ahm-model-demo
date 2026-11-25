@@ -10,7 +10,7 @@ Where this file and the code in `src/playground/contracts` disagree, the code wi
 
 - Two Container Apps in `cae-<env>`, both public, no sign-in: `playground` (host) and `playground-mcp` (MCP server).
 - TypeScript on Node 24. One npm workspace at `src/playground`, one lockfile. Servers run their TypeScript with `tsx`, in development and in the container: no compile step, no stale `dist`.
-- `@modelcontextprotocol/sdk` 1.32.2 and `@modelcontextprotocol/ext-apps` 1.7.5, the versions the web UI already uses. `ext-apps` 2.x needs the split SDK packages and is out of scope.
+- `@modelcontextprotocol/sdk` 1.32.2 and `@modelcontextprotocol/ext-apps` 1.7.5, the versions that the web UI already uses. `ext-apps` 2.x needs the split SDK packages and is out of scope.
 - The browser is the MCP host: it runs the SDK `Client` and one `AppBridge` per View. The host server is a transparent proxy that records.
 - The MCP server is stateless Streamable HTTP. Every reply is an SSE response on the POST. There is no session and no standalone GET stream.
 - State: Azure Cosmos DB serverless, API for NoSQL, behind a private endpoint, Entra data role only. Local runs and tests use an in-memory adapter of the same `Store`.
@@ -28,7 +28,7 @@ Where this file and the code in `src/playground/contracts` disagree, the code wi
 | Layer | One of the five steps of the career. `LAYERS` in `contracts/src/career.ts`. |
 | Job | The action that opens the next layer. |
 | Table | One game in progress: a checkers game, a blackjack table, a Drift Ledger run. One document. |
-| Snapshot | The whole table as one player may see it, with its `version`. What every table tool returns. |
+| Snapshot | The whole table as one player may see it, with its `version`. Returned by every table tool. |
 | Notice | A rule that did not apply ("not your turn"). Returned beside the unchanged snapshot. Not an error. |
 | Wire | Every JSON-RPC message on both hops, as `DebugEvent`s. |
 | Hop | `view-host` (postMessage) or `host-server` (HTTP and SSE). |
@@ -230,15 +230,15 @@ Names, input and output schemas are `TOOLS` in `contracts/src/tools.ts`. `tools.
 Rules every handler follows:
 
 - The result is `{ structuredContent: <output>, content: [{ type: "text", text: <one plain sentence> }], _meta }`.
-- Every tool that takes `player` puts the caller's career in `_meta["playground/career"]`, every time. The host compares it with its copy and plays the unlock moment when it grew.
+- Every tool that takes `player` puts the caller's career in `_meta["playground/career"]`, every time. The host compares it with its copy and shows the unlock band when it grew.
 - A rule that does not apply is a `notice` beside the current snapshot, `isError` false. Examples: a move out of turn, a stale `version`, a bet outside the limits (fitted to them, no notice), a full table (you watch), an unknown or expired table (`snapshot: null`, notice `table_gone`).
-- `isError: true` has one cause: the store or the process cannot serve (`"The table store is not ready. Try again."`). Nothing a player does can produce it.
+- `isError: true` has one cause: the store or the process cannot serve (`"The table store is not ready. Try again."`). Nothing that a player does can produce it.
 - Input the schema rejects is the SDK's protocol error. A View never sends it, because it builds arguments from `ToolInput<N>`.
 - Each handler logs one line: `{ msg: "tool", tool, ms, sid, trace, player, table, version, outcome }`, `outcome` being `ok`, `notice:<code>` or `error`.
 
 ### tables.ts
 
-The deep module. Tools call five functions and know nothing of stores, versions, clocks or the dealer.
+The deep module. Tools call five functions and use no store, version, clock or dealer directly.
 
 ```ts
 interface Tables {
@@ -252,12 +252,12 @@ interface Tables {
 
 - Table ids: `c` or `b` and nine base-36 characters for checkers and blackjack, so `wait` knows the game from the id. A Drift Ledger run uses the player id.
 - Kinds: checkers and blackjack tables are `tables` with partition key the game, runs are `runs` with partition key `trader`, players are `players` with partition key the player id.
-- `act` is one `store.update`: `body => rules.apply(rules.tick(body, now).state, action, player, now).state`. The clock is read once before the update. The notice and the events of the last run of the calculation are kept.
+- `act` is one `store.update`: `body => rules.apply(rules.tick(body, now).state, action, player, now).state`. The clock is read once before the update. The update keeps the notice and the events of the last run of the calculation.
 - `expectVersion` differing from the stored version returns notice `stale` and the current snapshot without calling the rules.
 - After a commit: `changes.publish(tableId, version)`, then each event to `careers.advance(playerId, event)`, then `dealer.kick(tableId)` when the rules report a pending request.
 - `create` checks the lobby size against `TABLE_LIMITS` and answers `city_full` at the cap.
 - `wait`: read, tick, commit if the tick changed something. Newer than `sinceVersion`: return now. Else `changes.next(tableId, min(now + 25 s, nextDeadline + 50 ms), signal)`, then read, tick and return. More than `MAX_WAITERS` open waits: return at once with `changed: false`, and the View's loop backs off.
-- `open` with a table id returns that snapshot and kicks the dealer if a request is pending and no runner is active, which is how a table recovers after a restart.
+- `open` with a table id returns that snapshot, and starts the dealer (`kick`) if a request is pending and no runner is active, which is how a table recovers after a restart.
 
 ### Store
 
@@ -318,7 +318,7 @@ All of `mcp/src/games` is calculations: no clock, no randomness, no I/O, no impo
 - Over when the side to move has no pieces (`no_pieces`) or no legal move (`no_moves`), on `resign`, on 80 plies without a capture or a crowning (`draw_rule`), or when the turn deadline of 120 s passes (`timeout`, by `tick`).
 - The house bot is white with id `house-bot`. After a human move, `apply` plays the bot's reply in the same step: the jump sequence with the most captures, else a move that crowns, else the first legal move by `from` then `path`.
 - `view`: `legal` only for the viewer whose turn it is. `lastMoves` holds the last one or two moves.
-- Tests, each one `it.each` table: opening has seven legal moves for black, a forced capture hides every step, a double jump is one move and its half is illegal, crowning ends a jump, kings move backward, each way a game ends, the bot's choice for five fixed boards.
+- Tests, each one `it.each` table: opening has seven legal moves for black, a forced capture removes every other move, a double jump is one move and its half is illegal, crowning ends a jump, kings move backward, each way a game ends, the bot's choice for five fixed boards.
 
 ### Drift Ledger
 
@@ -366,7 +366,7 @@ What the model does, and what code does:
 - Misdeal: `resolve` with `"invalid"` or `"unavailable"`, a `pending` older than 25 s (`tick`), more than 10 requests in the round, or more than 120 in the table's hour. The round goes to `settled` with `misdeal: true`, every outcome `misdeal`, every delta 0.
 - `view` hides the hole card as `"??"` until the dealer phase, never includes the slice, and shows `dealerLog` without undealt cards: `note` is "ordered 15 cards", "hit on 14", "reply rejected: KS is not left in the shoe".
 - A `hit` while a shuffle is pending answers `dealer_busy`.
-- `fakeDealer(request)`: shuffle walks `T 7 9 5 K 6 A 8 3 Q 4 2 J` across suits `S H D C`, starting at `(cards left in the shoe) mod 52` and skipping cards that are gone. Decide hits below 17. So a test knows every hand.
+- `fakeDealer(request)`: shuffle walks `T 7 9 5 K 6 A 8 3 Q 4 2 J` across suits `S H D C`, starting at `(cards left in the shoe) mod 52` and skipping cards that are gone. Decide hits below 17. So the hands in a test are known in advance.
 - Tests: totals with soft aces, the deal order for one, two and six bettors, each `validate` problem, each row of the phase table, the misdeal causes, payouts including 3 to 2 on an odd bet, the view never leaking the hole card or the slice (asserted for every phase), `fakeDealer` always passing `validate`.
 
 ## Host server
@@ -399,14 +399,14 @@ Express 5, four routes and static files.
 ### feed.ts
 
 - Per `sid` (`/^[a-z0-9-]{8,40}$/`): a ring of the last 500 events and the open SSE responses. Events are kept whether or not a feed is open, so a feed that opens late replays.
-- `GET /debug/stream`: `id: <seq>`, `event: wire`, `data: <DebugEvent JSON>`. Replays after `Last-Event-ID`. A comment line every 15 s keeps the ingress from idling the stream out.
-- At most 300 tabs, the least recently active dropped first. A tab with no traffic and no feed for 10 minutes is dropped.
+- `GET /debug/stream`: `id: <seq>`, `event: wire`, `data: <DebugEvent JSON>`. Replays after `Last-Event-ID`. A comment line every 15 s keeps the ingress from closing the stream as idle.
+- At most 300 tabs, the least recently active dropped first. A tab is dropped after 10 minutes with no traffic and no feed.
 
 ## Host page
 
 ### wire core (`host/src/web/wire`, WP3)
 
-The plumbing WP4 builds on. Nothing in it renders.
+The plumbing that WP4 builds on. Nothing in it renders.
 
 ```ts
 // identity.ts: the player and the career copy in localStorage (playground.player, playground.career)
@@ -417,7 +417,7 @@ interface Wire {
   events(): readonly DebugEvent[];                 // newest 2,000
   subscribe(listener: () => void): () => void;     // for useSyncExternalStore
   record(event: DebugEvent): void;                 // pairs, stores, writes wireLine(event) to the console
-  setPaused(paused: boolean): void;                // paused: events are kept in a side buffer, the list stands still
+  setPaused(paused: boolean): void;                // paused: events are kept in a side buffer, the list does not change
   clear(): void;
 }
 createWire(): Wire                                 // also opens EventSource(/debug/stream?sid=...)
@@ -452,16 +452,16 @@ type HostEvent =
    - the career in the result's `_meta` goes to `onHost`
 8. `close`: `bridge.teardownResource({})` with a 500 ms limit, then `bridge.close()`.
 
-`tap.ts` wraps any `Transport`: `send` records `host → view`, `onmessage` records `view → host`, both with `toDebugEvent` and the `viewId`. It mints a trace for each request from the View and keeps it by `rpcId`. Messages the host starts (tool input, tool result) carry the trace of the entry call.
+`tap.ts` wraps any `Transport`: `send` records `host → view`, `onmessage` records `view → host`, both with `toDebugEvent` and the `viewId`. It mints a trace for each request from the View and keeps it by `rpcId`. Messages that the host starts (tool input, tool result) carry the trace of the entry call.
 
 ### UI (`host/src/web`, WP4)
 
 - Routes, by the History API with a 30-line router: `/`, `/briefing`, `/lab`, `/checkers`, `/checkers/:tableId`, `/trader`, `/blackjack`, `/blackjack/:tableId`.
 - State in one zustand store: `player`, `career`, `route`, `drawer`, `offer`, `hostLog`. Only `app/actions.ts` calls the wire core. Components read state and call actions.
-- `ladder/`: the home collage and the rail. `stage/`: `ViewFrame` (the chrome and `mountView`), `UnlockBand`, `OfferCard`, `HostLog` (what the View asked of the host). `lab/`: `ToolRunner` (lists tools as a model would see them and as app-only, a JSON editor seeded from the input schema, the raw result) and the list of tools the View offers. `drawer/`: `WireDrawer`, `Lanes`, `MessageDetail`, `Filters`, `JsonTree`. `design/`: `tokens.css`, `fonts.css`, base components.
+- `ladder/`: the home collage and the rail. `stage/`: `ViewFrame` (the chrome and `mountView`), `UnlockBand`, `OfferCard`, `HostLog` (what the View asked of the host). `lab/`: `ToolRunner` (a list of tools as a model would see them and as app-only, a JSON editor seeded from the input schema, and the raw result) and the list of tools the View offers. `drawer/`: `WireDrawer`, `Lanes`, `MessageDetail`, `Filters`, `JsonTree`. `design/`: `tokens.css`, `fonts.css`, base components.
 - The table id in the URL: a game View tells the host which table it is on with `app.updateModelContext({ structuredContent: { tableId } })`. The host puts it in the URL and offers "Copy invite link" in the frame chrome. A route with a table id passes it to the entry tool.
 - The cheat: a key listener outside inputs matches `opencity` and calls `career_cheat`.
-- Selectors the e2e tests rely on: `data-testid` `ladder`, `rung-1`..`rung-5` with `data-state="open|locked"`, `view-frame` (the iframe), `unlock-band`, `offer-go`, `offer-stay`, `wire-chip`, `wire-drawer`, `wire-row` with `data-hop`, `data-kind`, `data-method`, `data-tool`, `wire-detail`, `wire-pause`, `wire-clear`, `wire-filter-text`, `wire-filter-hop`, `wire-copy`, `host-log`, `invite-link`, `tool-runner`.
+- Selectors that the e2e tests rely on: `data-testid` `ladder`, `rung-1`..`rung-5` with `data-state="open|locked"`, `view-frame` (the iframe), `unlock-band`, `offer-go`, `offer-stay`, `wire-chip`, `wire-drawer`, `wire-row` with `data-hop`, `data-kind`, `data-method`, `data-tool`, `wire-detail`, `wire-pause`, `wire-clear`, `wire-filter-text`, `wire-filter-hop`, `wire-copy`, `host-log`, `invite-link`, `tool-runner`.
 
 ## Views
 
@@ -497,7 +497,7 @@ The most important feature. One event type, two recorders, one drawer.
 | `host-server` | `proxy.ts` | Host server | Every HTTP exchange with the MCP server and every JSON-RPC message in it, with real bytes, status, and whether it arrived on a stream. |
 
 - `DebugEvent`, `classify`, `clip`, `toDebugEvent`, `toHttpEvent`, `createPairing`, `wireLine` and `wireFields` are in `contracts/src/wire.ts`. Both recorders use them, so the shape cannot drift.
-- Strings over 2,000 characters are shortened in the event (`truncated: true`), `bytes` keeps the real size. A View document is 300 KB of HTML and would bury the feed.
+- Strings over 2,000 characters are shortened in the event (`truncated: true`), `bytes` keeps the real size. A View document is 300 KB of HTML and would fill the feed.
 - Hop 2 reaches the drawer through `GET /debug/stream`. Hop 1 is recorded in the same tab and needs no round trip.
 - Order in the drawer is arrival order. Each row shows the recorder's clock. The two clocks differ, so durations are only computed within one hop.
 - Correlation:
@@ -525,7 +525,7 @@ WP3 wires it:
 - Both Dockerfiles build from the context `src/playground`: `node:24-alpine`, copy the root manifests and all five `package.json` files, `npm ci --no-audit --no-fund`, copy sources. The MCP image builds the Views and runs `npx tsx mcp/src/main.ts`. The host image builds the page and runs `npx tsx host/src/server/main.ts`. Both `EXPOSE 8080`, `ENV NODE_ENV=production`, run as user `node`.
 - Deploy: `azd up` provisions and deploys it with the rest. `azd deploy playground playground-mcp` redeploys only the two apps. Then `deployed.spec.ts` against `PLAYGROUND_URL`.
 - `tests/test_infra.py` pins the shape of the deployment. `playground.bicep` is already in its module list. Update the rest in the style of the file: the new scripts in the scripts list, the new targets in the `.PHONY` line and the help text, the two new Container Apps where the compiled template is counted. Add: the module is wired, the Cosmos account has local auth and public access off, the TTLs match `ports.ts`.
-- The same file forbids some words in `infra/`, `scripts/`, `azure.yaml` and the `Makefile` (`REMOVED_TERMS`: among them `postgres`, `queue`, `shop`, `survey`, `AZURE_OPENAI`). That is why the model variables are `DEALER_ENDPOINT` and `DEALER_DEPLOYMENT`. Keep those words out of the files you add there.
+- The same file rejects some words in `infra/`, `scripts/`, `azure.yaml` and the `Makefile` (`REMOVED_TERMS`: among them `postgres`, `queue`, `shop`, `survey`, `AZURE_OPENAI`). That is why the model variables are `DEALER_ENDPOINT` and `DEALER_DEPLOYMENT`. Keep those words out of the files you add there.
 - `compose.yaml`: `cosmos` (`mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-latest`, ports `8081:8081` and `18080:8080`, `GATEWAY_PUBLIC_ENDPOINT=cosmos`, `ENABLE_EXPLORER=false`), `mcp` (built from `mcp/Dockerfile`, `PLAYGROUND_STORE=emulator`, `COSMOS_ENDPOINT=http://cosmos:8081`, `PLAYGROUND_LLM=fake`, port `8091:8080`), `host` (built from `host/Dockerfile`, `MCP_URL=http://mcp:8080`, port `8090:8080`).
 
 ## Testing
@@ -537,7 +537,7 @@ WP3 wires it:
 | Spec | Proves |
 |------|--------|
 | `career.spec.ts` | A new visitor sees one open rung. The hello View renders in the frame, the button inside it opens layer 2, the band and the offer show, `Go to` navigates. Three lab exhibits open layer 3. `opencity` opens all. |
-| `wire.spec.ts` | One click in the hello View gives four rows in order (`view→host` request, `host→server` request, `server→host` reply, `host→view` reply) with one trace. Filter by hop and by text, pause holds the list still, clear empties it, a row opens to JSON, copy puts JSON on the clipboard, a long-poll row shows a running timer. The browser console has a `[wire]` line for each. |
+| `wire.spec.ts` | One click in the hello View gives four rows in order (`view→host` request, `host→server` request, `server→host` reply, `host→view` reply) with one trace. Filter by hop and by text, pause stops the list from changing, clear empties it, a row opens to JSON, copy puts JSON on the clipboard, a long-poll row shows a running timer. The browser console has a `[wire]` line for each. |
 | `lab.spec.ts` | Each exhibit has its effect on the host (`host-log`) and its rows on the wire. The countdown shows progress notifications on both hops. The tool runner calls `lab_echo` and renders the result. |
 | `checkers.spec.ts` | Two browser contexts: A creates, B opens the invite link and joins, A moves and B's board shows it within 2 s without a reload, B's illegal move gets a notice. Against the bot: a capture opens layer 4. |
 | `trader.spec.ts` | Buy at one port, jump, sell dearer, layer 5 opens. Fuel and day change. A reload restores the run. |
@@ -564,14 +564,14 @@ Seven packages. WP1 to WP6 run in parallel. WP7 starts when they report done. Ev
 - Owns: `src/playground/mcp/**` except `src/games/**`, `src/ports.ts`, `Dockerfile`, `package.json`, `tsconfig.json`.
 - Provides: the server of [MCP server](#mcp-server): every tool of `TOOLS`, the five View resources, `/healthz`.
 - Consumes: the rules through the `ports.ts` types (`main.ts` is the only file that imports `./games/*`), `views/dist` through `VIEWS_DIR`.
-- Until WP1 lands, test `tables.ts` and `dealer.ts` with a ten-line counter game that implements `GameRules`.
+- Until WP1 lands, test `tables.ts` and `dealer.ts` with a counter game of ten lines that implements `GameRules`.
 - Done: the unit tests of [Testing](#testing) for its files. `npm run start -w @playground/mcp` answers `initialize`, `tools/list` (28 tools, each with its `_meta.ui`) and a `hello_show` call over `curl`. With WP1 present, a scripted checkers game and a blackjack round with the fake dealer pass as a vitest integration test over HTTP. The store check passes on `memory`, and on the emulator when Docker runs.
 - Run: `npm test -w @playground/mcp --prefix src/playground`, typecheck, `PLAYGROUND_STORE=emulator npm run store-check -w @playground/mcp --prefix src/playground`.
 
 ### WP3 Host server, wire core and platform
 
 - Owns: `src/playground/host/src/server/**`, `src/playground/host/src/web/wire/**`, `src/playground/host/{Dockerfile,vite.config.ts}`, `src/playground/mcp/Dockerfile`, `src/playground/compose.yaml`, `infra/main.bicep`, `infra/main.parameters.json`, `infra/README.md`, `azure.yaml`, `scripts/playground/**`, `Makefile`, `tests/test_infra.py`, `docs/development.md`, `AGENTS.md`.
-- Provides: the routes of [Host server](#host-server), the wire core API exactly as written, both images, the deploy and smoke scripts, the Make targets, a "Playground" section in `docs/development.md` and one pointer line in `AGENTS.md`.
+- Provides: the routes of [Host server](#host-server), the API of the wire core exactly as written, both images, the deploy and smoke scripts, the Make targets, a "Playground" section in `docs/development.md` and one pointer line in `AGENTS.md`.
 - Consumes: the MCP server over HTTP. Until WP2 runs, a stub upstream in its tests.
 - `vite.config.ts`: root the package, `build.outDir: "dist"`, dev port 5273, proxy `/mcp`, `/debug`, `/view`, `/healthz` to 8090.
 - Does not deploy.
@@ -625,4 +625,4 @@ Seven packages. WP1 to WP6 run in parallel. WP7 starts when they report done. Ev
 | A public page that spends on a model | 60 dealer calls a minute for the whole app, 50 blackjack tables, 120 calls per table and hour. |
 | Two revisions for a moment during a deploy | A wait on the old revision misses a commit on the new one. It answers within 25 s, and the next call sees the change. |
 | The process restarts mid-round | State is in the store. The pending dealer request is picked up by the next `open` or `wait`, or becomes a misdeal after 25 s. |
-| A View asks for something the host does not do | The bridge answers method-not-found, the drawer shows it. |
+| A View asks for something that the host does not do | The bridge answers method-not-found, the drawer shows it. |
