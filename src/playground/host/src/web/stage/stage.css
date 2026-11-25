@@ -1,0 +1,94 @@
+.layer { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 24px; padding: 24px 24px 96px; max-width: 1360px; margin-inline: auto; align-items: start; }
+.rail { position: sticky; top: 80px; }
+.stage { display: grid; gap: 20px; min-width: 0; }
+
+.stage-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 20px; }
+.stage-num { font-size: clamp(64px, 8vw, 112px); color: var(--hue); font-weight: 900; font-variant-numeric: tabular-nums; }
+.stage-title { font-size: clamp(36px, 4.5vw, 64px); }
+.stage-teaches { color: var(--paper-2); max-width: 56ch; margin-top: 6px; }
+.job { flex-basis: 100%; border-left: 4px solid var(--sodium); background: var(--raised); padding: 10px 16px; display: grid; gap: 2px; max-width: 70ch; }
+.job-label { font-size: 14px; font-weight: 600; color: var(--sodium); }
+
+/* The frame is honest chrome: what is in it, what opened it, what it may do. */
+.frame { border: 2px solid var(--line); background: var(--raised); display: flex; flex-direction: column; min-width: 0; }
+.frame-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; padding: 8px 12px; border-bottom: 2px solid var(--line); align-items: center; }
+.frame-facts { display: flex; flex-wrap: wrap; gap: 4px 20px; }
+.frame-facts div { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.frame-facts dt { color: var(--paper-2); font-size: 14px; }
+.frame-facts dd { overflow-wrap: anywhere; }
+.frame-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.frame-body { position: relative; background: var(--raised); }
+.frame-body iframe { display: block; width: 100%; height: 100%; border: 0; background: transparent; }
+.frame-note { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; text-align: center; padding: 24px; background: var(--raised); color: var(--paper-2); }
+.frame-note-quiet { background: transparent; place-content: end start; justify-items: start; padding: 12px 16px; pointer-events: none; font-size: 14px; }
+.frame[data-display="fullscreen"] { position: fixed; inset: 0; z-index: 50; border-width: 0; }
+.frame[data-display="fullscreen"] .frame-body { flex: 1; min-height: 0; }
+
+/* The offer: what you just did, and what is next. Nothing moves you off the View. */
+.offer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; padding: 16px 20px; border: 2px solid var(--hue, var(--sodium)); background: var(--raised); transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease); @starting-style { opacity: 0; transform: translateY(8px); } }
+.offer-did { font-weight: 600; }
+.offer-next { color: var(--paper-2); max-width: 60ch; }
+.offer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.home .offer, main > .offer { margin: 16px 24px 0; max-width: 1232px; }
+@media (min-width: 1360px) { main > .offer { margin-inline: auto; } }
+
+/* The unlock band: the one big moment. It crosses once from the left. */
+.band {
+  position: fixed; z-index: 60; left: 0; right: var(--drawer-w, 0px); top: 34%; pointer-events: none;
+  display: flex; align-items: baseline; gap: 24px; padding: 18px clamp(20px, 5vw, 64px); background: var(--ink);
+  border-block: 4px solid var(--sodium); animation: band-cross 3000ms linear both;
+}
+.band-head { font-size: clamp(40px, 7vw, 96px); color: var(--sodium); font-weight: 900; }
+.band-name { font-size: clamp(28px, 4.5vw, 64px); color: var(--hue, var(--paper)); }
+@keyframes band-cross {
+  0% { transform: translateX(-102%); animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1); }
+  30% { transform: translateX(0); }
+  83% { transform: translateX(0); animation-timing-function: cubic-bezier(0.7, 0, 0.84, 0); }
+  100% { transform: translateX(102%); }
+}
+@keyframes band-fade { 0%, 100% { opacity: 0; } 20%, 80% { opacity: 1; } }
+
+/* Mission passed: a stamp over the band, under 1.5 s. Any key or click skips it with the band. */
+.stamp {
+  position: fixed; z-index: 61; left: 0; right: var(--drawer-w, 0px); top: calc(34% + 130px); pointer-events: none; text-align: center;
+  font-size: clamp(56px, 12vw, 168px); font-weight: 900; line-height: 0.9; color: var(--hue, var(--paper)); letter-spacing: 0.02em;
+  text-shadow: 0 6px 0 var(--ink); animation: stamp var(--dur-stinger) var(--ease) both;
+}
+@keyframes stamp {
+  0% { opacity: 0; transform: scale(1.7) rotate(-4deg); }
+  14% { opacity: 1; transform: scale(1) rotate(-4deg); }
+  80% { opacity: 1; transform: scale(1) rotate(-4deg); }
+  100% { opacity: 0; transform: scale(0.96) rotate(-4deg); }
+}
+
+/* What the View asked of the host. */
+.hostlog { border-top: 2px solid var(--line); padding-top: 16px; }
+.hostlog-empty { color: var(--paper-2); max-width: 66ch; }
+.hostlog-bar { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.hostlog-chip, .hostlog-find { font-size: 13px; min-height: 32px; padding: 0 10px; color: var(--paper-2); background: transparent; border: 2px solid var(--line); border-radius: var(--radius); }
+.hostlog-chip { cursor: pointer; }
+.hostlog-chip[aria-pressed="true"] { color: var(--paper); border-color: var(--paper-2); }
+.hostlog-chip[aria-pressed="false"] { text-decoration: line-through; }
+.hostlog-find { flex: 1 1 120px; min-width: 0; color: var(--paper); font-family: inherit; }
+.hostlog-chip:hover, .hostlog-find:focus-visible { border-color: var(--sodium); }
+.hostlog-count { color: var(--sodium); white-space: nowrap; }
+.hostlog-list { max-height: 260px; overflow-y: auto; display: grid; }
+.hostlog-list li { display: grid; grid-template-columns: 76px 72px minmax(0, 1fr); gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.hostlog-time, .hostlog-type { color: var(--paper-2); }
+.hostlog-list li[data-type="error"] .hostlog-text { color: var(--red); }
+.hostlog-text { overflow-wrap: anywhere; }
+.link-confirm { border: 2px solid var(--sodium); padding: 12px 16px; margin-bottom: 12px; display: grid; gap: 10px; background: var(--raised); }
+.link-confirm-actions { display: flex; gap: 8px; }
+
+@media (max-width: 899px) {
+  .layer { grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 16px 16px 88px; }
+  .rail { position: static; }
+  .home .offer, main > .offer { margin: 12px 16px 0; }
+  .hostlog-list li { grid-template-columns: 64px minmax(0, 1fr); }
+  .hostlog-type { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .band { animation-name: band-fade; }
+  .offer { transition: none; }
+  .stamp { display: none; }
+}

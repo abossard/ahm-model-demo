@@ -1,0 +1,29 @@
+{
+  "name": "playground",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "contracts",
+    "mcp",
+    "host",
+    "views",
+    "e2e"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build -w @playground/views && npm run build -w @playground/host",
+    "dev": "concurrently -k -n mcp,host,web -c blue,magenta,green \"npm run dev -w @playground/mcp\" \"npm run dev -w @playground/host\" \"npm run dev:web -w @playground/host\"",
+    "start": "concurrently -k -n mcp,host \"npm run start -w @playground/mcp\" \"npm run start -w @playground/host\"",
+    "e2e": "npm run e2e -w @playground/e2e --"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "concurrently": "^10.0.7",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

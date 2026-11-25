@@ -1,0 +1,56 @@
+:root {
+  color-scheme: dark;
+
+  /* Ground and text. Paper and its quiet partner both pass 4.5:1 on the ground. */
+  --ink: #0d0f14;
+  --raised: #161a22;
+  --line: #2a3040;
+  --paper: #f2ede2;
+  --paper-2: #a9a294;
+
+  /* The one signal colour: anything live or newly open. */
+  --sodium: #ff9a1f;
+
+  /* One hue per layer: its panel, its plate and its View accents. */
+  --mint: #5fe3b0;
+  --cyan: #58c7f3;
+  --red: #f2545b;
+  --violet: #9a8cff;
+  --felt: #2fa36b;
+  --brass: #d9b45b;
+
+  /* Wire colours carry meaning and nothing else uses them. */
+  --w-view-to-host: var(--cyan);
+  --w-host-to-view: var(--violet);
+  --w-host-to-server: var(--sodium);
+  --w-server-to-host: var(--mint);
+  --w-error: var(--red);
+
+  --font-display: "Big Shoulders Display Variable", "Arial Narrow", Impact, sans-serif;
+  --font-text: "Instrument Sans Variable", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --radius: 2px;
+  --ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --dur-base: 180ms;
+  --dur-stinger: 1200ms;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+}
+
+[data-layer="1"] { --hue: var(--mint); }
+[data-layer="2"] { --hue: var(--cyan); }
+[data-layer="3"] { --hue: var(--red); }
+[data-layer="4"] { --hue: var(--violet); }
+[data-layer="5"] { --hue: var(--felt); }
+
+[data-flow="view-to-host"] { --flow: var(--w-view-to-host); }
+[data-flow="host-to-view"] { --flow: var(--w-host-to-view); }
+[data-flow="host-to-server"] { --flow: var(--w-host-to-server); }
+[data-flow="server-to-host"] { --flow: var(--w-server-to-host); }
+[data-flow="error"] { --flow: var(--w-error); }

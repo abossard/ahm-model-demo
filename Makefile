@@ -7,7 +7,7 @@ WEB_PYTHON ?= $(WEB_VENV)/bin/python
 # Must match the base image in src/web/Dockerfile so local runs use the same interpreter as the container.
 PYTHON_VERSION ?= 3.14
 
-.PHONY: help env deps ui dev gate capture-deps onboarding-tour core-walkthrough
+.PHONY: help env deps ui dev gate capture-deps onboarding-tour core-walkthrough playground-up
 
 gate:
 	@scripts/local-env.sh > /dev/null
@@ -18,6 +18,7 @@ help:
 	@echo "make env   print the azd environment mapping without starting anything"
 	@echo "make onboarding-tour   record the offline builder and regenerate the illustrated guide"
 	@echo "make core-walkthrough  record the main website with the saved CORE model and health history"
+	@echo "make playground-up   run the MCP App Playground in containers with the Cosmos DB emulator"
 	@echo
 	@echo "make dev and make env require a provisioned azd environment."
 	@echo "web http://127.0.0.1:$(WEB_PORT)"
@@ -59,3 +60,7 @@ dev: gate ui
 	eval "$$vars"; \
 	exec $(WEB_PYTHON) -m uvicorn --app-dir src/web/app \
 	  --host 127.0.0.1 --port $(WEB_PORT) main:app
+
+playground-up:
+	@docker compose -f src/playground/compose.yaml up --build
+

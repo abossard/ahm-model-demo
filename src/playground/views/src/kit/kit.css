@@ -1,0 +1,139 @@
+.frame {
+  max-height: 1600px;
+  overflow: auto;
+  padding: var(--s5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s5);
+}
+.frame-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s4);
+  flex-wrap: wrap;
+}
+.frame-title {
+  font: 900 clamp(1.75rem, 7vw, 2.5rem) / 0.95 var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.005em;
+  color: var(--accent);
+}
+.frame-aside { font-size: 0.875rem; color: var(--fg-2); }
+.frame-offline {
+  font-size: 0.875rem;
+  color: var(--live);
+  display: flex;
+  gap: var(--s2);
+  align-items: center;
+}
+.frame-offline::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: var(--live);
+  border-radius: 50%;
+  animation: blink 1s steps(2, jump-none) infinite;
+}
+@keyframes blink { 50% { opacity: 0.2; } }
+
+.btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  min-height: 40px;
+  padding: 0 var(--s4);
+  border: 2px solid var(--fg);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 0.9375rem;
+  cursor: pointer;
+  user-select: none;
+  overflow: hidden;
+  transition: background-color 140ms var(--ease), color 140ms var(--ease), border-color 140ms var(--ease),
+    transform 80ms var(--ease);
+}
+.btn:hover:not(:disabled) { background: var(--bg-raised); }
+.btn:active:not(:disabled) { transform: scale(0.97); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn-primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
+.btn-quiet { border-color: var(--rule); color: var(--fg-2); }
+.btn-quiet:hover:not(:disabled) { border-color: var(--fg-2); color: var(--fg); }
+.btn-danger { border-color: var(--bad); color: var(--bad); }
+.btn-danger:hover:not(:disabled) { background: var(--bad); color: var(--on-accent); }
+.btn[aria-busy="true"]::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 3px;
+  background: var(--live);
+  animation: sweep 900ms var(--ease) infinite;
+}
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@media (pointer: coarse) { .btn { min-height: 44px; } }
+
+.notice {
+  display: flex;
+  gap: var(--s3);
+  align-items: baseline;
+  padding: var(--s3) var(--s4);
+  border: 2px solid var(--live);
+  border-radius: var(--radius);
+  font-size: 0.9375rem;
+  transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease);
+  @starting-style { opacity: 0; transform: translateY(-8px); }
+}
+.notice[data-kind="error"] { border-color: var(--bad); }
+.notice code { color: var(--live); flex: none; }
+.notice[data-kind="error"] code { color: var(--bad); }
+
+.lobby { display: flex; flex-direction: column; gap: var(--s4); }
+.lobby-actions { display: flex; gap: var(--s3); flex-wrap: wrap; }
+.lobby-rows { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--rule); }
+.lobby-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s3) 0;
+  border-bottom: 2px solid var(--rule);
+}
+.lobby-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lobby-meta { font-size: 0.8125rem; color: var(--fg-2); display: flex; gap: var(--s3); align-items: center; }
+.lobby-status::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--fg-2);
+}
+.lobby-status[data-status="open"]::before { background: var(--live); }
+.lobby-status[data-status="playing"]::before { background: var(--accent); }
+.lobby-empty { color: var(--fg-2); max-width: 52ch; }
+@media (max-width: 480px) {
+  .lobby-row { grid-template-columns: 1fr auto; }
+  .lobby-meta { grid-column: 1 / -1; grid-row: 2; }
+}
+
+/* View Transitions: useTable applies each snapshot through withTransition, so anything with a
+   `view-transition-name` (and a `view-transition-class`) moves between snapshots. The page itself stays still. */
+::view-transition-group(root), ::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+::view-transition-group(*) { animation-duration: var(--dur-move); animation-timing-function: var(--ease); }
+::view-transition-group(*.card) { animation-duration: var(--dur-deal); }
+::view-transition-group(*.num), ::view-transition-group(*.chips) { animation-duration: var(--dur-base); }
+/* Newly there: a card flies in from the shoe. Gone: a piece drops out. */
+::view-transition-new(*.card):only-child { animation: vt-deal var(--dur-deal) var(--ease) backwards; }
+::view-transition-old(*.drop):only-child { animation: vt-drop var(--dur-move) var(--ease) both; }
+@keyframes vt-deal { from { opacity: 0; transform: translate(-18px, -24px) rotate(-6deg); } }
+@keyframes vt-drop { to { opacity: 0; transform: translateY(40%) scale(0.85); } }
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none; }
+  .notice { transition: none; }
+}

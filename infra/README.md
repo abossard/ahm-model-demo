@@ -16,6 +16,7 @@ Health Models.
 |----------|--------|-------|
 | Container App `ca-<env>-web` in environment `cae-<env>` | `container-app.bicep`, `foundation.bicep` | Workload profiles environment with only the Consumption profile, joined to the VNet, one replica. Serves the FastAPI app and the SPA. |
 | Container App `ca-<env>-mcp` | `container-app.bicep` | The Azure MCP server (`src/mcp`), external ingress, one replica, runs as `id-<env>-mcp`. See Azure MCP server. |
+| Container Apps `ca-<env>-playground` and `ca-<env>-playground-mcp`, Cosmos DB account `cosmos-<env>-<token>` with its private endpoint | `playground.bicep` | The MCP App Playground. Both apps are public with no sign-in. See MCP App Playground. |
 | App registrations `ahm-<env>-web` and `ahm-<env>-mcp` with their service principals and federated credentials | `entra.bicep` | See Sign-in and on-behalf-of. |
 | Virtual network `vnet-<env>` | `foundation.bicep` | Two subnets, one for the environment and one for private endpoints. See Network. |
 | Identities `id-<env>-app` and `id-<env>-mcp` | `foundation.bicep` | `id-<env>-app` is the web app's workload identity. `id-<env>-mcp` is the MCP server's: it holds AcrPull on the registry and nothing else. |
@@ -413,6 +414,20 @@ account of a second directory and a personal account that owns an Azure subscrip
   revision's assertions match no credential and Tasks that read Azure fail. If the new revision cannot pull its image
   while the AcrPull assignment propagates, run `azd provision` again. The web identity keeps its grants and its
   credential, and nothing is deleted.
+
+## MCP App Playground
+
+[ADR 0012](../docs/adr/0012-playground-as-two-public-apps-with-a-model-as-dealer.md) has the reasons, [architecture](../docs/playground/architecture.md) the design.
+
+- `modules/playground.bicep` takes only names and ids of existing resources, so it deploys alone. `main.bicep` wires it
+  with the images `playgroundImage` and `playgroundMcpImage` and outputs `PLAYGROUND_URL`, `PLAYGROUND_MCP_URL`,
+  `SERVICE_PLAYGROUND_NAME` and `SERVICE_PLAYGROUND_MCP_NAME`.
+- The Cosmos DB account is serverless with local auth and public network access off. Only `id-<env>-playground-mcp`
+  reads it, through the Data Contributor data role. `id-<env>-playground` (the public host) can pull its image and nothing else.
+- The private endpoint takes the last two free addresses of `snet-private-endpoints` (a /29). Another private endpoint
+  needs a wider subnet in `foundation.bicep`.
+- `azd up` provisions and deploys it with the rest. `azd deploy playground playground-mcp` redeploys only the two apps.
+- Logs are JSON lines on stdout in `ContainerAppConsoleLogs_CL`. Follow one click with its trace id: `ContainerAppConsoleLogs_CL | where Log_s has "<trace>"`.
 
 ## Deploying
 

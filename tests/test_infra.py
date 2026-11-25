@@ -1,5 +1,6 @@
 import ipaddress
 import json
+import math
 import os
 import re
 import subprocess
@@ -430,6 +431,12 @@ NETWORK_RESOURCE_TYPES = {
         "Microsoft.Network/privateEndpoints",
         "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
     ],
+    "playground": [
+        "Microsoft.Network/privateDnsZones",
+        "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+        "Microsoft.Network/privateEndpoints",
+        "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+    ],
 }
 
 # The ranges a Container Apps environment subnet must not overlap (Microsoft Learn: custom virtual networks).
@@ -721,6 +728,7 @@ class SourceLayoutContractTests(unittest.TestCase):
                 "health-model-entities.bicep",
                 "health-model-relationships.bicep",
                 "health-model.bicep",
+                "playground.bicep",
                 "rbac.bicep",
                 "storage.bicep",
                 "subscription-monitoring.bicep",
@@ -732,7 +740,12 @@ class SourceLayoutContractTests(unittest.TestCase):
                 for path in (ROOT / "scripts").rglob("*")
                 if path.is_file()
             ),
-            ["scripts/hooks/postprovision.sh", "scripts/hooks/postup.sh", "scripts/hooks/predown.sh", "scripts/local-env.sh"],
+            [
+                "scripts/hooks/postprovision.sh",
+                "scripts/hooks/postup.sh",
+                "scripts/hooks/predown.sh",
+                "scripts/local-env.sh",
+            ],
         )
 
     def test_tests_folder_holds_only_test_modules(self):
@@ -751,13 +764,17 @@ class SourceLayoutContractTests(unittest.TestCase):
         text = (ROOT / "azure.yaml").read_text()
         services, hooks = text.split("\nservices:\n")[1].split("\nhooks:\n")
 
-        self.assertEqual(re.findall(r"^  ([\w-]+):$", services, re.MULTILINE), ["web", "mcp"])
+        self.assertEqual(re.findall(r"^  ([\w-]+):$", services, re.MULTILINE), ["web", "mcp", "playground", "playground-mcp"])
         self.assertNotIn("hooks:", services)
         self.assertEqual(re.findall(r"^  ([\w-]+):$", hooks, re.MULTILINE), ["postprovision", "postdeploy", "postup", "predown"])
-        web, mcp = services.split("\n  mcp:\n")
+        web, rest = services.split("\n  mcp:\n")
+        mcp, rest = rest.split("\n  playground:\n")
+        playground, playground_mcp = rest.split("\n  playground-mcp:\n")
         for service, block, lines in (
             ("web", web, ("    project: ./src/web", "    language: py")),
             ("mcp", mcp, ("    project: ./src/mcp", "    language: docker")),
+            ("playground", playground, ("    project: ./src/playground/host", "    language: docker", "      context: ..")),
+            ("playground-mcp", playground_mcp, ("    project: ./src/playground/mcp", "    language: docker", "      context: ..")),
         ):
             for line in lines + ("    host: containerapp", "      path: ./Dockerfile", "      remoteBuild: true"):
                 with self.subTest(service=service, line=line):
@@ -847,13 +864,41 @@ class SourceLayoutContractTests(unittest.TestCase):
         for term in ("agent-web", "agent-app", "AGENT_", "survey", "HEALTH_COPILOT", "AZURE_OPENAI"):
             with self.subTest(absent=term):
                 self.assertNotIn(term, text)
-        for target in ("make dev", "make ui", "make env", "make onboarding-tour", "make core-walkthrough"):
+        for target in ("make dev", "make ui", "make env", "make onboarding-tour", "make core-walkthrough", "make playground-up"):
             with self.subTest(help=target):
                 self.assertIn(target, help_text)
         self.assertEqual(dev.count("uvicorn"), 1)
         self.assertIn("--app-dir src/web/app", dev)
         self.assertEqual(re.findall(r"^\.PHONY: (.+)$", text, re.MULTILINE),
-                         ["help env deps ui dev gate capture-deps onboarding-tour core-walkthrough"])
+                         ["help env deps ui dev gate capture-deps onboarding-tour core-walkthrough playground-up"])
+
+    def test_playground_module_is_wired_and_its_database_is_private(self):
+        template = templates()["playground"]
+        for parameter, expected in (
+            ("location", "[parameters('location')]"),
+            ("namePrefix", "[variables('namePrefix')]"),
+            ("playgroundImage", "[parameters('playgroundImage')]"),
+            ("playgroundMcpImage", "[parameters('playgroundMcpImage')]"),
+        ):
+            with self.subTest(parameter=parameter):
+                self.assertEqual(module_parameter("playground", parameter), expected)
+        self.assertEqual({"PLAYGROUND_URL", "PLAYGROUND_MCP_URL", "SERVICE_PLAYGROUND_NAME", "SERVICE_PLAYGROUND_MCP_NAME"} - set(compile_main()[0]["outputs"]), set())
+        (account,) = of_type(template, "Microsoft.DocumentDB/databaseAccounts")
+        self.assertIs(account["properties"]["disableLocalAuth"], True)
+        self.assertEqual(account["properties"]["publicNetworkAccess"], "Disabled")
+        self.assertEqual(account["properties"]["capabilities"], [{"name": "EnableServerless"}])
+
+    def test_playground_container_ttls_match_the_store_port(self):
+        ports = (ROOT / "src" / "playground" / "mcp" / "src" / "ports.ts").read_text()
+        block = re.search(r"TTL_SECONDS[^{]*\{(.*?)\};", ports, re.DOTALL).group(1)
+        seconds = {
+            name: int(math.prod(int(n) for n in re.findall(r"\d+", expression)))
+            for name, expression in re.findall(r"(\w+):\s*([^,\n]+),", block)
+        }
+        bicep = (ROOT / "infra" / "modules" / "playground.bicep").read_text()
+        declared = {name: int(ttl) for name, ttl in re.findall(r"name: '(\w+)', ttl: (\d+)", bicep)}
+        self.assertEqual(seconds, {"tables": 21600, "runs": 604800, "players": 2592000})
+        self.assertEqual(declared, seconds)
 
     def test_deployment_sources_mention_no_removed_feature(self):
         paths = [
@@ -903,6 +948,7 @@ class InfrastructureContractTests(unittest.TestCase):
                     "rbac",
                     "container-app-web",
                     "container-app-mcp",
+                    "playground",
                     "availability-tests",
                     "health-model",
                     "health-model-access",
@@ -928,6 +974,8 @@ class InfrastructureContractTests(unittest.TestCase):
                     "modelDeploymentCapacity",
                     "webImage",
                     "mcpImage",
+                    "playgroundImage",
+                    "playgroundMcpImage",
                     "entraAllowAzureCli",
                     "entraAllowLocalRedirect",
                     "entraAllowedTenants",
@@ -1096,6 +1144,8 @@ class InfrastructureContractTests(unittest.TestCase):
                 "location",
                 "mcpImage",
                 "modelDeploymentCapacity",
+                "playgroundImage",
+                "playgroundMcpImage",
                 "principalId",
                 "webImage",
             ],
@@ -1111,6 +1161,8 @@ class InfrastructureContractTests(unittest.TestCase):
             ("modelDeploymentCapacity", "${AZURE_MODEL_CAPACITY:-500}"),
             ("webImage", "${SERVICE_WEB_IMAGE_NAME}"),
             ("mcpImage", "${SERVICE_MCP_IMAGE_NAME}"),
+            ("playgroundImage", "${SERVICE_PLAYGROUND_IMAGE_NAME}"),
+            ("playgroundMcpImage", "${SERVICE_PLAYGROUND_MCP_IMAGE_NAME}"),
             ("entraAllowAzureCli", "${ENTRA_ALLOW_AZURE_CLI:-false}"),
             ("entraAllowLocalRedirect", "${ENTRA_ALLOW_LOCAL_REDIRECT:-false}"),
             # Empty lets every directory sign in.
@@ -1123,6 +1175,8 @@ class InfrastructureContractTests(unittest.TestCase):
         for name, default in (
             ("modelDeploymentCapacity", 500),
             ("mcpImage", ""),
+            ("playgroundImage", ""),
+            ("playgroundMcpImage", ""),
             ("foundryAgentPrincipalId", ""),
             ("entraAllowAzureCli", False),
             ("entraAllowLocalRedirect", False),
@@ -2016,6 +2070,8 @@ class EntraAndMcpContractTests(unittest.TestCase):
                     "MCP_SCOPE",
                     "MCP_URL",
                     "SERVICE_MCP_FQDN",
+                    "SERVICE_PLAYGROUND_MCP_NAME",
+                    "SERVICE_PLAYGROUND_NAME",
                     "SERVICE_WEB_FQDN",
                     "SERVICE_WEB_NAME",
                 ]

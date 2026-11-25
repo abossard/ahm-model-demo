@@ -26,6 +26,12 @@
     "mcpImage": {
       "value": "${SERVICE_MCP_IMAGE_NAME}"
     },
+    "playgroundImage": {
+      "value": "${SERVICE_PLAYGROUND_IMAGE_NAME}"
+    },
+    "playgroundMcpImage": {
+      "value": "${SERVICE_PLAYGROUND_MCP_IMAGE_NAME}"
+    },
     "entraAllowAzureCli": {
       "value": "${ENTRA_ALLOW_AZURE_CLI:-false}"
     },

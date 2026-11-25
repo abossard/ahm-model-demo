@@ -15,6 +15,8 @@ Design agent interactions as actions on the webpage. Show findings, explanations
   connects to Azure.
 - Understanding the demo and its side effects: read [docs/demo.md](docs/demo.md).
   Health reports change model signals; Apply writes to live models and has no undo.
+- The MCP App Playground (`src/playground`, a separate Node app with its own two Container Apps) is described in
+  [docs/playground/architecture.md](docs/playground/architecture.md). `azd up` deploys it with the rest.
 
 ## Follow the request path
 
